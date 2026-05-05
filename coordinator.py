@@ -8,6 +8,7 @@ Main endpoints:
     POST /task_result   Agent callback with the shared A2A result payload
     GET  /health
     GET  /tasks?task_id=<id>
+    GET  /contracts     Interfaces for worker-agent and MCP teammates
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from common.config import (
     DEFAULT_TASK_TIMEOUT_SECONDS,
     DISPATCH_HTTP_TIMEOUT_SECONDS,
     MAX_TASK_TIMEOUT_SECONDS,
+    MCP_SERVERS,
     TRAVEL_KEYWORDS,
 )
 from common.http_client import HttpJsonClientError, post_json
@@ -49,6 +51,53 @@ from common.schemas import (
     utc_now_iso,
     validate_task_result,
 )
+from llm_client import LLMClientError, llm
+
+
+COORDINATOR_DISPATCH_FLOW = [
+    {
+        "step": 1,
+        "name": "user_submit",
+        "required_flow": "用户提问 -> Coordinator",
+        "network": "HTTP POST /submit_task",
+        "owner": "coordinator",
+    },
+    {
+        "step": 2,
+        "name": "plan_and_select_agents",
+        "required_flow": "Coordinator 根据问题选择工作 Agent",
+        "network": "internal only; no direct Agent function call",
+        "owner": "coordinator",
+    },
+    {
+        "step": 3,
+        "name": "dispatch_to_worker_agents",
+        "required_flow": "Coordinator -> 工作 Agent",
+        "network": "HTTP POST /execute_task with A2A JSON payload",
+        "owner": "coordinator sends; worker agents implement receivers",
+    },
+    {
+        "step": 4,
+        "name": "worker_agent_calls_mcp",
+        "required_flow": "工作 Agent -> MCP Server -> 工作 Agent",
+        "network": "HTTP POST JSON-RPC 2.0",
+        "owner": "worker agent and MCP teammates",
+    },
+    {
+        "step": 5,
+        "name": "worker_agent_callback",
+        "required_flow": "工作 Agent -> Coordinator",
+        "network": "HTTP POST /task_result with A2A result JSON",
+        "owner": "worker agents send; coordinator receives",
+    },
+    {
+        "step": 6,
+        "name": "aggregate_final_plan",
+        "required_flow": "Coordinator 汇总输出最终旅行方案",
+        "network": "HTTP response to /submit_task",
+        "owner": "coordinator",
+    },
+]
 
 
 @dataclass
@@ -58,9 +107,11 @@ class TaskRecord:
     targets: list[str]
     created_at: str
     timeout_seconds: float
+    plan: dict[str, Any] = field(default_factory=dict)
     status: str = TASK_PENDING
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
     dispatch_errors: dict[str, str] = field(default_factory=dict)
+    final_answer: str | None = None
     updated_at: str = field(default_factory=utc_now_iso)
 
     def expected_count(self) -> int:
@@ -107,9 +158,11 @@ class TaskRecord:
             "targets": self.targets,
             "expected_count": self.expected_count(),
             "success_count": self.success_count(),
+            "plan": self.plan,
             "results": self.results,
             "dispatch_errors": self.dispatch_errors,
             "pending_targets": self.pending_targets(),
+            "final_answer": self.final_answer,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -130,13 +183,20 @@ class CoordinatorState:
     def reply_to(self) -> str:
         return f"{self.base_url}/task_result"
 
-    def create_task(self, question: str, targets: list[str], timeout_seconds: float) -> TaskRecord:
+    def create_task(
+        self,
+        question: str,
+        targets: list[str],
+        timeout_seconds: float,
+        plan: dict[str, Any] | None = None,
+    ) -> TaskRecord:
         record = TaskRecord(
             task_id=new_task_id(),
             question=question,
             targets=targets,
             created_at=utc_now_iso(),
             timeout_seconds=timeout_seconds,
+            plan=plan or {},
         )
         with self._condition:
             self._tasks[record.task_id] = record
@@ -190,6 +250,14 @@ class CoordinatorState:
             record.finalize_after_wait()
             return record.snapshot()
 
+    def set_final_answer(self, task_id: str, final_answer: str) -> dict[str, Any]:
+        with self._condition:
+            record = self._tasks[task_id]
+            record.final_answer = final_answer
+            record.updated_at = utc_now_iso()
+            self._condition.notify_all()
+            return record.snapshot()
+
 
 class CoordinatorHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -209,7 +277,8 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             reply_to=self.state.reply_to,
             created_at=record.created_at,
             context={
-                "selected_by": "rule",
+                "selected_by": record.plan.get("selected_by", "rule"),
+                "coordinator_plan": record.plan,
                 "agent_capabilities": agent.get("capabilities", []),
             },
         )
@@ -281,6 +350,20 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                         "status": "ok",
                         "base_url": self.server.state.base_url,
                         "agents": _enabled_agents_view(),
+                        "mcp_servers": _mcp_servers_view(),
+                        "llm": llm.info(),
+                        "contracts_url": f"{self.server.state.base_url}/contracts",
+                    }
+                ),
+            )
+            return
+        if parsed.path == "/contracts":
+            self._send_json(
+                HTTPStatus.OK,
+                success_response(
+                    {
+                        "flow": COORDINATOR_DISPATCH_FLOW,
+                        "interfaces": build_collaboration_contracts(self.server.state),
                     }
                 ),
             )
@@ -316,7 +399,8 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             return
 
         targets = select_targets(question)
-        record = self.server.state.create_task(question, targets, timeout_seconds)
+        plan = build_coordinator_plan(question, targets)
+        record = self.server.state.create_task(question, targets, timeout_seconds, plan)
         log_network_event(
             event="submit_task",
             direction="inbound",
@@ -338,6 +422,8 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             thread.start()
 
         snapshot = self.server.state.wait_for_task(record.task_id, timeout_seconds)
+        final_answer = build_final_answer(question, snapshot)
+        snapshot = self.server.state.set_final_answer(record.task_id, final_answer)
         log_network_event(
             event="task_finished",
             direction="internal",
@@ -436,10 +522,126 @@ def select_targets(question: str) -> list[str]:
     return selected or enabled_agents
 
 
+def build_coordinator_plan(question: str, targets: list[str]) -> dict[str, Any]:
+    prompt = _coordinator_plan_prompt(question, targets)
+    try:
+        llm_response = llm.chat(prompt)
+        llm_error = None
+    except LLMClientError as exc:
+        llm_response = ""
+        llm_error = str(exc)
+
+    plan: dict[str, Any] = {
+        "selected_by": "rule_fallback" if llm_error else "llm_assisted_rules",
+        "selected_targets": targets,
+        "available_agents": _enabled_agents_view(),
+        "dispatch_flow": COORDINATOR_DISPATCH_FLOW,
+        "routing_policy": "keyword rules in v1; replace with parsed LLM plan later",
+        "llm": llm.info(),
+        "llm_response": llm_response,
+    }
+    if llm_error:
+        plan["llm_error"] = llm_error
+    return plan
+
+
+def build_collaboration_contracts(state: CoordinatorState) -> dict[str, Any]:
+    return {
+        "user_to_coordinator": {
+            "owner": "coordinator teammate",
+            "method": "POST",
+            "path": "/submit_task",
+            "url": f"{state.base_url}/submit_task",
+            "request_example": {
+                "question": "帮我规划北京明天的天气和交通出行方案",
+                "timeout": DEFAULT_TASK_TIMEOUT_SECONDS,
+            },
+            "response_shape": {
+                "ok": True,
+                "task": {
+                    "task_id": "<generated>",
+                    "status": "completed|partial|failed|waiting",
+                    "targets": ["weather_agent", "traffic_agent"],
+                    "results": {},
+                    "dispatch_errors": {},
+                    "final_answer": "<coordinator generated travel plan>",
+                },
+            },
+        },
+        "coordinator_to_worker_agent": {
+            "owner": "weather/traffic agent teammates",
+            "method": "POST",
+            "required_handler": "/execute_task",
+            "shared_validator": "common.schemas.validate_task_payload",
+            "urls": {name: view["url"] for name, view in _enabled_agents_view().items()},
+            "payload_example": {
+                "source": COORDINATOR_NAME,
+                "target": "weather_agent",
+                "task_id": "<same task_id>",
+                "instruction": "查一下北京明天天气",
+                "context": {
+                    "selected_by": "llm_assisted_rules",
+                    "agent_capabilities": ["weather"],
+                },
+                "reply_to": state.reply_to,
+                "created_at": "<utc iso time>",
+            },
+            "required_response": "HTTP 2xx ack is enough; agent may also return an immediate A2A result payload.",
+        },
+        "worker_agent_to_mcp_server": {
+            "owner": "worker agent and MCP teammates",
+            "protocol": "HTTP JSON-RPC 2.0",
+            "servers": _mcp_servers_view(),
+            "request_example": {
+                "jsonrpc": "2.0",
+                "method": "get_weather",
+                "params": {"city": "北京"},
+                "id": "<task_id or request id>",
+            },
+            "response_example": {
+                "jsonrpc": "2.0",
+                "result": {"temp": "15°C", "condition": "晴"},
+                "id": "<same id>",
+            },
+        },
+        "worker_agent_to_coordinator": {
+            "owner": "weather/traffic agent teammates",
+            "method": "POST",
+            "path": "/task_result",
+            "url": state.reply_to,
+            "shared_builder": "common.schemas.build_result_payload",
+            "payload_example": {
+                "source": "weather_agent",
+                "target": COORDINATOR_NAME,
+                "task_id": "<same task_id>",
+                "status": "success",
+                "result": "北京明天晴，适合出行。",
+                "error": None,
+                "metadata": {
+                    "mcp_server": "weather_mcp_server",
+                    "jsonrpc_method": "get_weather",
+                },
+            },
+        },
+    }
+
+
+def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
+    prompt = _coordinator_summary_prompt(question, snapshot)
+    try:
+        llm_response = llm.chat(prompt)
+    except LLMClientError as exc:
+        llm_response = f"LLM_ERROR: {exc}"
+
+    if llm_response and not llm_response.startswith("LLM_ERROR:"):
+        return llm_response.strip()
+    return _fallback_final_answer(question, snapshot, llm_response)
+
+
 def run(host: str = COORDINATOR_HOST, port: int = COORDINATOR_PORT) -> None:
     server = CoordinatorHTTPServer((host, port), CoordinatorRequestHandler)
     print(f"Coordinator listening on http://{host}:{port}", flush=True)
-    print("Endpoints: POST /submit_task, POST /task_result, GET /health, GET /tasks", flush=True)
+    print("Endpoints: POST /submit_task, POST /task_result, GET /health, GET /tasks, GET /contracts", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -471,6 +673,17 @@ def _enabled_agents_view() -> dict[str, Any]:
     }
 
 
+def _mcp_servers_view() -> dict[str, Any]:
+    return {
+        name: {
+            "name": server["name"],
+            "url": f"http://{server['host']}:{server['port']}{server.get('path', '/')}",
+            "jsonrpc_method": server["method"],
+        }
+        for name, server in MCP_SERVERS.items()
+    }
+
+
 def _contains_any(text: str, keywords: list[str]) -> bool:
     return any(keyword.lower() in text for keyword in keywords)
 
@@ -489,6 +702,64 @@ def _normalize_timeout(value: Any) -> float:
 
 def _looks_like_result_payload(value: Any) -> bool:
     return isinstance(value, dict) and {"source", "target", "task_id", "status"}.issubset(value)
+
+
+def _coordinator_plan_prompt(question: str, targets: list[str]) -> str:
+    return "\n".join(
+        [
+            "A2A_COORDINATOR_PLAN",
+            "你是分布式多智能体系统的主控 Agent。",
+            "根据用户问题选择需要唤醒的工作 Agent，并给出简短理由。",
+            f"用户问题: {question}",
+            f"规则初选 Agent: {targets}",
+            f"可用 Agent: {json.dumps(_enabled_agents_view(), ensure_ascii=False)}",
+            "输出应包含 selected_targets 和 reason。",
+        ]
+    )
+
+
+def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
+    summary_payload = {
+        "question": question,
+        "status": snapshot.get("status"),
+        "results": snapshot.get("results", {}),
+        "dispatch_errors": snapshot.get("dispatch_errors", {}),
+    }
+    return "\n".join(
+        [
+            "A2A_COORDINATOR_SUMMARY",
+            "你是分布式多智能体系统的主控 Agent。",
+            "请根据各工作 Agent 的返回结果，生成面向用户的简短最终答复。",
+            json.dumps(summary_payload, ensure_ascii=False, default=str),
+        ]
+    )
+
+
+def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response: str) -> str:
+    results = snapshot.get("results", {})
+    dispatch_errors = snapshot.get("dispatch_errors", {})
+    if not results:
+        return (
+            "最终旅行方案暂不可生成：未获得可用 Agent 结果。"
+            "请确认对应工作 Agent 和 MCP Server 已启动，并查看 dispatch_errors。"
+        )
+
+    lines = [f"最终旅行方案：用户问题为「{question}」。"]
+    for source, payload in results.items():
+        result = payload.get("result")
+        status = payload.get("status")
+        if status == RESULT_SUCCESS:
+            lines.append(f"- {source}: {result}")
+        else:
+            lines.append(f"- {source}: 执行失败，错误为 {payload.get('error')}")
+
+    if dispatch_errors:
+        for source, error in dispatch_errors.items():
+            lines.append(f"- {source}: 分发失败，错误为 {error}")
+
+    if llm_response:
+        lines.append(f"- llm: {llm_response}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

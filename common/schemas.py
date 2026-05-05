@@ -61,6 +61,12 @@ def build_task_payload(
     }
 
 
+def validate_task_payload(payload: dict[str, Any]) -> None:
+    require_fields(payload, ["source", "target", "task_id", "instruction", "reply_to"])
+    if "context" in payload and not isinstance(payload["context"], dict):
+        raise PayloadValidationError("context must be a JSON object")
+
+
 def build_result_payload(
     *,
     source: str,
