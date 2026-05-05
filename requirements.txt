@@ -1,0 +1,4 @@
+# Dependencies are managed by uv in pyproject.toml.
+# Keep this file only for tools that still expect requirements.txt.
+openai>=1.0.0
+python-dotenv>=1.0.0

@@ -77,3 +77,76 @@ project/
 │   └── benchmark_result.csv
 └── docs/
 ```
+
+## 环境管理
+
+本仓库使用 `uv` 管理 Python 环境和依赖，依赖声明在 `pyproject.toml` 中。所有 Python 脚本都通过 `uv run python ...` 执行。
+
+```bash
+uv sync
+uv run python coordinator.py
+```
+
+## Workflow
+```bash
+# 1. 更新 main
+git checkout main
+git pull
+
+# 2. 回到自己的分支
+git checkout feature/your-name
+
+# 3. 把 main 的更新同步到自己的分支
+git pull origin main
+
+# 4. 开始工作
+# ... 修改代码 ...
+
+# 5. 提交并推送自己的分支
+git status
+git add .
+git commit -m "type: brief description"
+git push
+```
+
+## Pull Request
+
+个人分支完成阶段性工作后，在 GitHub 上创建 Pull Request，将自己的分支合并到 `main`。
+
+建议在一个功能基本完成、代码可以运行后再合并。
+
+## Commit Message
+
+提交信息建议使用：
+
+```text
+type: brief description
+```
+
+常见类型：
+
+```text
+feat: 新增功能
+fix: 修复问题
+docs: 修改文档
+chore: 工程配置或杂项修改
+refactor: 代码重构
+test: 测试相关修改
+```
+
+示例：
+
+```bash
+git commit -m "feat: add MFCC feature extraction"
+git commit -m "fix: handle audio loading error"
+git commit -m "docs: update README"
+git commit -m "chore: update requirements"
+```
+
+## Files Not Tracked by Git
+
+相关规则已写入 `.gitignore`。如果后续产生新的临时文件或大型中间结果文件，需要及时补充 `.gitignore`。
+
+## Notes
+
+- *README内容由GPT辅助生成*
