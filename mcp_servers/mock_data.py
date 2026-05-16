@@ -2,16 +2,38 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 
+DEFAULT_CITY = "北京"
+DEFAULT_DATE = "明天"
+
 WEATHER_DATA = {
-    "北京": {"city": "北京", "date": "明天", "temp": "15-24°C", "condition": "晴", "wind": "东北风 2 级"},
-    "上海": {"city": "上海", "date": "明天", "temp": "18-25°C", "condition": "多云", "wind": "东南风 3 级"},
-    "广州": {"city": "广州", "date": "明天", "temp": "22-29°C", "condition": "小雨", "wind": "南风 2 级"},
+    "北京": {
+        "city": "北京",
+        "date": "明天",
+        "temp": "15°C",
+        "condition": "晴",
+        "wind": "微风",
+    },
+    "上海": {
+        "city": "上海",
+        "date": "明天",
+        "temp": "18°C",
+        "condition": "多云",
+        "wind": "东南风 3 级",
+    },
+    "广州": {
+        "city": "广州",
+        "date": "明天",
+        "temp": "24°C",
+        "condition": "小雨",
+        "wind": "南风 2 级",
+    },
 }
 
-TRAFFIC_DATA = {
+TRANSPORT_DATA = {
     "北京": {
         "city": "北京",
         "route": "地铁 4 号线 -> 2 号线",
@@ -33,9 +55,27 @@ TRAFFIC_DATA = {
 }
 
 
-def get_weather(city: str) -> dict[str, Any]:
-    return WEATHER_DATA.get(city, WEATHER_DATA["北京"])
+def get_weather(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:
+    data = _lookup(WEATHER_DATA, city)
+    data["date"] = date or data.get("date", DEFAULT_DATE)
+    return data
 
 
-def get_traffic(city: str) -> dict[str, Any]:
-    return TRAFFIC_DATA.get(city, TRAFFIC_DATA["北京"])
+def get_transport(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:
+    data = _lookup(TRANSPORT_DATA, city)
+    data["date"] = date or DEFAULT_DATE
+    return data
+
+
+def get_traffic(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **kwargs: Any) -> dict[str, Any]:
+    """Backward-compatible alias for older local config/tests."""
+    return get_transport(city=city, date=date, **kwargs)
+
+
+def _lookup(dataset: dict[str, dict[str, Any]], city: str) -> dict[str, Any]:
+    normalized_city = (city or DEFAULT_CITY).strip()
+    data = dataset.get(normalized_city) or dataset[DEFAULT_CITY]
+    result = deepcopy(data)
+    result["requested_city"] = normalized_city
+    result["fallback_used"] = normalized_city not in dataset
+    return result

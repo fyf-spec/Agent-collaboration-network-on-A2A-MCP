@@ -31,7 +31,7 @@ MCP_SERVERS = {
         "host": "127.0.0.1",
         "port": 8002,
         "path": "/",
-        "method": "get_traffic",
+        "method": "get_transport",
     },
 }
 
