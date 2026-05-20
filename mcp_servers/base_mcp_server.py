@@ -11,6 +11,9 @@ import time
 from typing import Any
 
 from common.logger import log_network_event
+import logging
+
+logger = logging.getLogger("base_mcp_server")
 
 
 JsonTool = Callable[..., dict[str, Any]]
@@ -33,10 +36,12 @@ class MCPHTTPServer(ThreadingHTTPServer):
         *,
         server_name: str,
         tools: dict[str, MCPTool],
+        delay: float = 0.0,
     ) -> None:
         super().__init__(server_address, handler_class)
         self.server_name = server_name
         self.tools = tools
+        self.delay = delay
 
 
 class MCPRequestHandler(BaseHTTPRequestHandler):
@@ -131,6 +136,9 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             return _json_rpc_error(request_id, -32603, f"Internal error: {exc}")
 
+        if self.server.delay > 0:
+            time.sleep(self.server.delay)
+
         return {"jsonrpc": "2.0", "result": result, "id": request_id}
 
     def _read_json(self) -> dict[str, Any]:
@@ -147,26 +155,31 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self.send_response(int(status))
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(int(status))
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            pass
 
 
-def run_mcp_server(*, name: str, host: str, port: int, tools: dict[str, MCPTool]) -> None:
+
+def run_mcp_server(*, name: str, host: str, port: int, tools: dict[str, MCPTool], delay: float = 0.0) -> None:
     server = MCPHTTPServer(
         (host, port),
         MCPRequestHandler,
         server_name=name,
         tools=tools,
+        delay=delay,
     )
-    print(f"{name} listening on http://{host}:{port}", flush=True)
-    print("Endpoints: POST /, GET /health, GET /methods", flush=True)
+    logger.info(f"{name} listening on http://{host}:{port}")
+    logger.info("Endpoints: POST /, GET /health, GET /methods")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print(f"\n{name} shutting down.", flush=True)
+        logger.critical(f"\n{name} shutting down.")
     finally:
         server.server_close()
 

@@ -22,9 +22,13 @@ import threading
 import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib import request, error
+import logging
 
 from common.config import (
     AGENTS,
+    REGISTRY_HOST,
+    REGISTRY_PORT,
     COORDINATOR_HOST,
     COORDINATOR_NAME,
     COORDINATOR_PORT,
@@ -36,6 +40,10 @@ from common.config import (
 )
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+
+
+logger = logging.getLogger("coordinator")
+
 from common.schemas import (
     PayloadValidationError,
     RESULT_SUCCESS,
@@ -267,8 +275,12 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
         self.state = CoordinatorState(host=server_address[0], port=server_address[1])
 
     def dispatch_to_agent(self, record: TaskRecord, target: str) -> None:
-        agent = AGENTS[target]
-        url = _agent_execute_url(agent)
+        agent_config = _fetch_discovered_agents().get(target)
+        if not agent_config:
+            self.state.mark_dispatch_error(record.task_id, target, f"target agent not found: {target}")
+            return
+            
+        url = _agent_execute_url(agent_config)
         payload = build_task_payload(
             source=COORDINATOR_NAME,
             target=target,
@@ -279,7 +291,7 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             context={
                 "selected_by": record.plan.get("selected_by", "rule"),
                 "coordinator_plan": record.plan,
-                "agent_capabilities": agent.get("capabilities", []),
+                "agent_capabilities": agent_config.get("capabilities", []),
             },
         )
         log_network_event(
@@ -291,6 +303,7 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             url=url,
             task_id=record.task_id,
             payload=payload,
+            payload_size=len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")),
         )
         try:
             response = post_json(url, payload, timeout=DISPATCH_HTTP_TIMEOUT_SECONDS)
@@ -305,8 +318,9 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
                 method="POST",
                 url=exc.url,
                 task_id=record.task_id,
-                elapsed_ms=exc.elapsed_ms,
+                latency_ms=exc.elapsed_ms,
                 error=message,
+                error_type=_infer_error_type(exc),
             )
             return
 
@@ -319,7 +333,8 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             url=url,
             task_id=record.task_id,
             status_code=response.status_code,
-            elapsed_ms=response.elapsed_ms,
+            latency_ms=response.elapsed_ms,
+            payload_size=len(response.raw_body.encode("utf-8")),
             payload=response.data,
         )
         if not response.ok:
@@ -376,7 +391,11 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/submit_task":
-            self._handle_submit_task()
+            try:
+                self._handle_submit_task()
+            except Exception as e:
+                logger.exception("Crash in _handle_submit_task")
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error_response("internal_error", str(e)))
             return
         if parsed.path == "/task_result":
             self._handle_task_result()
@@ -388,7 +407,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_submit_task(self) -> None:
         try:
-            payload = self._read_json()
+            payload, payload_size = self._read_json_with_size()
             question = str(payload.get("question", "")).strip()
             if not question:
                 self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_request", "question is required"))
@@ -410,6 +429,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             url="/submit_task",
             task_id=record.task_id,
             payload=payload,
+            payload_size=payload_size,
         )
 
         for target in targets:
@@ -437,7 +457,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_task_result(self) -> None:
         try:
-            payload = self._read_json()
+            payload, payload_size = self._read_json_with_size()
             log_network_event(
                 event="task_result",
                 direction="inbound",
@@ -447,6 +467,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                 url="/task_result",
                 task_id=str(payload.get("task_id", "")) or None,
                 payload=payload,
+                payload_size=payload_size,
             )
             record = self.server.state.add_result(payload)
         except ValueError as exc:
@@ -488,7 +509,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, success_response({"tasks": self.server.state.list_tasks()}))
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_json_with_size(self) -> tuple[dict[str, Any], int]:
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
         try:
@@ -497,7 +518,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             raise ValueError(f"request body must be valid JSON: {exc.msg}") from exc
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
-        return payload
+        return payload, length
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -508,15 +529,39 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+def _fetch_discovered_agents() -> dict[str, Any]:
+    try:
+        url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover"
+        req = request.Request(url, method="GET")
+        with request.urlopen(req, timeout=3.0) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                return data.get("agents", {})
+    except Exception as e:
+        logger.error(f"Coordinator failed to discover agents from registry: {e}, fall back to config")
+    # Fallback to local config if registry is unreachable
+    return AGENTS
+
+
+def _infer_error_type(exc: Exception) -> str:
+    cause = exc.__cause__
+    if cause is None:
+        return type(exc).__name__
+    reason = getattr(cause, "reason", None)
+    if reason is not None:
+        return type(reason).__name__
+    return type(cause).__name__
+
 def select_targets(question: str) -> list[str]:
+    discovered_agents = _fetch_discovered_agents()
     lowered = question.lower()
-    enabled_agents = [name for name, agent in AGENTS.items() if agent.get("enabled", True)]
+    enabled_agents = [name for name, agent in discovered_agents.items() if agent.get("enabled", True)]
     if _contains_any(lowered, TRAVEL_KEYWORDS):
         return enabled_agents
 
     selected: list[str] = []
     for name in enabled_agents:
-        keywords = AGENTS[name].get("keywords", [])
+        keywords = discovered_agents[name].get("keywords", [])
         if _contains_any(lowered, keywords):
             selected.append(name)
     return selected or enabled_agents
@@ -640,12 +685,12 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
 
 def run(host: str = COORDINATOR_HOST, port: int = COORDINATOR_PORT) -> None:
     server = CoordinatorHTTPServer((host, port), CoordinatorRequestHandler)
-    print(f"Coordinator listening on http://{host}:{port}", flush=True)
-    print("Endpoints: POST /submit_task, POST /task_result, GET /health, GET /tasks, GET /contracts", flush=True)
+    logger.info(f"Coordinator listening on http://{host}:{port}")
+    logger.info("Endpoints: POST /submit_task, POST /task_result, GET /health, GET /tasks, GET /contracts")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nCoordinator shutting down.", flush=True)
+        logger.critical("Coordinator shutting down.")
     finally:
         server.server_close()
 
@@ -663,13 +708,14 @@ def _agent_execute_url(agent: dict[str, Any]) -> str:
 
 
 def _enabled_agents_view() -> dict[str, Any]:
+    discovered_agents = _fetch_discovered_agents()
     return {
         name: {
             "url": _agent_execute_url(agent),
             "capabilities": agent.get("capabilities", []),
             "enabled": agent.get("enabled", True),
         }
-        for name, agent in AGENTS.items()
+        for name, agent in discovered_agents.items()
     }
 
 

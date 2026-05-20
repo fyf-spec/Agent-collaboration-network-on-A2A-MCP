@@ -48,20 +48,23 @@ class LLMClient:
             raise LLMClientError("MODELSCOPE_API_KEY is required")
 
         client = OpenAI(base_url=self.base_url, api_key=self.api_key)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            stream=True,
-            timeout=self.timeout_seconds,
-        )
-        for chunk in response:
-            choices = getattr(chunk, "choices", None) or []
-            if not choices:
-                continue
-            delta = getattr(choices[0], "delta", None)
-            content = _read_delta_content(delta)
-            if content:
-                yield content
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                timeout=self.timeout_seconds,
+            )
+            for chunk in response:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = _read_delta_content(delta)
+                if content:
+                    yield content
+        except Exception as e:
+            raise LLMClientError(f"OpenAI API error: {str(e)}") from e
 
     def info(self) -> dict[str, str]:
         return {
