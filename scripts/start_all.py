@@ -6,11 +6,20 @@ import signal
 import subprocess
 import sys
 import time
-
+import logging
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+    
+import common.logger
+logger = logging.getLogger("start_all")
+
+import contextlib
+from typing import Iterator
 
 SERVICES = [
+    ("registry_center", "registry_center.py"),
     ("weather_mcp_server", "mcp_servers/weather_mcp_server.py"),
     ("traffic_mcp_server", "mcp_servers/traffic_mcp_server.py"),
     ("weather_agent", "agents/weather_agent.py"),
@@ -18,44 +27,57 @@ SERVICES = [
     ("coordinator", "coordinator.py"),
 ]
 
-
-def main() -> None:
+@contextlib.contextmanager
+def run_services(exclude: list[str] | None = None, extra_args: dict[str, list[str]] | None = None) -> Iterator[list[tuple[str, subprocess.Popen[str]]]]:
     env = os.environ.copy()
     env.setdefault("PYTHONUTF8", "1")
     processes: list[tuple[str, subprocess.Popen[str]]] = []
+    
+    exclude_set = set(exclude or [])
+    extra_args_dict = extra_args or {}
 
     try:
         for name, relative_script in SERVICES:
+            if name in exclude_set:
+                continue
             script_path = PROJECT_ROOT / relative_script
+            cmd = [sys.executable, str(script_path)]
+            if name in extra_args_dict:
+                cmd.extend(extra_args_dict[name])
+                
             process = subprocess.Popen(
-                [sys.executable, str(script_path)],
+                cmd,
                 cwd=PROJECT_ROOT,
                 env=env,
-                text=True,
             )
             processes.append((name, process))
-            print(f"started {name} pid={process.pid}", flush=True)
+            logger.info(f"started {name} pid={process.pid}")
             time.sleep(0.3)
 
-        print("All local services started. Press Ctrl+C to stop.", flush=True)
-        while True:
-            failed = [(name, process.returncode) for name, process in processes if process.poll() is not None]
-            if failed:
-                for name, returncode in failed:
-                    print(f"{name} exited with code {returncode}", flush=True)
-                break
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        print("\nStopping local services...", flush=True)
+        logger.info("Local services started.")
+        yield processes
     finally:
         stop_processes(processes)
+
+def main() -> None:
+    try:
+        with run_services() as processes:
+            logger.info("Press Ctrl+C to stop.")
+            while True:
+                for name, process in processes:
+                    if process.poll() is not None and getattr(process, '_already_reported', False) is False:
+                        logger.error(f"{name} exited with code {process.returncode}")
+                        process._already_reported = True
+                time.sleep(1.0)
+    except KeyboardInterrupt:
+        logger.critical("Stopping local services...")
 
 
 def stop_processes(processes: list[tuple[str, subprocess.Popen[str]]]) -> None:
     for name, process in reversed(processes):
         if process.poll() is not None:
             continue
-        print(f"stopping {name} pid={process.pid}", flush=True)
+        logger.critical(f"stopping {name} pid={process.pid}")
         if os.name == "nt":
             process.terminate()
         else:
@@ -69,7 +91,7 @@ def stop_processes(processes: list[tuple[str, subprocess.Popen[str]]]) -> None:
         try:
             process.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            print(f"killing {name} pid={process.pid}", flush=True)
+            logger.critical(f"killing {name} pid={process.pid}")
             process.kill()
 
 

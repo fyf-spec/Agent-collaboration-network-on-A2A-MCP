@@ -3,40 +3,37 @@
 本仓库为 v1 版本，主要演示 Coordinator、Agent 与 MCP Server 的本地 A2A 协作流程。  
 v1 不包含 TCP 通信和多设备传输能力；这些能力属于扩展。
 
-## Commit & PR
-
-- `main` 分支保持稳定，不直接提交未确认代码。每个人从 `main` 拉出自己的分支开发
-- 开发完成后 push 到自己的远程分支，再通过 Pull Request 合并到 `main`。
 
 ## v1 目录
 
 ```text
 Project/
-├── coordinator.py
-├── registry_center.py
-├── llm_client.py
-├── agents/
-│ ├── base_agent.py
-│ ├── weather_agent.py
-│ └── traffic_agent.py
-├── mcp_servers/
-│ ├── weather_mcp_server.py
-│ ├── traffic_mcp_server.py
-│ └── mock_data.py
-├── common/
-│ ├── config.py
-│ ├── http_client.py
-│ ├── logger.py
-│ ├── schemas.py
-│ └── prompt_templates.py
-├── scripts/
-│ ├── start_all.py
-│ ├── demo_normal.py
-│ └── demo_fault.py
-├── logs/
-│ └── demo_log.jsonl
-├── docs/
-│ 
+  ├── coordinator.py
+  ├── registry_center.py
+  ├── llm_client.py
+  ├── agents/
+  │     ├── base_agent.py
+  │     ├── weather_agent.py
+  │     └── traffic_agent.py
+  ├── mcp_servers/
+  │     ├── base_mcp_server.py
+  │     ├── weather_mcp_server.py
+  │     ├── traffic_mcp_server.py
+  │     └── mock_data.py
+  ├── common/
+  │     ├── config.py
+  │     ├── http_client.py
+  │     ├── logger.py
+  │     ├── schemas.py
+  │     └── prompt_templates.py
+  ├── scripts/
+  │     ├── start_all.py
+  │     ├── demo_normal.py
+  │     ├── demo_delay.py
+  │     └── demo_fault.py
+  ├── logs/
+  │     └── demo_log.jsonl
+  └── docs/
 ```
 
 ## 后续版本目录参考：TCP + 多设备传输
@@ -86,6 +83,42 @@ project/
 uv sync
 uv run python coordinator.py
 ```
+
+## 快速启动
+服务启动逻辑封装成了``run_services``上下文管理器。启动本地全部服务：
+
+```bash
+uv run python scripts/start_all.py
+```
+按Ctrl+C终止。
+
+## Demo 说明
+
+提供3个演示脚本，分别对应正常流程、延迟场景和故障场景。启动它们时会自动调用``run_services``，无需在另一个终端运行``start_all.py``.
+
+### 正常流程
+```bash
+uv run python scripts/demo_normal.py
+```
+- 验证标准链路是否可用（Coordinator分发给天气/交通 Agent，并汇总结果返回）。
+
+### 延迟场景
+
+```bash
+uv run python scripts/demo_delay.py
+```
+
+- 在启动时，通过对Weather Mcp Sever传入``--delay 6.0``设置6s的延迟，而默认Weather Agent只有3s的请求延迟，因此会触发超时。
+- 超时后，Weather Agent切断连接并向 Coordinator 返回错误状态，Coordinator将整个任务状态标记为 partial，并向用户输出了“降级版”的旅行计划（包含正常的交通情况和报错的天气情况）。
+
+### 故障场景
+```bash
+uv run python scripts/demo_fault.py
+```
+
+- 在启动时，通过``exclude=["weather_mcp_server"]`` ，启动时直接跳过这个服务的拉起，模拟了Weather Agent的服务宕机。
+- Coordinator等到了Traffic Agent的正常返回以及Weather Agent的报错返回后，将整个任务状态标记为 partial，并向用户输出了“降级版”的旅行计划。
+
 
 ## Workflow
 ```bash
@@ -150,3 +183,5 @@ git commit -m "chore: update requirements"
 ## Notes
 
 - *README内容由GPT辅助生成*
+
+

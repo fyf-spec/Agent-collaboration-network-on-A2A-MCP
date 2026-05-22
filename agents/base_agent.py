@@ -7,14 +7,20 @@ import re
 import threading
 import time
 from typing import Any
+from urllib import request, error
 
 from common.config import (
+    AGENTS,
+    REGISTRY_HOST,
+    REGISTRY_PORT,
     COORDINATOR_NAME,
     DISPATCH_HTTP_TIMEOUT_SECONDS,
     MCP_HTTP_TIMEOUT_SECONDS,
     MCP_SERVERS,
 )
 from common.http_client import HttpJsonClientError, post_json
+import common.logger
+import logging
 from common.logger import log_network_event
 from common.schemas import (
     PayloadValidationError,
@@ -26,7 +32,7 @@ from common.schemas import (
     validate_task_payload,
 )
 from llm_client import LLMClientError, llm
-
+logger = logging.getLogger("base_agent")
 
 KNOWN_CITIES = [
     "北京",
@@ -95,7 +101,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_execute_task(self) -> None:
         try:
-            payload = self._read_json()
+            payload, payload_size = self._read_json_with_size()
             validate_task_payload(payload)
 
             target = str(payload["target"])
@@ -128,6 +134,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             url="/execute_task",
             task_id=task_id,
             payload=payload,
+            payload_size=payload_size,
         )
 
         worker = threading.Thread(
@@ -149,7 +156,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             ),
         )
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_json_with_size(self) -> tuple[dict[str, Any], int]:
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
 
@@ -161,7 +168,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
 
-        return payload
+        return payload, length
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -184,16 +191,37 @@ class BaseAgent:
 
     def run(self) -> None:
         server = AgentHTTPServer((self.host, self.port), AgentRequestHandler, self)
-        print(
-            f"{self.agent_name} listening on http://{self.host}:{self.port}",
-            flush=True,
+        logger.info(
+            f"{self.agent_name} listening on http://{self.host}:{self.port}"
         )
-        print("Endpoints: POST /execute_task, GET /health", flush=True)
+        logger.info("Endpoints: POST /execute_task, GET /health")
+
+        try:
+            registry_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
+            payload = AGENTS.get(self.agent_name, {}).copy()
+            payload["agent_name"] = self.agent_name
+            payload["host"] = self.host
+            payload["port"] = self.port
+            payload["execute_path"] = "/execute_task"
+            
+            req = request.Request(
+                registry_url,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=3.0) as response:
+                if response.status == 200:
+                    logger.info(f"{self.agent_name} successfully registered to {registry_url}")
+                else:
+                    logger.warning(f"{self.agent_name} registry warning: {response.status}")
+        except Exception as e:
+            logger.error(f"{self.agent_name} failed to register: {e}")
 
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            print(f"\n{self.agent_name} shutting down.", flush=True)
+            logger.info(f"\n{self.agent_name} shutting down.")
         finally:
             server.server_close()
 
@@ -272,6 +300,7 @@ class BaseAgent:
             url=url,
             task_id=task_id,
             payload=rpc_payload,
+            payload_size=len(json.dumps(rpc_payload, ensure_ascii=False, default=str).encode("utf-8")),
         )
 
         try:
@@ -285,8 +314,9 @@ class BaseAgent:
                 method="POST",
                 url=exc.url,
                 task_id=task_id,
-                elapsed_ms=exc.elapsed_ms,
+                latency_ms=exc.elapsed_ms,
                 error=str(exc),
+                error_type=_infer_error_type(exc),
             )
             raise RuntimeError(f"MCP request failed: {exc}") from exc
 
@@ -299,7 +329,8 @@ class BaseAgent:
             url=url,
             task_id=task_id,
             status_code=response.status_code,
-            elapsed_ms=response.elapsed_ms,
+            latency_ms=response.elapsed_ms,
+            payload_size=len(response.raw_body.encode("utf-8")),
             payload=response.data,
         )
 
@@ -338,6 +369,7 @@ class BaseAgent:
             url=reply_to,
             task_id=task_id,
             payload=result_payload,
+            payload_size=len(json.dumps(result_payload, ensure_ascii=False, default=str).encode("utf-8")),
         )
 
         try:
@@ -355,8 +387,9 @@ class BaseAgent:
                 method="POST",
                 url=exc.url,
                 task_id=task_id,
-                elapsed_ms=exc.elapsed_ms,
+                latency_ms=exc.elapsed_ms,
                 error=str(exc),
+                error_type=_infer_error_type(exc),
             )
             return
 
@@ -369,7 +402,8 @@ class BaseAgent:
             url=reply_to,
             task_id=task_id,
             status_code=response.status_code,
-            elapsed_ms=response.elapsed_ms,
+            latency_ms=response.elapsed_ms,
+            payload_size=len(response.raw_body.encode("utf-8")),
             payload=response.data,
         )
 
@@ -408,3 +442,13 @@ def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str
         return match.group(1)
 
     return "北京"
+
+
+def _infer_error_type(exc: Exception) -> str:
+    cause = exc.__cause__
+    if cause is None:
+        return type(exc).__name__
+    reason = getattr(cause, "reason", None)
+    if reason is not None:
+        return type(reason).__name__
+    return type(cause).__name__
