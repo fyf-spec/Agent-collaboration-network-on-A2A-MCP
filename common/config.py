@@ -45,7 +45,6 @@ AGENTS = {
         "host": "127.0.0.1",
         "port": 9010,
         "protocol": "tcp",
-        "execute_path": "/execute_task",
         "enabled": True,
         "capabilities": ["weather"],
         "keywords": [
@@ -72,7 +71,6 @@ AGENTS = {
         "host": "127.0.0.1",
         "port": 9020,
         "protocol": "tcp",
-        "execute_path": "/execute_task",
         "enabled": True,
         "capabilities": ["traffic", "transport"],
         "keywords": [

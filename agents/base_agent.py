@@ -18,7 +18,6 @@ from common.config import (
     MCP_SERVERS,
 )
 from common.http_client import HttpJsonClientError, post_json
-import common.logger
 import logging
 from common.logger import log_network_event
 from common.schemas import (
@@ -191,13 +190,8 @@ class BaseAgent:
 
         try:
             registry_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
-            payload = AGENTS.get(self.agent_name, {}).copy()
-            payload["agent_name"] = self.agent_name
-            payload["host"] = self.host
-            payload["port"] = self.port
-            payload["protocol"] = "tcp"
-            payload.pop("execute_path", None)
-            
+            payload = self.registration_payload()
+             
             req = request.Request(
                 registry_url,
                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -218,6 +212,18 @@ class BaseAgent:
             logger.info(f"\n{self.agent_name} shutting down.")
         finally:
             server.server_close()
+
+    def registration_payload(self) -> dict[str, Any]:
+        config = AGENTS.get(self.agent_name, {})
+        return {
+            "agent_name": self.agent_name,
+            "host": self.host,
+            "port": self.port,
+            "protocol": "tcp",
+            "enabled": config.get("enabled", True),
+            "capabilities": config.get("capabilities", [self.capability]),
+            "keywords": config.get("keywords", []),
+        }
 
     def process_task(self, task_payload: dict[str, Any]) -> None:
         task_id = str(task_payload["task_id"])

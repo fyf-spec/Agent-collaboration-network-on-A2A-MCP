@@ -39,21 +39,14 @@ class TcpA2AConnectionClosed(TcpA2AError):
 class TcpA2AFrame:
     data: dict[str, Any]
     length: int
-    raw_body: str
 
 
 @dataclass(frozen=True)
 class TcpA2AResponse:
     url: str
     data: dict[str, Any]
-    sent_length: int
     received_length: int
-    raw_body: str
     elapsed_ms: float
-
-    @property
-    def ok(self) -> bool:
-        return self.data.get("type") != TYPE_ERROR
 
 
 def tcp_url(host: str, port: int) -> str:
@@ -162,7 +155,7 @@ def recv_frame(sock: socket.socket) -> TcpA2AFrame:
         raise TcpA2AError(f"TCP A2A body must be valid JSON: {exc.msg}") from exc
     if not isinstance(data, dict):
         raise TcpA2AError("TCP A2A body must be a JSON object")
-    return TcpA2AFrame(data=data, length=length, raw_body=raw_body)
+    return TcpA2AFrame(data=data, length=length)
 
 
 def recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -195,7 +188,7 @@ def request_frame(
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            sent_length = send_frame(sock, payload)
+            send_frame(sock, payload)
             response = recv_frame(sock)
     except OSError as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -204,8 +197,6 @@ def request_frame(
     return TcpA2AResponse(
         url=url,
         data=response.data,
-        sent_length=sent_length,
         received_length=response.length,
-        raw_body=response.raw_body,
         elapsed_ms=elapsed_ms,
     )

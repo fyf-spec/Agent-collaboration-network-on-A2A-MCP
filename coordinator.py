@@ -303,8 +303,15 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
         if not agent_config:
             self.state.mark_dispatch_error(record.task_id, target, f"target agent not found: {target}")
             return
-            
-        url = _agent_execute_url(agent_config)
+        if agent_config.get("protocol", "tcp") != "tcp":
+            self.state.mark_dispatch_error(
+                record.task_id,
+                target,
+                f"unsupported A2A protocol: {agent_config.get('protocol')}",
+            )
+            return
+
+        url = _agent_tcp_url(agent_config)
         trace_id = f"trace-{record.task_id}"
         span_id = f"span-{COORDINATOR_NAME}-dispatch-{target}"
         task_payload = build_task_payload(
@@ -541,15 +548,6 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                 logger.exception("Crash in _handle_submit_task")
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, error_response("internal_error", str(e)))
             return
-        if parsed.path == "/task_result":
-            self._send_json(
-                HTTPStatus.GONE,
-                error_response(
-                    "tcp_required",
-                    f"A2A result callbacks use TCP frames at {self.server.state.reply_to}",
-                ),
-            )
-            return
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {parsed.path}"))
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -604,45 +602,6 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         )
         http_status = HTTPStatus.OK if snapshot["status"] != TASK_FAILED else HTTPStatus.GATEWAY_TIMEOUT
         self._send_json(http_status, success_response({"task": snapshot}))
-
-    def _handle_task_result(self) -> None:
-        try:
-            payload, payload_size = self._read_json_with_size()
-            log_network_event(
-                event="task_result",
-                direction="inbound",
-                source=str(payload.get("source", "unknown")),
-                target=COORDINATOR_NAME,
-                method="POST",
-                url="/task_result",
-                task_id=str(payload.get("task_id", "")) or None,
-                payload=payload,
-                payload_size=payload_size,
-            )
-            record = self.server.state.add_result(payload)
-        except ValueError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(exc)))
-            return
-        except KeyError as exc:
-            self._send_json(
-                HTTPStatus.NOT_FOUND,
-                error_response("unknown_task", f"task_id not found: {exc.args[0]}"),
-            )
-            return
-        except PayloadValidationError as exc:
-            self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_result", str(exc)))
-            return
-
-        self._send_json(
-            HTTPStatus.OK,
-            success_response(
-                {
-                    "received": True,
-                    "task_id": record.task_id,
-                    "task_status": record.status,
-                }
-            ),
-        )
 
     def _handle_get_tasks(self, query: str) -> None:
         params = parse_qs(query)
@@ -738,87 +697,6 @@ def build_coordinator_plan(question: str, targets: list[str]) -> dict[str, Any]:
     if llm_error:
         plan["llm_error"] = llm_error
     return plan
-
-
-def _legacy_http_collaboration_contracts_unused(state: CoordinatorState) -> dict[str, Any]:
-    return {
-        "user_to_coordinator": {
-            "owner": "coordinator teammate",
-            "method": "POST",
-            "path": "/submit_task",
-            "url": f"{state.base_url}/submit_task",
-            "request_example": {
-                "question": "帮我规划北京明天的天气和交通出行方案",
-                "timeout": DEFAULT_TASK_TIMEOUT_SECONDS,
-            },
-            "response_shape": {
-                "ok": True,
-                "task": {
-                    "task_id": "<generated>",
-                    "status": "completed|partial|failed|waiting",
-                    "targets": ["weather_agent", "traffic_agent"],
-                    "results": {},
-                    "dispatch_errors": {},
-                    "final_answer": "<coordinator generated travel plan>",
-                },
-            },
-        },
-        "coordinator_to_worker_agent": {
-            "owner": "weather/traffic agent teammates",
-            "method": "POST",
-            "required_handler": "/execute_task",
-            "shared_validator": "common.schemas.validate_task_payload",
-            "urls": {name: view["url"] for name, view in _enabled_agents_view().items()},
-            "payload_example": {
-                "source": COORDINATOR_NAME,
-                "target": "weather_agent",
-                "task_id": "<same task_id>",
-                "instruction": "查一下北京明天天气",
-                "context": {
-                    "selected_by": "llm_assisted_rules",
-                    "agent_capabilities": ["weather"],
-                },
-                "reply_to": state.reply_to,
-                "created_at": "<utc iso time>",
-            },
-            "required_response": "HTTP 2xx ack is enough; agent may also return an immediate A2A result payload.",
-        },
-        "worker_agent_to_mcp_server": {
-            "owner": "worker agent and MCP teammates",
-            "protocol": "HTTP JSON-RPC 2.0",
-            "servers": _mcp_servers_view(),
-            "request_example": {
-                "jsonrpc": "2.0",
-                "method": "get_weather",
-                "params": {"city": "北京"},
-                "id": "<task_id or request id>",
-            },
-            "response_example": {
-                "jsonrpc": "2.0",
-                "result": {"temp": "15°C", "condition": "晴"},
-                "id": "<same id>",
-            },
-        },
-        "worker_agent_to_coordinator": {
-            "owner": "weather/traffic agent teammates",
-            "method": "POST",
-            "path": "/task_result",
-            "url": state.reply_to,
-            "shared_builder": "common.schemas.build_result_payload",
-            "payload_example": {
-                "source": "weather_agent",
-                "target": COORDINATOR_NAME,
-                "task_id": "<same task_id>",
-                "status": "success",
-                "result": "北京明天晴，适合出行。",
-                "error": None,
-                "metadata": {
-                    "mcp_server": "weather_mcp_server",
-                    "jsonrpc_method": "get_weather",
-                },
-            },
-        },
-    }
 
 
 def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
@@ -953,10 +831,7 @@ def main() -> None:
     run(host=args.host, port=args.port, tcp_host=args.tcp_host, tcp_port=args.tcp_port)
 
 
-def _agent_execute_url(agent: dict[str, Any]) -> str:
-    protocol = agent.get("protocol", "tcp")
-    if protocol != "tcp":
-        return f"{protocol}://{agent['host']}:{agent['port']}{agent.get('execute_path', '')}"
+def _agent_tcp_url(agent: dict[str, Any]) -> str:
     return tcp_url(str(agent["host"]), int(agent["port"]))
 
 
@@ -964,7 +839,7 @@ def _enabled_agents_view() -> dict[str, Any]:
     discovered_agents = _fetch_discovered_agents()
     return {
         name: {
-            "url": _agent_execute_url(agent),
+            "url": _agent_tcp_url(agent),
             "capabilities": agent.get("capabilities", []),
             "enabled": agent.get("enabled", True),
             "protocol": agent.get("protocol", "tcp"),
