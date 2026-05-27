@@ -38,7 +38,8 @@ from common.schemas import (
     build_result_payload,
     validate_task_payload,
 )
-from llm_client import LLMClientError, llm
+from llm_client import LLMClientError
+from llm_client import llm_small as llm
 
 
 AGENT_NAME = "attraction_agent"

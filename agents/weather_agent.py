@@ -16,7 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.base_agent import BaseAgent
 from common.config import AGENTS, COORDINATOR_NAME, MCP_SERVERS
 from common.schemas import RESULT_ERROR, RESULT_SUCCESS, build_result_payload
-from llm_client import LLMClientError, llm
+from llm_client import LLMClientError
+from llm_client import llm_small as llm
 
 
 class WeatherAgent(BaseAgent):
