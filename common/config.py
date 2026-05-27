@@ -10,6 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 COORDINATOR_NAME = "coordinator"
 COORDINATOR_HOST = "127.0.0.1"
 COORDINATOR_PORT = 9000
+COORDINATOR_A2A_TCP_HOST = "127.0.0.1"
+COORDINATOR_A2A_TCP_PORT = 9001
 
 REGISTRY_HOST = "127.0.0.1"
 REGISTRY_PORT = 7000
@@ -17,6 +19,7 @@ REGISTRY_PORT = 7000
 DEFAULT_TASK_TIMEOUT_SECONDS = 120.0
 MAX_TASK_TIMEOUT_SECONDS = 180.0
 DISPATCH_HTTP_TIMEOUT_SECONDS = 5.0
+A2A_TCP_TIMEOUT_SECONDS = 3.0
 MCP_HTTP_TIMEOUT_SECONDS = 3.0
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
@@ -50,6 +53,7 @@ MCP_SERVERS = {
         "port": 8002,
         "path": "/",
         "method": "get_route",
+        "extra_methods": ["get_intercity_transport"],
     },
     "attraction": {
         "name": "attraction_mcp_server",
@@ -71,6 +75,7 @@ AGENTS = {
     "weather_agent": {
         "host": "127.0.0.1",
         "port": 9010,
+        "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
         "capabilities": ["weather"],
@@ -97,6 +102,7 @@ AGENTS = {
     "attraction_agent": {
         "host": "127.0.0.1",
         "port": 9030,
+        "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
         "capabilities": ["attraction", "attraction.plan"],
@@ -118,6 +124,7 @@ AGENTS = {
     "hotel_agent": {
         "host": "127.0.0.1",
         "port": 9040,
+        "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
         "capabilities": ["hotel", "accommodation", "hotel.selection"],
@@ -137,9 +144,10 @@ AGENTS = {
     "traffic_agent": {
         "host": "127.0.0.1",
         "port": 9020,
+        "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["traffic", "transport", "route.selection"],
+        "capabilities": ["traffic", "transport", "route.selection", "intercity.transport"],
         "keywords": [
             "traffic",
             "transport",
@@ -153,11 +161,14 @@ AGENTS = {
             "路况",
             "路线",
             "出行",
+            "通勤",
             "地铁",
             "公交",
             "火车",
             "高铁",
             "航班",
+            "机票",
+            "开车",
             "打车",
         ],
     },

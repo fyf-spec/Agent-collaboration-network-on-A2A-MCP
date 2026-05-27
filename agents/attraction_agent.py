@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from agents.base_agent import BaseAgent
 from common.config import (
     AGENTS,
     COORDINATOR_NAME,
@@ -43,6 +44,19 @@ from llm_client import LLMClientError, llm
 AGENT_NAME = "attraction_agent"
 MCP_SERVER_KEY = "attraction"
 CAPABILITY = "attraction"
+
+
+class AttractionAgent(BaseAgent):
+    agent_name = AGENT_NAME
+    capability = CAPABILITY
+    mcp_server_key = MCP_SERVER_KEY
+
+    def process_task(self, task_payload: dict[str, Any]) -> None:
+        result_payload = handle_task(task_payload, callback=False)
+        self.send_result_to_coordinator(task_payload, result_payload)
+
+    def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        return "AttractionAgent uses process_task override for structured attraction planning."
 
 
 class AttractionAgentServer(ThreadingHTTPServer):
@@ -142,7 +156,7 @@ class AttractionAgentHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def handle_task(task_payload: dict[str, Any]) -> dict[str, Any]:
+def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[str, Any]:
     started = time.perf_counter()
     task_id = str(task_payload["task_id"])
     instruction = str(task_payload.get("instruction", ""))
@@ -239,7 +253,8 @@ def handle_task(task_payload: dict[str, Any]) -> dict[str, Any]:
             },
         )
 
-    _callback_result(task_id, reply_to, result_payload)
+    if callback:
+        _callback_result(task_id, reply_to, result_payload)
     return result_payload
 
 
@@ -642,16 +657,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=int(config["port"]))
     args = parser.parse_args()
 
-    server = AttractionAgentServer((args.host, args.port))
-    print(f"{AGENT_NAME} listening on http://{args.host}:{args.port}", flush=True)
-    print("Endpoints: POST /execute_task, GET /health", flush=True)
-    _register_to_registry(args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    agent = AttractionAgent(host=args.host, port=args.port)
+    agent.run()
 
 
 if __name__ == "__main__":

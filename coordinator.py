@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+from socketserver import BaseRequestHandler, ThreadingTCPServer
 import threading
 import time
 from typing import Any
@@ -31,7 +32,10 @@ from urllib import request
 from urllib.parse import parse_qs, urlparse
 
 from common.config import (
+    A2A_TCP_TIMEOUT_SECONDS,
     AGENTS,
+    COORDINATOR_A2A_TCP_HOST,
+    COORDINATOR_A2A_TCP_PORT,
     REGISTRY_HOST,
     REGISTRY_PORT,
     COORDINATOR_HOST,
@@ -44,6 +48,21 @@ from common.config import (
 )
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.tcp_a2a import (
+    TYPE_ERROR,
+    TYPE_RESULT_ACK,
+    TYPE_TASK_ACK,
+    TYPE_TASK_REQUEST,
+    TYPE_TASK_RESULT,
+    TcpA2AError,
+    build_envelope,
+    build_error_envelope,
+    request_frame,
+    recv_frame,
+    send_frame,
+    tcp_url,
+    validate_envelope,
+)
 from common.schemas import (
     PayloadValidationError,
     RESULT_SUCCESS,
@@ -78,56 +97,56 @@ COORDINATOR_DISPATCH_FLOW = [
         "step": 2,
         "name": "dispatch_weather_agent",
         "required_flow": "Coordinator -> Weather Agent",
-        "network": "HTTP POST /execute_task with A2A JSON payload",
+        "network": "TCP A2A TASK_REQUEST frame with 4-byte length prefix",
         "owner": "coordinator sends; weather agent receives",
     },
     {
         "step": 3,
         "name": "weather_callback",
         "required_flow": "Weather Agent -> Coordinator",
-        "network": "HTTP POST /task_result",
+        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
         "owner": "weather agent sends; coordinator receives",
     },
     {
         "step": 4,
         "name": "dispatch_attraction_agent_after_weather",
         "required_flow": "Coordinator 等待 Weather 结果后，再唤醒 Attraction Agent",
-        "network": "HTTP POST /execute_task with weather_result in context.inputs",
+        "network": "TCP A2A TASK_REQUEST frame with weather_result in context.inputs",
         "owner": "coordinator sends; attraction agent receives",
     },
     {
         "step": 5,
         "name": "attraction_callback",
         "required_flow": "Attraction Agent -> Coordinator",
-        "network": "HTTP POST /task_result",
+        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
         "owner": "attraction agent sends; coordinator receives",
     },
     {
         "step": 6,
         "name": "dispatch_hotel_agent_after_attraction",
         "required_flow": "Coordinator 等待 Attraction 结果后，再唤醒 Hotel Agent",
-        "network": "HTTP POST /execute_task with daily_plan_skeleton in context.inputs",
+        "network": "TCP A2A TASK_REQUEST frame with daily_plan_skeleton in context.inputs",
         "owner": "coordinator sends; hotel agent receives",
     },
     {
         "step": 7,
         "name": "hotel_callback",
         "required_flow": "Hotel Agent -> Coordinator",
-        "network": "HTTP POST /task_result",
+        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
         "owner": "hotel agent sends; coordinator receives",
     },
     {
         "step": 8,
         "name": "dispatch_traffic_agent_after_hotel",
         "required_flow": "Coordinator 等待 Hotel 结果后，再唤醒 Traffic Agent",
-        "network": "HTTP POST /execute_task with daily_plan_skeleton and hotel_plan in context.inputs",
+        "network": "TCP A2A TASK_REQUEST frame with daily_plan_skeleton and hotel_plan in context.inputs",
         "owner": "coordinator sends; traffic agent receives",
     },
     {
         "step": 9,
         "name": "traffic_callback",
         "required_flow": "Traffic Agent -> Coordinator",
-        "network": "HTTP POST /task_result",
+        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
         "owner": "traffic agent sends; coordinator receives",
     },
     {
@@ -209,9 +228,11 @@ class TaskRecord:
 
 
 class CoordinatorState:
-    def __init__(self, *, host: str, port: int) -> None:
+    def __init__(self, *, host: str, port: int, tcp_host: str | None = None, tcp_port: int | None = None) -> None:
         self.host = host
         self.port = port
+        self.tcp_host = tcp_host or COORDINATOR_A2A_TCP_HOST
+        self.tcp_port = tcp_port or COORDINATOR_A2A_TCP_PORT
         self._tasks: dict[str, TaskRecord] = {}
         self._condition = threading.Condition(threading.RLock())
 
@@ -221,6 +242,10 @@ class CoordinatorState:
 
     @property
     def reply_to(self) -> str:
+        return tcp_url(self.tcp_host, self.tcp_port)
+
+    @property
+    def http_reply_to(self) -> str:
         return f"{self.base_url}/task_result"
 
     def create_task(
@@ -322,9 +347,14 @@ class CoordinatorState:
 class CoordinatorHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, server_address: tuple[str, int], handler_class: type[BaseHTTPRequestHandler]) -> None:
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class: type[BaseHTTPRequestHandler],
+        state: CoordinatorState | None = None,
+    ) -> None:
         super().__init__(server_address, handler_class)
-        self.state = CoordinatorState(host=server_address[0], port=server_address[1])
+        self.state = state or CoordinatorState(host=server_address[0], port=server_address[1])
 
     def dispatch_to_agent(
         self,
@@ -339,7 +369,27 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             self.state.mark_dispatch_error(record.task_id, target, f"target agent not found: {target}")
             return
 
-        url = _agent_execute_url(agent_config)
+        if agent_config.get("protocol", "tcp") != "tcp":
+            self.state.mark_dispatch_error(
+                record.task_id,
+                target,
+                f"unsupported A2A protocol: {agent_config.get('protocol')}",
+            )
+            return
+
+        url = _agent_tcp_url(agent_config)
+        trace_id = f"trace-{record.task_id}"
+        span_id = f"span-{COORDINATOR_NAME}-dispatch-{target}"
+        task_context = dict(
+            context
+            or {
+                "workflow": "travel_dependency",
+                "coordinator_plan": record.plan,
+                "agent_capabilities": agent_config.get("capabilities", []),
+            }
+        )
+        task_context.setdefault("trace_id", trace_id)
+        task_context.setdefault("parent_span_id", span_id)
         payload = build_task_payload(
             source=COORDINATOR_NAME,
             target=target,
@@ -347,27 +397,37 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             instruction=record.question,
             reply_to=self.state.reply_to,
             created_at=record.created_at,
-            context=context
-            or {
-                "workflow": "travel_dependency",
-                "coordinator_plan": record.plan,
-                "agent_capabilities": agent_config.get("capabilities", []),
-            },
+            context=task_context,
+        )
+        frame = build_envelope(
+            message_type=TYPE_TASK_REQUEST,
+            source=COORDINATOR_NAME,
+            target=target,
+            task_id=record.task_id,
+            trace_id=trace_id,
+            span_id=span_id,
+            deadline_ms=int(record.timeout_seconds * 1000),
+            payload=payload,
         )
         log_network_event(
             event=event,
             direction="outbound",
             source=COORDINATOR_NAME,
             target=target,
-            method="POST",
+            method="TCP",
             url=url,
             task_id=record.task_id,
-            payload=payload,
-            payload_size=len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")),
+            payload=frame,
+            payload_size=len(json.dumps(frame, ensure_ascii=False, default=str).encode("utf-8")),
         )
         try:
-            response = post_json(url, payload, timeout=DISPATCH_HTTP_TIMEOUT_SECONDS)
-        except HttpJsonClientError as exc:
+            response = request_frame(
+                host=str(agent_config["host"]),
+                port=int(agent_config["port"]),
+                payload=frame,
+                timeout=A2A_TCP_TIMEOUT_SECONDS,
+            )
+        except TcpA2AError as exc:
             message = str(exc)
             self.state.mark_dispatch_error(record.task_id, target, message)
             log_network_event(
@@ -375,10 +435,9 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
                 direction="inbound",
                 source=target,
                 target=COORDINATOR_NAME,
-                method="POST",
-                url=exc.url,
+                method="TCP",
+                url=url,
                 task_id=record.task_id,
-                latency_ms=exc.elapsed_ms,
                 error=message,
                 error_type=_infer_error_type(exc),
             )
@@ -389,26 +448,109 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
             direction="inbound",
             source=target,
             target=COORDINATOR_NAME,
-            method="POST",
+            method="TCP",
             url=url,
             task_id=record.task_id,
-            status_code=response.status_code,
             latency_ms=response.elapsed_ms,
-            payload_size=len(response.raw_body.encode("utf-8")),
+            payload_size=response.received_length,
             payload=response.data,
         )
-        if not response.ok:
-            self.state.mark_dispatch_error(
-                record.task_id,
-                target,
-                f"agent returned HTTP {response.status_code}",
-            )
+        try:
+            validate_envelope(response.data)
+        except TcpA2AError as exc:
+            self.state.mark_dispatch_error(record.task_id, target, f"invalid TCP ACK: {exc}")
             return
-        if _looks_like_result_payload(response.data):
+        if response.data.get("type") == TYPE_ERROR:
+            payload_error = response.data.get("payload", {}).get("error")
+            self.state.mark_dispatch_error(record.task_id, target, str(payload_error or "agent rejected task"))
+            return
+        if response.data.get("type") != TYPE_TASK_ACK:
+            self.state.mark_dispatch_error(record.task_id, target, f"unexpected TCP response: {response.data.get('type')}")
+
+
+class CoordinatorA2ATCPServer(ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class: type[BaseRequestHandler],
+        state: CoordinatorState,
+    ) -> None:
+        super().__init__(server_address, handler_class)
+        self.state = state
+
+
+class CoordinatorA2ATCPRequestHandler(BaseRequestHandler):
+    server: CoordinatorA2ATCPServer
+
+    def handle(self) -> None:
+        frame_data: dict[str, Any] | None = None
+        task_id = "unknown"
+        source = "unknown"
+        trace_id: str | None = None
+        span_id: str | None = None
+        try:
+            frame = recv_frame(self.request)
+            frame_data = frame.data
+            validate_envelope(frame_data, expected_type=TYPE_TASK_RESULT)
+            task_id = str(frame_data["task_id"])
+            source = str(frame_data["source"])
+            trace_id = str(frame_data["trace_id"])
+            span_id = str(frame_data["span_id"])
+            payload = frame_data["payload"]
+
+            log_network_event(
+                event="task_result",
+                direction="inbound",
+                source=source,
+                target=COORDINATOR_NAME,
+                method="TCP",
+                url=tcp_url(self.server.state.tcp_host, self.server.state.tcp_port),
+                task_id=task_id,
+                payload=frame_data,
+                payload_size=frame.length,
+            )
+            record = self.server.state.add_result(payload)
+            _refresh_final_answer_async(self.server.state, record.task_id)
+            ack = build_envelope(
+                message_type=TYPE_RESULT_ACK,
+                source=COORDINATOR_NAME,
+                target=source,
+                task_id=task_id,
+                trace_id=trace_id,
+                parent_span_id=span_id,
+                payload={"received": True, "task_id": task_id, "task_status": record.status},
+            )
+            send_frame(self.request, ack)
+        except Exception as exc:
+            error_task_id = str(frame_data.get("task_id")) if frame_data and frame_data.get("task_id") else task_id
+            error_target = source if source != "unknown" else "worker_agent"
+            log_network_event(
+                event="task_result_failed",
+                direction="inbound",
+                source=source,
+                target=COORDINATOR_NAME,
+                method="TCP",
+                url=tcp_url(self.server.state.tcp_host, self.server.state.tcp_port),
+                task_id=None if error_task_id == "unknown" else error_task_id,
+                payload=frame_data,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            error_frame = build_error_envelope(
+                source=COORDINATOR_NAME,
+                target=error_target,
+                task_id=error_task_id,
+                trace_id=trace_id,
+                parent_span_id=span_id,
+                error=str(exc),
+            )
             try:
-                self.state.add_result(response.data)
-            except (KeyError, PayloadValidationError) as exc:
-                self.state.mark_dispatch_error(record.task_id, target, f"invalid immediate result: {exc}")
+                send_frame(self.request, error_frame)
+            except Exception:
+                return
 
 
 class CoordinatorRequestHandler(BaseHTTPRequestHandler):
@@ -424,6 +566,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                         "role": COORDINATOR_NAME,
                         "status": "ok",
                         "base_url": self.server.state.base_url,
+                        "a2a_tcp_url": self.server.state.reply_to,
                         "workflow": "travel_dependency",
                         "dependency_chain": DEPENDENCY_CHAIN,
                         "agents": _enabled_agents_view(),
@@ -1628,9 +1771,20 @@ def _clean_final_answer_text(text: str) -> str:
     return text
 
 
-def run(host: str = COORDINATOR_HOST, port: int = COORDINATOR_PORT) -> None:
-    server = CoordinatorHTTPServer((host, port), CoordinatorRequestHandler)
-    logger.info(f"Coordinator listening on http://{host}:{port}")
+def run(
+    host: str = COORDINATOR_HOST,
+    port: int = COORDINATOR_PORT,
+    tcp_host: str = COORDINATOR_A2A_TCP_HOST,
+    tcp_port: int = COORDINATOR_A2A_TCP_PORT,
+) -> None:
+    state = CoordinatorState(host=host, port=port, tcp_host=tcp_host, tcp_port=tcp_port)
+    tcp_server = CoordinatorA2ATCPServer((tcp_host, tcp_port), CoordinatorA2ATCPRequestHandler, state)
+    tcp_thread = threading.Thread(target=tcp_server.serve_forever, name="coordinator-a2a-tcp", daemon=True)
+    tcp_thread.start()
+
+    server = CoordinatorHTTPServer((host, port), CoordinatorRequestHandler, state)
+    logger.info(f"Coordinator user API listening on http://{host}:{port}")
+    logger.info(f"Coordinator A2A TCP listening on {tcp_url(tcp_host, tcp_port)}")
     logger.info("Latest workflow: Weather Agent -> Attraction Agent -> Hotel Agent -> Traffic Agent")
     logger.info("Endpoints: POST /submit_task, POST /task_result, GET /health, GET /tasks, GET /contracts")
     try:
@@ -1638,6 +1792,8 @@ def run(host: str = COORDINATOR_HOST, port: int = COORDINATOR_PORT) -> None:
     except KeyboardInterrupt:
         logger.critical("Coordinator shutting down.")
     finally:
+        tcp_server.shutdown()
+        tcp_server.server_close()
         server.server_close()
 
 
@@ -1645,19 +1801,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the local A2A coordinator.")
     parser.add_argument("--host", default=COORDINATOR_HOST)
     parser.add_argument("--port", type=int, default=COORDINATOR_PORT)
+    parser.add_argument("--tcp-host", default=COORDINATOR_A2A_TCP_HOST)
+    parser.add_argument("--tcp-port", type=int, default=COORDINATOR_A2A_TCP_PORT)
     args = parser.parse_args()
-    run(host=args.host, port=args.port)
+    run(host=args.host, port=args.port, tcp_host=args.tcp_host, tcp_port=args.tcp_port)
 
 
 def _agent_execute_url(agent: dict[str, Any]) -> str:
     return f"http://{agent['host']}:{agent['port']}{agent.get('execute_path', '/execute_task')}"
 
 
+def _agent_tcp_url(agent: dict[str, Any]) -> str:
+    return tcp_url(str(agent["host"]), int(agent["port"]))
+
+
 def _enabled_agents_view() -> dict[str, Any]:
     discovered_agents = _fetch_discovered_agents()
     return {
         name: {
-            "url": _agent_execute_url(agent),
+            "url": _agent_tcp_url(agent) if agent.get("protocol", "tcp") == "tcp" else _agent_execute_url(agent),
+            "protocol": agent.get("protocol", "tcp"),
             "capabilities": agent.get("capabilities", []),
             "enabled": agent.get("enabled", True),
         }
