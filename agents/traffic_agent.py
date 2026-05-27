@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from agents.base_agent import BaseAgent
-from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
+from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.schemas import RESULT_ERROR, RESULT_SUCCESS, build_result_payload
@@ -41,6 +41,7 @@ class TrafficAgent(BaseAgent):
             constraints_for_traffic = _extract_constraints_for_traffic(context)
             city = str(travel_task.get("destination_city") or travel_task.get("city") or self.build_mcp_params(task_payload).get("city") or "北京")
             preference = str(travel_task.get("transport_preference") or "public_transport")
+            intercity_transport = self.call_intercity_transport_mcp(task_id, travel_task=travel_task)
 
             route_segments = _build_route_segments(daily_plan, hotel_plan)
             route_results = [
@@ -60,10 +61,12 @@ class TrafficAgent(BaseAgent):
                     route_results=route_results,
                     travel_task=travel_task,
                 )
+                structured_result["intercity_transport"] = intercity_transport
                 llm_used = True
             except Exception as exc:
                 llm_error = str(exc)
                 structured_result = _fallback_traffic_plan(route_results, travel_task)
+                structured_result["intercity_transport"] = intercity_transport
 
             elapsed_ms = (time.perf_counter() - started) * 1000
             result_payload = build_result_payload(
@@ -77,12 +80,13 @@ class TrafficAgent(BaseAgent):
                     "capability": self.capability,
                     "mcp_server": MCP_SERVERS[self.mcp_server_key]["name"],
                     "mcp_method": "get_route",
-                    "mcp_result": {"route_queries": route_results},
+                    "mcp_result": {"intercity_transport": intercity_transport, "route_queries": route_results},
                     "travel_task": travel_task,
                     "daily_plan_skeleton": daily_plan,
                     "hotel_plan": hotel_plan,
                     "constraints_for_traffic": constraints_for_traffic,
                     "structured_result": structured_result,
+                    "intercity_transport": intercity_transport,
                     "traffic_plan": structured_result.get("traffic_plan", {}),
                     "traffic_summary": structured_result.get("traffic_summary", {}),
                     "quality": {
@@ -114,7 +118,8 @@ class TrafficAgent(BaseAgent):
 
     def call_route_mcp(self, task_id: str, *, city: str, segment: dict[str, Any], preference: str) -> dict[str, Any]:
         server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{server['host']}:{server['port']}{server.get('path', '/')}"
+        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+        network_target = str(MCP_GATEWAY["name"])
         rpc_payload = {
             "jsonrpc": "2.0",
             "id": f"{task_id}:{segment.get('day')}:{segment.get('index')}",
@@ -130,7 +135,7 @@ class TrafficAgent(BaseAgent):
             event="agent_call_mcp",
             direction="outbound",
             source=self.agent_name,
-            target=server["name"],
+            target=network_target,
             method="POST",
             url=url,
             task_id=task_id,
@@ -142,7 +147,7 @@ class TrafficAgent(BaseAgent):
             log_network_event(
                 event="agent_mcp_failed",
                 direction="inbound",
-                source=server["name"],
+                source=network_target,
                 target=self.agent_name,
                 method="POST",
                 url=exc.url,
@@ -155,7 +160,7 @@ class TrafficAgent(BaseAgent):
         log_network_event(
             event="agent_mcp_response",
             direction="inbound",
-            source=server["name"],
+            source=network_target,
             target=self.agent_name,
             method="POST",
             url=url,
@@ -172,6 +177,69 @@ class TrafficAgent(BaseAgent):
         if not isinstance(result, dict):
             raise RuntimeError("Traffic MCP result missing")
         return {"day": segment.get("day"), "index": segment.get("index"), **result}
+
+    def call_intercity_transport_mcp(self, task_id: str, *, travel_task: dict[str, Any]) -> dict[str, Any]:
+        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+        network_target = str(MCP_GATEWAY["name"])
+        origin_city = str(travel_task.get("origin_city") or "上海")
+        destination_city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
+        rpc_payload = {
+            "jsonrpc": "2.0",
+            "id": f"{task_id}:intercity",
+            "method": "get_intercity_transport",
+            "params": {
+                "origin_city": origin_city,
+                "destination_city": destination_city,
+                "budget_level": travel_task.get("budget_level", "normal"),
+                "transport_preference": travel_task.get("transport_preference", "public_transport"),
+            },
+        }
+        log_network_event(
+            event="agent_call_mcp",
+            direction="outbound",
+            source=self.agent_name,
+            target=network_target,
+            method="POST",
+            url=url,
+            task_id=task_id,
+            payload=rpc_payload,
+        )
+        try:
+            response = post_json(url, rpc_payload, timeout=MCP_HTTP_TIMEOUT_SECONDS)
+        except HttpJsonClientError as exc:
+            log_network_event(
+                event="agent_mcp_failed",
+                direction="inbound",
+                source=network_target,
+                target=self.agent_name,
+                method="POST",
+                url=exc.url,
+                task_id=task_id,
+                error=str(exc),
+                elapsed_ms=exc.elapsed_ms,
+                error_type=type(exc).__name__,
+            )
+            raise
+        log_network_event(
+            event="agent_mcp_response",
+            direction="inbound",
+            source=network_target,
+            target=self.agent_name,
+            method="POST",
+            url=url,
+            task_id=task_id,
+            status_code=response.status_code,
+            elapsed_ms=response.elapsed_ms,
+            payload=response.data,
+        )
+        if not response.ok or not isinstance(response.data, dict):
+            raise RuntimeError(f"Intercity transport MCP returned invalid response: {response.status_code} {response.raw_body}")
+        if response.data.get("error"):
+            raise RuntimeError(f"Intercity transport MCP error: {response.data['error']}")
+        result = response.data.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Intercity transport MCP result missing")
+        return _normalize_intercity_transport(result)
 
     def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
         return "TrafficAgent uses process_task override for structured route selection."
@@ -409,11 +477,42 @@ def _estimate_traffic_summary(traffic_plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_intercity_transport(value: dict[str, Any]) -> dict[str, Any]:
+    result = dict(value)
+    option = result.get("recommended_option")
+    if isinstance(option, dict):
+        cost_range = option.get("cost_yuan_range")
+        if (
+            isinstance(cost_range, list)
+            and len(cost_range) >= 2
+            and isinstance(cost_range[0], (int, float))
+            and isinstance(cost_range[1], (int, float))
+        ):
+            one_way_low = int(cost_range[0])
+            one_way_high = int(cost_range[1])
+            result["round_trip_assumption"] = "按往返估算"
+            result["estimated_intercity_cost"] = f"约{one_way_low * 2}-{one_way_high * 2}元"
+            result["one_way_cost"] = f"约{one_way_low}-{one_way_high}元"
+    return result
+
+
 def _short_traffic_summary(structured_result: dict[str, Any]) -> str:
     summary = structured_result.get("traffic_summary", {}) if isinstance(structured_result, dict) else {}
     strategy = summary.get("main_strategy", "已生成交通方案")
     cost = summary.get("total_estimated_local_transport_cost", "待确认")
     return f"已根据每日景点和用户约束生成交通方案：{strategy}，市内交通费用{cost}。"
+
+    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        city = mcp_result.get("city", "目标城市")
+        route = mcp_result.get("route", "未知路线")
+        status = mcp_result.get("status", "未知路况")
+        duration = mcp_result.get("duration", "未知耗时")
+
+        return (
+            f"交通概况：{city}推荐路线为{route}，当前路况为{status}，预计耗时{duration}。\n"
+            f"推荐方案：建议优先选择上述路线，并预留一定机动时间。\n"
+            f"注意事项：当前为演示快速模式，已跳过外部 LLM 调用。"
+        )
 
 
 def main() -> None:

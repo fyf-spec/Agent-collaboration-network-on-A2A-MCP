@@ -19,7 +19,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS, REGISTRY_HOST, REGISTRY_PORT
+from common.config import (
+    AGENTS,
+    COORDINATOR_NAME,
+    MCP_GATEWAY,
+    MCP_HTTP_TIMEOUT_SECONDS,
+    MCP_SERVERS,
+    REGISTRY_HOST,
+    REGISTRY_PORT,
+)
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.schemas import (
@@ -280,7 +288,8 @@ def _callback_result(task_id: str, reply_to: str, result_payload: dict[str, Any]
 
 def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, Any]:
     config = MCP_SERVERS[MCP_SERVER_KEY]
-    url = f"http://{config['host']}:{config['port']}{config['path']}"
+    url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+    network_target = str(MCP_GATEWAY["name"])
     params = {
         "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
         "days": travel_task.get("days", 3),
@@ -305,7 +314,7 @@ def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, 
         event="agent_call_mcp",
         direction="outbound",
         source=AGENT_NAME,
-        target=config["name"],
+        target=network_target,
         method="POST",
         url=url,
         task_id=task_id,
@@ -315,7 +324,7 @@ def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, 
     log_network_event(
         event="agent_mcp_response",
         direction="inbound",
-        source=config["name"],
+        source=network_target,
         target=AGENT_NAME,
         method="POST",
         url=url,

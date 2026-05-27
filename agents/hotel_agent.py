@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.base_agent import BaseAgent
-from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
+from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.schemas import RESULT_ERROR, RESULT_SUCCESS, build_result_payload
@@ -169,7 +169,8 @@ class HotelAgent(BaseAgent):
         area_selection: dict[str, Any],
     ) -> dict[str, Any]:
         server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{server['host']}:{server['port']}{server.get('path', '/')}"
+        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+        network_target = str(MCP_GATEWAY["name"])
         rpc_payload = {
             "jsonrpc": "2.0",
             "id": task_id,
@@ -199,7 +200,7 @@ class HotelAgent(BaseAgent):
             event="agent_call_mcp",
             direction="outbound",
             source=self.agent_name,
-            target=server["name"],
+            target=network_target,
             method="POST",
             url=url,
             task_id=task_id,
@@ -211,7 +212,7 @@ class HotelAgent(BaseAgent):
             log_network_event(
                 event="agent_mcp_failed",
                 direction="inbound",
-                source=server["name"],
+                source=network_target,
                 target=self.agent_name,
                 method="POST",
                 url=exc.url,
@@ -224,7 +225,7 @@ class HotelAgent(BaseAgent):
         log_network_event(
             event="agent_mcp_response",
             direction="inbound",
-            source=server["name"],
+            source=network_target,
             target=self.agent_name,
             method="POST",
             url=url,

@@ -10,6 +10,13 @@ from scripts.start_all import run_services
 import time
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
 def main() -> None:
     with run_services():
         time.sleep(2.0)  # 等待所有服务完全启动就绪
@@ -21,7 +28,7 @@ def main() -> None:
         }
 
         try:
-            response = post_json(url, payload, timeout=70.0)
+            response = post_json(url, payload, timeout=120.0)
             print(f"====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
             print(f"HTTP Status Code: {response.status_code}")
             if response.ok and response.data:

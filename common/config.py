@@ -21,6 +21,21 @@ MCP_HTTP_TIMEOUT_SECONDS = 3.0
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
 
+MCP_GATEWAY = {
+    "name": "mcp_gateway",
+    "host": "127.0.0.1",
+    "port": 8100,
+    "path": "/",
+    "enabled": True,
+    "cache_ttl_seconds": 10.0,
+    "max_concurrent_per_method": 3,
+    "rate_limit_wait_seconds": 0.2,
+    "coalesce_wait_seconds": 5.0,
+    "upstream_timeout_seconds": 2.5,
+    "circuit_failure_threshold": 3,
+    "circuit_cooldown_seconds": 10.0,
+}
+
 MCP_SERVERS = {
     "weather": {
         "name": "weather_mcp_server",

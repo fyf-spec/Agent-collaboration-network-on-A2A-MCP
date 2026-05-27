@@ -22,6 +22,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -1206,6 +1207,8 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     used in partial cases, but it never receives workflow/debug fields.
     """
     grounded_answer = _grounded_final_answer(question, snapshot)
+    if _demo_fast_mode_enabled() or snapshot.get("status") != TASK_COMPLETED:
+        return _fallback_final_answer(question, snapshot, "")
 
     results = snapshot.get("results", {}) or {}
     dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
@@ -1317,6 +1320,7 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     hotel = facts.get("hotel", {}) or {}
     hotel_plan = hotel.get("hotel_plan", {}) or {}
     traffic = facts.get("traffic", {}) or {}
+    intercity_transport = traffic.get("intercity_transport", {}) or {}
     traffic_plan = traffic.get("traffic_plan", {}) or {}
     traffic_summary = traffic.get("traffic_summary", {}) or {}
     estimated_cost = facts.get("estimated_cost", {}) or {}
@@ -1340,8 +1344,13 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         lines.append("\n一、天气与出行约束")
         weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
         if clothing:
-            weather_line += f"建议：{clothing}。"
+            weather_line += f"{_format_advice_text(clothing)}。"
         lines.append(weather_line)
+
+    ticket_total = _extract_ticket_total(estimated_cost, daily_plan)
+    hotel_total = _extract_hotel_total(hotel_plan)
+    intercity_total = _extract_intercity_total(intercity_transport)
+    traffic_total = _extract_traffic_total(traffic_summary, traffic_plan)
 
     if isinstance(daily_plan, dict) and daily_plan:
         lines.append("\n二、每日景点安排")
@@ -1362,14 +1371,10 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
             if notes:
                 line += f"备注：{'；'.join(str(x) for x in notes)}。"
             lines.append(line)
-
-    ticket_total = estimated_cost.get("ticket_total") if isinstance(estimated_cost, dict) else None
-    if ticket_total:
-        lines.append(f"\n三、门票预算")
-        lines.append(f"- 预计门票费用：{ticket_total}。")
+        lines.append(f"景点门票小计：{_format_money_range(ticket_total)}。")
 
     if isinstance(hotel_plan, dict) and hotel_plan:
-        lines.append("\n四、住宿建议")
+        lines.append("\n三、住宿建议")
         selected = hotel_plan.get("selected_hotel", {}) if isinstance(hotel_plan.get("selected_hotel"), dict) else {}
         lines.append(
             f"- 建议住宿区域：{hotel_plan.get('recommended_area', '待确认')}。"
@@ -1383,8 +1388,23 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                 f"参考价格：{selected.get('price_per_night', '待确认')}元/晚。"
                 f"选择理由：{hotel_plan.get('hotel_reason', '兼顾低预算和交通便利')}。"
             )
-        if hotel_plan.get("estimated_total_hotel_cost"):
-            lines.append(f"- 住宿预算估计：{hotel_plan.get('estimated_total_hotel_cost')}。")
+        lines.append(f"住宿费用小计：{_format_money_range(hotel_total)}。")
+
+    if isinstance(intercity_transport, dict) and intercity_transport:
+        lines.append("\n四、城市间交通方案")
+        option = intercity_transport.get("recommended_option", {})
+        alternatives = intercity_transport.get("alternatives", [])
+        if isinstance(option, dict):
+            one_way = intercity_transport.get("one_way_cost") or _format_money_range(_parse_cost_range_list(option.get("cost_yuan_range")))
+            lines.append(
+                f"- 推荐：{intercity_transport.get('origin_city', origin)} -> {intercity_transport.get('destination_city', dest)}，"
+                f"{option.get('mode', '交通方式待确认')}，{option.get('duration', '耗时待确认')}，单程{one_way}。"
+            )
+            lines.append(f"- 往返估算：{_format_money_range(intercity_total)}。")
+        alt_text = _format_intercity_alternatives(alternatives)
+        if alt_text:
+            lines.append(f"- 备选：{alt_text}")
+        lines.append(f"城市间交通小计：{_format_money_range(intercity_total)}。")
 
     if isinstance(traffic_plan, dict) and traffic_plan:
         lines.append("\n五、市内交通方案")
@@ -1398,7 +1418,7 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                     continue
                 lines.append(
                     f"  - {segment.get('from', '起点')} -> {segment.get('to', '终点')}: "
-                    f"{segment.get('selected_mode', '')}，{segment.get('route', '')}，"
+                    f"{_format_transport_mode(segment.get('selected_mode', ''))}，{segment.get('route', '')}，"
                     f"约{segment.get('estimated_duration_minutes', '未知')}分钟，"
                     f"费用约{segment.get('estimated_cost_yuan', '未知')}元。"
                     f"选择理由：{segment.get('reason', '')}。"
@@ -1408,8 +1428,18 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                 f"- 交通总体策略：{traffic_summary.get('main_strategy', '公共交通优先')}；"
                 f"预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost', '待确认')}。"
             )
+        lines.append(f"市内交通小计：{_format_money_range(traffic_total)}。")
 
-    lines.append("\n六、提醒")
+    total = _sum_money_ranges(ticket_total, hotel_total, intercity_total, traffic_total)
+    lines.append("\n六、费用总计")
+    lines.append(f"- 景点门票：{_format_money_range(ticket_total)}")
+    lines.append(f"- 住宿费用：{_format_money_range(hotel_total)}")
+    lines.append(f"- 城市间交通：{_format_money_range(intercity_total)}")
+    lines.append(f"- 市内交通：{_format_money_range(traffic_total)}")
+    lines.append(f"- 合计：{_format_money_range(total)}")
+    lines.append("- 说明：以上为示例估算，实际票价、酒店价格和交通费用以出行当天平台信息为准；餐饮和购物未计入。")
+
+    lines.append("\n七、提醒")
     lines.append("- 故宫、天安门广场等热门景点请提前通过官方渠道预约，并以当天开放信息为准。")
     lines.append("- 交通耗时、费用和住宿价格为估算结果，实际出行前以当天平台信息为准。")
     for warning in warnings:
@@ -1419,7 +1449,183 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
             continue
         lines.append(f"- {warning}")
 
-    return "\n".join(lines)
+    return _clean_final_answer_text("\n".join(lines))
+
+
+def _extract_ticket_total(estimated_cost: dict[str, Any], daily_plan: dict[str, Any]) -> tuple[float, float] | None:
+    if isinstance(estimated_cost, dict) and estimated_cost.get("ticket_total"):
+        return _parse_money_range(estimated_cost.get("ticket_total"))
+    if not isinstance(daily_plan, dict):
+        return None
+    return _sum_money_ranges(
+        *[
+            _parse_money_range(day.get("estimated_ticket_cost"))
+            for day in daily_plan.values()
+            if isinstance(day, dict) and day.get("estimated_ticket_cost")
+        ]
+    )
+
+
+def _extract_hotel_total(hotel_plan: dict[str, Any]) -> tuple[float, float] | None:
+    if not isinstance(hotel_plan, dict):
+        return None
+    return _parse_money_range(hotel_plan.get("estimated_total_hotel_cost"))
+
+
+def _extract_intercity_total(intercity_transport: dict[str, Any]) -> tuple[float, float] | None:
+    if not isinstance(intercity_transport, dict):
+        return None
+    total = _parse_money_range(intercity_transport.get("estimated_intercity_cost"))
+    if total:
+        return total
+    option = intercity_transport.get("recommended_option")
+    if isinstance(option, dict):
+        one_way = _parse_cost_range_list(option.get("cost_yuan_range"))
+        if one_way:
+            return one_way[0] * 2, one_way[1] * 2
+    return None
+
+
+def _extract_traffic_total(
+    traffic_summary: dict[str, Any],
+    traffic_plan: dict[str, Any],
+) -> tuple[float, float] | None:
+    if isinstance(traffic_summary, dict):
+        total = _parse_money_range(traffic_summary.get("total_estimated_local_transport_cost"))
+        if total:
+            return total
+    if not isinstance(traffic_plan, dict):
+        return None
+    costs: list[tuple[float, float] | None] = []
+    for segments in traffic_plan.values():
+        if not isinstance(segments, list):
+            continue
+        for segment in segments:
+            if isinstance(segment, dict):
+                costs.append(_parse_money_range(segment.get("estimated_cost_yuan")))
+    return _sum_money_ranges(*costs)
+
+
+def _parse_cost_range_list(value: Any) -> tuple[float, float] | None:
+    if (
+        isinstance(value, list)
+        and len(value) >= 2
+        and isinstance(value[0], (int, float))
+        and isinstance(value[1], (int, float))
+    ):
+        return float(value[0]), float(value[1])
+    return None
+
+
+def _parse_money_range(value: Any) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        amount = float(value)
+        return amount, amount
+
+    text = str(value)
+    total_low = 0.0
+    total_high = 0.0
+    found = False
+    pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(?:-|~|至|到)\s*(\d+(?:\.\d+)?)\s*元|(\d+(?:\.\d+)?)\s*元")
+    for match in pattern.finditer(text):
+        found = True
+        if match.group(3) is not None:
+            low = high = float(match.group(3))
+        else:
+            low = float(match.group(1))
+            high = float(match.group(2))
+        total_low += low
+        total_high += high
+    return (total_low, total_high) if found else None
+
+
+def _sum_money_ranges(*ranges: tuple[float, float] | None) -> tuple[float, float] | None:
+    total_low = 0.0
+    total_high = 0.0
+    found = False
+    for item in ranges:
+        if not item:
+            continue
+        found = True
+        total_low += item[0]
+        total_high += item[1]
+    return (total_low, total_high) if found else None
+
+
+def _format_money_range(value: tuple[float, float] | None) -> str:
+    if not value:
+        return "待确认"
+    low, high = value
+    low_text = _format_amount(low)
+    high_text = _format_amount(high)
+    if low_text == high_text:
+        return f"约{low_text}元"
+    return f"约{low_text}-{high_text}元"
+
+
+def _format_amount(value: float) -> str:
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def _format_advice_text(value: Any) -> str:
+    text = str(value).strip()
+    if text.startswith("建议"):
+        return text
+    return f"建议{text}"
+
+
+def _format_transport_mode(value: Any) -> str:
+    mode_map = {
+        "walk": "步行",
+        "bus": "公交",
+        "subway": "地铁",
+        "taxi": "打车",
+    }
+    text = str(value).strip()
+    return mode_map.get(text, text)
+
+
+def _format_intercity_alternatives(alternatives: Any) -> str:
+    if not isinstance(alternatives, list):
+        return ""
+    parts: list[str] = []
+    for item in alternatives:
+        if not isinstance(item, dict):
+            continue
+        mode = str(item.get("mode") or "").strip()
+        reason = str(item.get("reason") or "").strip()
+        if not mode:
+            continue
+        if "高铁" in mode:
+            continue
+        if "普速" in mode:
+            parts.append("普速火车更省钱但耗时更长")
+        elif "飞机" in mode:
+            parts.append("飞机可能更快但价格波动较大且机场通勤成本更高")
+        elif reason:
+            parts.append(f"{mode}{reason}")
+        else:
+            parts.append(mode)
+    return "；".join(dict.fromkeys(parts)) + ("。" if parts else "")
+
+
+def _clean_final_answer_text(text: str) -> str:
+    replacements = {
+        "建议：建议": "建议",
+        "。。": "。",
+        "。 ": "。",
+        "walk": "步行",
+        "bus": "公交",
+        "subway": "地铁",
+        "taxi": "打车",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    while "。。" in text:
+        text = text.replace("。。", "。")
+    return text
 
 
 def run(host: str = COORDINATOR_HOST, port: int = COORDINATOR_PORT) -> None:
@@ -1502,6 +1708,24 @@ def _looks_like_result_payload(value: Any) -> bool:
     return isinstance(value, dict) and {"source", "target", "task_id", "status"}.issubset(value)
 
 
+def _demo_fast_mode_enabled() -> bool:
+    return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _coordinator_plan_prompt(question: str, targets: list[str]) -> str:
+    return "\n".join(
+        [
+            "A2A_COORDINATOR_PLAN",
+            "你是分布式多智能体系统的主控 Agent。",
+            "根据用户问题选择需要唤醒的工作 Agent，并给出简短理由。",
+            f"用户问题: {question}",
+            f"规则初选 Agent: {targets}",
+            f"可用 Agent: {json.dumps(_enabled_agents_view(), ensure_ascii=False)}",
+            "输出应包含 selected_targets 和 reason。",
+        ]
+    )
+
+
 def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> dict[str, Any]:
     """Extract only travel facts for the final LLM.
 
@@ -1545,6 +1769,11 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
     traffic_structured = traffic_meta.get("structured_result", {}) if isinstance(traffic_meta, dict) else {}
     traffic_plan = traffic_structured.get("traffic_plan") or traffic_meta.get("traffic_plan") or {}
     traffic_summary = traffic_structured.get("traffic_summary") or traffic_meta.get("traffic_summary") or {}
+    intercity_transport = (
+        traffic_structured.get("intercity_transport")
+        or traffic_meta.get("intercity_transport")
+        or {}
+    )
 
     results = snapshot.get("results", {}) or {}
     dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
@@ -1586,6 +1815,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
             "hotel_plan": hotel_plan,
         },
         "traffic": {
+            "intercity_transport": intercity_transport,
             "traffic_plan": traffic_plan,
             "traffic_summary": traffic_summary,
         },
