@@ -12,12 +12,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from common.config import MCP_SERVERS
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
-from mcp_servers.mock_data import get_weather
+from mcp_servers.mock_data import search_attractions
 
 
 def main() -> None:
-    config = MCP_SERVERS["weather"]
-    parser = argparse.ArgumentParser(description="Run Weather MCP Server.")
+    config = MCP_SERVERS["attraction"]
+    parser = argparse.ArgumentParser(description="Run Attraction MCP Server.")
     parser.add_argument("--host", default=config["host"])
     parser.add_argument("--port", type=int, default=config["port"])
     args = parser.parse_args()
@@ -29,8 +29,8 @@ def main() -> None:
         tools={
             config["method"]: MCPTool(
                 name=config["method"],
-                handler=get_weather,
-                description="Return mock weather data for a city.",
+                handler=search_attractions,
+                description="Return mock attraction data for a city.",
             )
         },
     )

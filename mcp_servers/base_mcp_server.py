@@ -15,7 +15,6 @@ import logging
 
 logger = logging.getLogger("base_mcp_server")
 
-
 JsonTool = Callable[..., dict[str, Any]]
 
 
@@ -163,7 +162,6 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
             pass
-
 
 
 def run_mcp_server(*, name: str, host: str, port: int, tools: dict[str, MCPTool], delay: float = 0.0) -> None:

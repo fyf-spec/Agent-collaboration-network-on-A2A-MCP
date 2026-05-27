@@ -12,11 +12,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from common.config import MCP_SERVERS
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
-from mcp_servers.mock_data import get_transport
+from mcp_servers.mock_data import get_route, get_routes, get_transport, get_traffic
 
 
 def main() -> None:
     config = MCP_SERVERS["traffic"]
+
     parser = argparse.ArgumentParser(description="Run Traffic MCP Server.")
     parser.add_argument("--host", default=config["host"])
     parser.add_argument("--port", type=int, default=config["port"])
@@ -29,11 +30,26 @@ def main() -> None:
         port=args.port,
         delay=args.delay,
         tools={
-            config["method"]: MCPTool(
-                name=config["method"],
+            "get_route": MCPTool(
+                name="get_route",
+                handler=get_route,
+                description="Return candidate routes between two attractions.",
+            ),
+            "get_routes": MCPTool(
+                name="get_routes",
+                handler=get_routes,
+                description="Return candidate routes for multiple attraction segments.",
+            ),
+            "get_transport": MCPTool(
+                name="get_transport",
                 handler=get_transport,
-                description="Return mock transport data for a city.",
-            )
+                description="Return city-level mock transport data.",
+            ),
+            "get_traffic": MCPTool(
+                name="get_traffic",
+                handler=get_traffic,
+                description="Backward-compatible alias for city-level transport data.",
+            ),
         },
     )
 

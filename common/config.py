@@ -14,9 +14,9 @@ COORDINATOR_PORT = 9000
 REGISTRY_HOST = "127.0.0.1"
 REGISTRY_PORT = 7000
 
-DEFAULT_TASK_TIMEOUT_SECONDS = 10.0
-MAX_TASK_TIMEOUT_SECONDS = 60.0
-DISPATCH_HTTP_TIMEOUT_SECONDS = 3.0
+DEFAULT_TASK_TIMEOUT_SECONDS = 120.0
+MAX_TASK_TIMEOUT_SECONDS = 180.0
+DISPATCH_HTTP_TIMEOUT_SECONDS = 5.0
 MCP_HTTP_TIMEOUT_SECONDS = 3.0
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
@@ -34,7 +34,21 @@ MCP_SERVERS = {
         "host": "127.0.0.1",
         "port": 8002,
         "path": "/",
-        "method": "get_transport",
+        "method": "get_route",
+    },
+    "attraction": {
+        "name": "attraction_mcp_server",
+        "host": "127.0.0.1",
+        "port": 8003,
+        "path": "/",
+        "method": "search_attractions",
+    },
+    "hotel": {
+        "name": "hotel_mcp_server",
+        "host": "127.0.0.1",
+        "port": 8004,
+        "path": "/",
+        "method": "search_hotels",
     },
 }
 
@@ -65,12 +79,52 @@ AGENTS = {
             "预报",
         ],
     },
+    "attraction_agent": {
+        "host": "127.0.0.1",
+        "port": 9030,
+        "execute_path": "/execute_task",
+        "enabled": True,
+        "capabilities": ["attraction", "attraction.plan"],
+        "keywords": [
+            "attraction",
+            "spot",
+            "scenic",
+            "place",
+            "景点",
+            "游玩",
+            "故宫",
+            "天安门",
+            "博物馆",
+            "门票",
+            "预约",
+            "开放时间",
+        ],
+    },
+    "hotel_agent": {
+        "host": "127.0.0.1",
+        "port": 9040,
+        "execute_path": "/execute_task",
+        "enabled": True,
+        "capabilities": ["hotel", "accommodation", "hotel.selection"],
+        "keywords": [
+            "hotel",
+            "accommodation",
+            "stay",
+            "住宿",
+            "酒店",
+            "旅馆",
+            "青旅",
+            "民宿",
+            "住哪里",
+            "住宿区域",
+        ],
+    },
     "traffic_agent": {
         "host": "127.0.0.1",
         "port": 9020,
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["traffic", "transport"],
+        "capabilities": ["traffic", "transport", "route.selection"],
         "keywords": [
             "traffic",
             "transport",
@@ -84,14 +138,11 @@ AGENTS = {
             "路况",
             "路线",
             "出行",
-            "通勤",
             "地铁",
             "公交",
             "火车",
             "高铁",
             "航班",
-            "机票",
-            "开车",
             "打车",
         ],
     },

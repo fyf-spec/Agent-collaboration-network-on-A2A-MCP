@@ -1,10 +1,18 @@
-"""Simple ModelScope LLM client shared by Coordinator and worker Agents."""
+"""Simple ModelScope/OpenAI-compatible LLM client shared by Coordinator and worker Agents.
+
+This version keeps the old llm.chat(prompt) API, and also adds short structured
+JSON calls for the A2A/MCP travel workflow.  The structured calls are intended
+for small decisions such as task parsing, weather constraints, attraction
+selection and traffic option selection, rather than long free-form answers.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+import json
 import os
+import re
 from typing import Any
 
 from dotenv import load_dotenv
@@ -33,28 +41,84 @@ class LLMClient:
         self.base_url = self.base_url.strip().rstrip("/")
         self.model = self.model.strip()
 
-    def chat(self, prompt: str) -> str:
-        return self.chat_messages([{"role": "user", "content": prompt}])
+    def chat(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        return self.chat_messages(
+            [{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        )
 
-    def chat_messages(self, messages: list[dict[str, Any]]) -> str:
-        return "".join(self.stream_chat_messages(messages)).strip()
+    def chat_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        return "".join(
+            self.stream_chat_messages(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            )
+        ).strip()
+
+    def chat_json(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = 600,
+        temperature: float = 0.0,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Call the model and parse the first JSON object from its response."""
+        response = self.chat(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout_seconds=timeout_seconds,
+        )
+        return _extract_json_object(response)
 
     def stream_chat(self, prompt: str) -> Iterator[str]:
         yield from self.stream_chat_messages([{"role": "user", "content": prompt}])
 
-    def stream_chat_messages(self, messages: list[dict[str, Any]]) -> Iterator[str]:
+    def stream_chat_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> Iterator[str]:
         _validate_messages(messages)
         if not self.api_key:
             raise LLMClientError("MODELSCOPE_API_KEY is required")
 
-        client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        client = OpenAI(base_url=self.base_url, api_key=self.api_key, max_retries=0)
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "timeout": timeout_seconds or self.timeout_seconds,
+        }
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            request_kwargs["temperature"] = temperature
+
         try:
-            response = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                stream=True,
-                timeout=self.timeout_seconds,
-            )
+            response = client.chat.completions.create(**request_kwargs)
             for chunk in response:
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
@@ -97,6 +161,31 @@ def _read_delta_content(delta: Any) -> str:
     if isinstance(delta, dict):
         return delta.get("content") or ""
     return getattr(delta, "content", None) or ""
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        value = json.loads(cleaned)
+        if isinstance(value, dict):
+            return value
+    except json.JSONDecodeError:
+        pass
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise LLMClientError(f"LLM response is not JSON: {text[:200]}")
+    try:
+        value = json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise LLMClientError(f"failed to parse JSON from LLM response: {exc}") from exc
+    if not isinstance(value, dict):
+        raise LLMClientError("LLM JSON response must be an object")
+    return value
 
 
 llm = LLMClient()

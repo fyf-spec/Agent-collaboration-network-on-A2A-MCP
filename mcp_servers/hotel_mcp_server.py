@@ -9,15 +9,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
 from common.config import MCP_SERVERS
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
-from mcp_servers.mock_data import get_weather
+from mcp_servers.mock_data import search_hotels
 
 
 def main() -> None:
-    config = MCP_SERVERS["weather"]
-    parser = argparse.ArgumentParser(description="Run Weather MCP Server.")
+    config = MCP_SERVERS["hotel"]
+    parser = argparse.ArgumentParser(description="Run Hotel MCP Server.")
     parser.add_argument("--host", default=config["host"])
     parser.add_argument("--port", type=int, default=config["port"])
     args = parser.parse_args()
@@ -29,8 +28,8 @@ def main() -> None:
         tools={
             config["method"]: MCPTool(
                 name=config["method"],
-                handler=get_weather,
-                description="Return mock weather data for a city.",
+                handler=search_hotels,
+                description="Return mock hotel candidates for a city and trip plan.",
             )
         },
     )
