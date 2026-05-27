@@ -16,7 +16,8 @@ class Registry:
 
     def register(self, agent_name: str, payload: dict[str, Any]) -> None:
         self.agents[agent_name] = payload
-        logger.info(f"Agent registered: {agent_name} at {payload.get('host')}:{payload.get('port')}")
+        protocol = payload.get("protocol", "unknown")
+        logger.info(f"Agent registered: {agent_name} at {protocol}://{payload.get('host')}:{payload.get('port')}")
 
     def discover(self) -> dict[str, dict[str, Any]]:
         return self.agents
