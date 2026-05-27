@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import threading
 import time
 from typing import Any
@@ -568,6 +569,17 @@ def select_targets(question: str) -> list[str]:
 
 
 def build_coordinator_plan(question: str, targets: list[str]) -> dict[str, Any]:
+    if _demo_fast_mode_enabled():
+        return {
+            "selected_by": "rule_demo_fast",
+            "selected_targets": targets,
+            "available_agents": _enabled_agents_view(),
+            "dispatch_flow": COORDINATOR_DISPATCH_FLOW,
+            "routing_policy": "keyword rules in demo fast mode",
+            "llm": llm.info(),
+            "llm_response": "",
+        }
+
     prompt = _coordinator_plan_prompt(question, targets)
     try:
         llm_response = llm.chat(prompt)
@@ -672,6 +684,9 @@ def build_collaboration_contracts(state: CoordinatorState) -> dict[str, Any]:
 
 
 def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
+    if _demo_fast_mode_enabled() or snapshot.get("status") != TASK_COMPLETED:
+        return _fallback_final_answer(question, snapshot, "")
+
     prompt = _coordinator_summary_prompt(question, snapshot)
     try:
         llm_response = llm.chat(prompt)
@@ -748,6 +763,10 @@ def _normalize_timeout(value: Any) -> float:
 
 def _looks_like_result_payload(value: Any) -> bool:
     return isinstance(value, dict) and {"source", "target", "task_id", "status"}.issubset(value)
+
+
+def _demo_fast_mode_enabled() -> bool:
+    return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _coordinator_plan_prompt(question: str, targets: list[str]) -> str:

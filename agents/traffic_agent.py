@@ -62,6 +62,18 @@ class TrafficAgent(BaseAgent):
             f"注意事项：当前为备用回答，LLM 调用失败，错误为：{llm_error}"
         )
 
+    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        city = mcp_result.get("city", "目标城市")
+        route = mcp_result.get("route", "未知路线")
+        status = mcp_result.get("status", "未知路况")
+        duration = mcp_result.get("duration", "未知耗时")
+
+        return (
+            f"交通概况：{city}推荐路线为{route}，当前路况为{status}，预计耗时{duration}。\n"
+            f"推荐方案：建议优先选择上述路线，并预留一定机动时间。\n"
+            f"注意事项：当前为演示快速模式，已跳过外部 LLM 调用。"
+        )
+
 
 def main() -> None:
     default_host = AGENTS["traffic_agent"]["host"]

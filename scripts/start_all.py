@@ -22,6 +22,7 @@ SERVICES = [
     ("registry_center", "registry_center.py"),
     ("weather_mcp_server", "mcp_servers/weather_mcp_server.py"),
     ("traffic_mcp_server", "mcp_servers/traffic_mcp_server.py"),
+    ("mcp_gateway", "mcp_gateway.py"),
     ("weather_agent", "agents/weather_agent.py"),
     ("traffic_agent", "agents/traffic_agent.py"),
     ("coordinator", "coordinator.py"),

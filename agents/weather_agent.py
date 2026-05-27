@@ -64,6 +64,20 @@ class WeatherAgent(BaseAgent):
             f"风险提醒：当前为备用回答，LLM 调用失败，错误为：{llm_error}"
         )
 
+    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        city = mcp_result.get("city", "目标城市")
+        date = mcp_result.get("date", "目标日期")
+        temp = mcp_result.get("temp", "未知温度")
+        condition = mcp_result.get("condition", "未知天气")
+        wind = mcp_result.get("wind", "未知风力")
+
+        return (
+            f"天气概况：{city}{date}天气为{condition}，气温{temp}，风力{wind}。\n"
+            f"出行影响：请根据天气情况合理安排户外活动。\n"
+            f"穿衣建议：建议根据{temp}准备合适衣物。\n"
+            f"风险提醒：当前为演示快速模式，已跳过外部 LLM 调用。"
+        )
+
 
 def main() -> None:
     default_host = AGENTS["weather_agent"]["host"]

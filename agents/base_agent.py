@@ -3,6 +3,7 @@ from __future__ import annotations
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import re
 import threading
 import time
@@ -15,6 +16,7 @@ from common.config import (
     REGISTRY_PORT,
     COORDINATOR_NAME,
     DISPATCH_HTTP_TIMEOUT_SECONDS,
+    MCP_GATEWAY,
     MCP_HTTP_TIMEOUT_SECONDS,
     MCP_SERVERS,
 )
@@ -233,12 +235,16 @@ class BaseAgent:
             mcp_result = self.call_mcp_server(task_payload)
             prompt = self.build_prompt(task_payload, mcp_result)
 
-            try:
-                agent_answer = llm.chat(prompt)
-                llm_error = None
-            except LLMClientError as exc:
-                llm_error = str(exc)
-                agent_answer = self.build_fallback_answer(task_payload, mcp_result, llm_error)
+            if _demo_fast_mode_enabled():
+                llm_error = "demo_fast_mode"
+                agent_answer = self.build_demo_answer(task_payload, mcp_result)
+            else:
+                try:
+                    agent_answer = llm.chat(prompt)
+                    llm_error = None
+                except LLMClientError as exc:
+                    llm_error = str(exc)
+                    agent_answer = self.build_fallback_answer(task_payload, mcp_result, llm_error)
 
             elapsed_ms = (time.perf_counter() - started) * 1000
 
@@ -253,6 +259,7 @@ class BaseAgent:
                     "capability": self.capability,
                     "mcp_server": MCP_SERVERS[self.mcp_server_key]["name"],
                     "mcp_method": MCP_SERVERS[self.mcp_server_key]["method"],
+                    "mcp_gateway": MCP_GATEWAY["name"] if MCP_GATEWAY.get("enabled", False) else None,
                     "mcp_result": mcp_result,
                     "llm_error": llm_error,
                     "elapsed_ms": round(elapsed_ms, 2),
@@ -281,7 +288,12 @@ class BaseAgent:
     def call_mcp_server(self, task_payload: dict[str, Any]) -> dict[str, Any]:
         task_id = str(task_payload["task_id"])
         server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{server['host']}:{server['port']}{server.get('path', '/')}"
+        if MCP_GATEWAY.get("enabled", False):
+            url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+            network_target = str(MCP_GATEWAY["name"])
+        else:
+            url = f"http://{server['host']}:{server['port']}{server.get('path', '/')}"
+            network_target = str(server["name"])
         method = str(server["method"])
 
         rpc_payload = {
@@ -295,7 +307,7 @@ class BaseAgent:
             event="agent_call_mcp",
             direction="outbound",
             source=self.agent_name,
-            target=server["name"],
+            target=network_target,
             method="POST",
             url=url,
             task_id=task_id,
@@ -309,7 +321,7 @@ class BaseAgent:
             log_network_event(
                 event="agent_mcp_failed",
                 direction="inbound",
-                source=server["name"],
+                source=network_target,
                 target=self.agent_name,
                 method="POST",
                 url=exc.url,
@@ -323,7 +335,7 @@ class BaseAgent:
         log_network_event(
             event="agent_mcp_response",
             direction="inbound",
-            source=server["name"],
+            source=network_target,
             target=self.agent_name,
             method="POST",
             url=url,
@@ -428,6 +440,13 @@ class BaseAgent:
             f"LLM 错误：{llm_error}"
         )
 
+    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        return (
+            f"{self.agent_name} 已获得 MCP 数据。"
+            f"当前为演示快速模式，跳过外部 LLM 调用。"
+            f"原始 MCP 数据为：{json.dumps(mcp_result, ensure_ascii=False)}。"
+        )
+
 
 def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str:
     context_text = json.dumps(context or {}, ensure_ascii=False)
@@ -452,3 +471,7 @@ def _infer_error_type(exc: Exception) -> str:
     if reason is not None:
         return type(reason).__name__
     return type(cause).__name__
+
+
+def _demo_fast_mode_enabled() -> bool:
+    return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
