@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import re
 from socketserver import BaseRequestHandler, ThreadingTCPServer
 import threading
@@ -14,10 +17,12 @@ from common.config import (
     REGISTRY_HOST,
     REGISTRY_PORT,
     COORDINATOR_NAME,
+    MCP_GATEWAY,
     MCP_HTTP_TIMEOUT_SECONDS,
     MCP_SERVERS,
 )
 from common.http_client import HttpJsonClientError, post_json
+import common.logger
 import logging
 from common.logger import log_network_event
 from common.schemas import (
@@ -25,6 +30,8 @@ from common.schemas import (
     RESULT_ERROR,
     RESULT_SUCCESS,
     build_result_payload,
+    error_response,
+    success_response,
     validate_task_payload,
 )
 from common.tcp_a2a import (
@@ -44,6 +51,8 @@ from common.tcp_a2a import (
     validate_envelope,
 )
 from llm_client import LLMClientError, llm
+
+
 logger = logging.getLogger("base_agent")
 
 KNOWN_CITIES = [
@@ -60,6 +69,108 @@ KNOWN_CITIES = [
     "苏州",
     "天津",
 ]
+
+
+class AgentHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        handler_class: type[BaseHTTPRequestHandler],
+        agent: "BaseAgent",
+    ) -> None:
+        super().__init__(server_address, handler_class)
+        self.agent = agent
+
+
+class AgentRequestHandler(BaseHTTPRequestHandler):
+    server: AgentHTTPServer
+
+    def do_GET(self) -> None:
+        if self.path == "/health":
+            self._send_json(
+                HTTPStatus.OK,
+                success_response(
+                    {
+                        "role": self.server.agent.agent_name,
+                        "status": "ok",
+                        "capability": self.server.agent.capability,
+                        "mcp_server_key": self.server.agent.mcp_server_key,
+                    }
+                ),
+            )
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
+
+    def do_POST(self) -> None:
+        if self.path == "/execute_task":
+            self._handle_execute_task()
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+    def _handle_execute_task(self) -> None:
+        try:
+            payload, payload_size = self._read_json_with_size()
+            validate_task_payload(payload)
+            target = str(payload["target"])
+            if target != self.server.agent.agent_name:
+                raise PayloadValidationError(
+                    f"target mismatch: expected {self.server.agent.agent_name}, got {target}"
+                )
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(exc)))
+            return
+        except PayloadValidationError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_task", str(exc)))
+            return
+
+        task_id = str(payload["task_id"])
+        log_network_event(
+            event="agent_receive_task",
+            direction="inbound",
+            source=str(payload.get("source", "unknown")),
+            target=self.server.agent.agent_name,
+            method="POST",
+            url="/execute_task",
+            task_id=task_id,
+            payload=payload,
+            payload_size=payload_size,
+        )
+
+        worker = threading.Thread(
+            target=self.server.agent.process_task,
+            args=(payload,),
+            name=f"{self.server.agent.agent_name}-{task_id[:8]}",
+            daemon=True,
+        )
+        worker.start()
+        self._send_json(
+            HTTPStatus.OK,
+            success_response({"accepted": True, "agent": self.server.agent.agent_name, "task_id": task_id}),
+        )
+
+    def _read_json_with_size(self) -> tuple[dict[str, Any], int]:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length).decode("utf-8") if length else ""
+        try:
+            payload = json.loads(raw_body or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"request body must be valid JSON: {exc.msg}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        return payload, length
+
+    def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        self.send_response(int(status))
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class AgentA2ATCPServer(ThreadingTCPServer):
@@ -133,17 +244,11 @@ class AgentA2ATCPRequestHandler(BaseRequestHandler):
                 task_id=task_id,
                 trace_id=trace_id,
                 parent_span_id=span_id,
-                payload={
-                    "accepted": True,
-                    "agent": self.server.agent.agent_name,
-                    "task_id": task_id,
-                },
+                payload={"accepted": True, "agent": self.server.agent.agent_name, "task_id": task_id},
             )
             send_frame(self.request, ack)
         except Exception as exc:
-            error_task_id = task_id
-            if frame_data and frame_data.get("task_id"):
-                error_task_id = str(frame_data["task_id"])
+            error_task_id = str(frame_data.get("task_id")) if frame_data and frame_data.get("task_id") else task_id
             error_target = source if source != "unknown" else COORDINATOR_NAME
             error_frame = build_error_envelope(
                 source=self.server.agent.agent_name,
@@ -182,16 +287,40 @@ class BaseAgent:
         self.port = port
 
     def run(self) -> None:
-        server = AgentA2ATCPServer((self.host, self.port), AgentA2ATCPRequestHandler, self)
-        logger.info(
-            f"{self.agent_name} A2A TCP listening on {tcp_url(self.host, self.port)}"
-        )
-        logger.info("Protocol: 4-byte big-endian length prefix + UTF-8 JSON body")
+        config = AGENTS.get(self.agent_name, {})
+        protocol = config.get("protocol", "tcp")
+        self._register_with_registry()
+        if protocol == "http":
+            self._run_http()
+        else:
+            self._run_tcp()
 
+    def _run_http(self) -> None:
+        server = AgentHTTPServer((self.host, self.port), AgentRequestHandler, self)
+        logger.info(f"{self.agent_name} listening on http://{self.host}:{self.port}")
+        logger.info("Endpoints: POST /execute_task, GET /health")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            logger.info(f"\n{self.agent_name} shutting down.")
+        finally:
+            server.server_close()
+
+    def _run_tcp(self) -> None:
+        server = AgentA2ATCPServer((self.host, self.port), AgentA2ATCPRequestHandler, self)
+        logger.info(f"{self.agent_name} A2A TCP listening on {tcp_url(self.host, self.port)}")
+        logger.info("Protocol: 4-byte big-endian length prefix + UTF-8 JSON body")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            logger.info(f"\n{self.agent_name} shutting down.")
+        finally:
+            server.server_close()
+
+    def _register_with_registry(self) -> None:
         try:
             registry_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
             payload = self.registration_payload()
-             
             req = request.Request(
                 registry_url,
                 data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -203,15 +332,8 @@ class BaseAgent:
                     logger.info(f"{self.agent_name} successfully registered to {registry_url}")
                 else:
                     logger.warning(f"{self.agent_name} registry warning: {response.status}")
-        except Exception as e:
-            logger.error(f"{self.agent_name} failed to register: {e}")
-
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            logger.info(f"\n{self.agent_name} shutting down.")
-        finally:
-            server.server_close()
+        except Exception as exc:
+            logger.error(f"{self.agent_name} failed to register: {exc}")
 
     def registration_payload(self) -> dict[str, Any]:
         config = AGENTS.get(self.agent_name, {})
@@ -219,7 +341,8 @@ class BaseAgent:
             "agent_name": self.agent_name,
             "host": self.host,
             "port": self.port,
-            "protocol": "tcp",
+            "protocol": config.get("protocol", "tcp"),
+            "execute_path": config.get("execute_path", "/execute_task"),
             "enabled": config.get("enabled", True),
             "capabilities": config.get("capabilities", [self.capability]),
             "keywords": config.get("keywords", []),
@@ -228,20 +351,21 @@ class BaseAgent:
     def process_task(self, task_payload: dict[str, Any]) -> None:
         task_id = str(task_payload["task_id"])
         started = time.perf_counter()
-
         try:
             mcp_result = self.call_mcp_server(task_payload)
             prompt = self.build_prompt(task_payload, mcp_result)
-
-            try:
-                agent_answer = llm.chat(prompt)
-                llm_error = None
-            except LLMClientError as exc:
-                llm_error = str(exc)
-                agent_answer = self.build_fallback_answer(task_payload, mcp_result, llm_error)
+            if _demo_fast_mode_enabled():
+                llm_error = "demo_fast_mode"
+                agent_answer = self.build_demo_answer(task_payload, mcp_result)
+            else:
+                try:
+                    agent_answer = llm.chat(prompt)
+                    llm_error = None
+                except LLMClientError as exc:
+                    llm_error = str(exc)
+                    agent_answer = self.build_fallback_answer(task_payload, mcp_result, llm_error)
 
             elapsed_ms = (time.perf_counter() - started) * 1000
-
             result_payload = build_result_payload(
                 source=self.agent_name,
                 target=COORDINATOR_NAME,
@@ -253,15 +377,14 @@ class BaseAgent:
                     "capability": self.capability,
                     "mcp_server": MCP_SERVERS[self.mcp_server_key]["name"],
                     "mcp_method": MCP_SERVERS[self.mcp_server_key]["method"],
+                    "mcp_gateway": MCP_GATEWAY["name"],
                     "mcp_result": mcp_result,
                     "llm_error": llm_error,
                     "elapsed_ms": round(elapsed_ms, 2),
                 },
             )
-
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - started) * 1000
-
             result_payload = build_result_payload(
                 source=self.agent_name,
                 target=COORDINATOR_NAME,
@@ -281,9 +404,9 @@ class BaseAgent:
     def call_mcp_server(self, task_payload: dict[str, Any]) -> dict[str, Any]:
         task_id = str(task_payload["task_id"])
         server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{server['host']}:{server['port']}{server.get('path', '/')}"
+        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+        network_target = str(MCP_GATEWAY["name"])
         method = str(server["method"])
-
         rpc_payload = {
             "jsonrpc": "2.0",
             "id": task_id,
@@ -295,21 +418,20 @@ class BaseAgent:
             event="agent_call_mcp",
             direction="outbound",
             source=self.agent_name,
-            target=server["name"],
+            target=network_target,
             method="POST",
             url=url,
             task_id=task_id,
             payload=rpc_payload,
             payload_size=len(json.dumps(rpc_payload, ensure_ascii=False, default=str).encode("utf-8")),
         )
-
         try:
             response = post_json(url, rpc_payload, timeout=MCP_HTTP_TIMEOUT_SECONDS)
         except HttpJsonClientError as exc:
             log_network_event(
                 event="agent_mcp_failed",
                 direction="inbound",
-                source=server["name"],
+                source=network_target,
                 target=self.agent_name,
                 method="POST",
                 url=exc.url,
@@ -323,7 +445,7 @@ class BaseAgent:
         log_network_event(
             event="agent_mcp_response",
             direction="inbound",
-            source=server["name"],
+            source=network_target,
             target=self.agent_name,
             method="POST",
             url=url,
@@ -333,23 +455,17 @@ class BaseAgent:
             payload_size=len(response.raw_body.encode("utf-8")),
             payload=response.data,
         )
-
         if not response.ok:
             raise RuntimeError(f"MCP server returned HTTP {response.status_code}")
-
         if not isinstance(response.data, dict):
             raise RuntimeError("MCP response body must be a JSON object")
-
         if "error" in response.data and response.data["error"]:
             raise RuntimeError(f"MCP JSON-RPC error: {response.data['error']}")
-
         if "result" not in response.data:
             raise RuntimeError("MCP JSON-RPC response missing result")
-
         result = response.data["result"]
         if not isinstance(result, dict):
             raise RuntimeError("MCP result must be a JSON object")
-
         return result
 
     def send_result_to_coordinator(
@@ -357,6 +473,13 @@ class BaseAgent:
         task_payload: dict[str, Any],
         result_payload: dict[str, Any],
     ) -> None:
+        reply_to = str(task_payload["reply_to"])
+        if reply_to.startswith("tcp://"):
+            self._send_result_to_coordinator_tcp(task_payload, result_payload)
+        else:
+            self._send_result_to_coordinator_http(task_payload, result_payload)
+
+    def _send_result_to_coordinator_tcp(self, task_payload: dict[str, Any], result_payload: dict[str, Any]) -> None:
         task_id = str(task_payload["task_id"])
         reply_to = str(task_payload["reply_to"])
         context = task_payload.get("context", {})
@@ -371,7 +494,6 @@ class BaseAgent:
             parent_span_id=str(parent_span_id) if parent_span_id else None,
             payload=result_payload,
         )
-
         log_network_event(
             event="agent_callback_result",
             direction="outbound",
@@ -383,15 +505,9 @@ class BaseAgent:
             payload=frame,
             payload_size=len(json.dumps(frame, ensure_ascii=False, default=str).encode("utf-8")),
         )
-
         try:
             host, port = parse_tcp_url(reply_to)
-            response = request_frame(
-                host=host,
-                port=port,
-                payload=frame,
-                timeout=A2A_TCP_TIMEOUT_SECONDS,
-            )
+            response = request_frame(host=host, port=port, payload=frame, timeout=A2A_TCP_TIMEOUT_SECONDS)
         except TcpA2AError as exc:
             log_network_event(
                 event="agent_callback_failed",
@@ -405,7 +521,6 @@ class BaseAgent:
                 error_type=_infer_error_type(exc),
             )
             return
-
         log_network_event(
             event="agent_callback_response",
             direction="inbound",
@@ -429,6 +544,50 @@ class BaseAgent:
         elif response.data.get("type") != TYPE_RESULT_ACK:
             logger.error(f"{self.agent_name} callback got unexpected TCP response: {response.data.get('type')}")
 
+    def _send_result_to_coordinator_http(self, task_payload: dict[str, Any], result_payload: dict[str, Any]) -> None:
+        task_id = str(task_payload["task_id"])
+        reply_to = str(task_payload["reply_to"])
+        log_network_event(
+            event="agent_callback_result",
+            direction="outbound",
+            source=self.agent_name,
+            target=COORDINATOR_NAME,
+            method="POST",
+            url=reply_to,
+            task_id=task_id,
+            payload=result_payload,
+            payload_size=len(json.dumps(result_payload, ensure_ascii=False, default=str).encode("utf-8")),
+        )
+        try:
+            response = post_json(reply_to, result_payload, timeout=A2A_TCP_TIMEOUT_SECONDS)
+        except HttpJsonClientError as exc:
+            log_network_event(
+                event="agent_callback_failed",
+                direction="inbound",
+                source=COORDINATOR_NAME,
+                target=self.agent_name,
+                method="POST",
+                url=exc.url,
+                task_id=task_id,
+                latency_ms=exc.elapsed_ms,
+                error=str(exc),
+                error_type=_infer_error_type(exc),
+            )
+            return
+        log_network_event(
+            event="agent_callback_response",
+            direction="inbound",
+            source=COORDINATOR_NAME,
+            target=self.agent_name,
+            method="POST",
+            url=reply_to,
+            task_id=task_id,
+            status_code=response.status_code,
+            latency_ms=response.elapsed_ms,
+            payload_size=len(response.raw_body.encode("utf-8")),
+            payload=response.data,
+        )
+
     def build_mcp_params(self, task_payload: dict[str, Any]) -> dict[str, Any]:
         instruction = str(task_payload.get("instruction", ""))
         context = task_payload.get("context", {})
@@ -450,19 +609,23 @@ class BaseAgent:
             f"LLM 错误：{llm_error}"
         )
 
+    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        return (
+            f"{self.agent_name} 已获得 MCP 数据。"
+            f"当前为演示快速模式，跳过外部 LLM 调用。"
+            f"原始 MCP 数据为：{json.dumps(mcp_result, ensure_ascii=False)}。"
+        )
+
 
 def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str:
     context_text = json.dumps(context or {}, ensure_ascii=False)
     full_text = instruction + "\n" + context_text
-
     for city in KNOWN_CITIES:
         if city in full_text:
             return city
-
     match = re.search(r"去([\u4e00-\u9fa5]{2,4})", full_text)
     if match:
         return match.group(1)
-
     return "北京"
 
 
@@ -474,3 +637,7 @@ def _infer_error_type(exc: Exception) -> str:
     if reason is not None:
         return type(reason).__name__
     return type(cause).__name__
+
+
+def _demo_fast_mode_enabled() -> bool:
+    return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}

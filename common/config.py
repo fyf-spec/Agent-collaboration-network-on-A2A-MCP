@@ -16,12 +16,28 @@ COORDINATOR_A2A_TCP_PORT = 9001
 REGISTRY_HOST = "127.0.0.1"
 REGISTRY_PORT = 7000
 
-DEFAULT_TASK_TIMEOUT_SECONDS = 10.0
-MAX_TASK_TIMEOUT_SECONDS = 60.0
+DEFAULT_TASK_TIMEOUT_SECONDS = 120.0
+MAX_TASK_TIMEOUT_SECONDS = 180.0
+DISPATCH_HTTP_TIMEOUT_SECONDS = 5.0
 A2A_TCP_TIMEOUT_SECONDS = 3.0
 MCP_HTTP_TIMEOUT_SECONDS = 3.0
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
+
+MCP_GATEWAY = {
+    "name": "mcp_gateway",
+    "host": "127.0.0.1",
+    "port": 8100,
+    "path": "/",
+    "enabled": True,
+    "cache_ttl_seconds": 10.0,
+    "max_concurrent_per_method": 3,
+    "rate_limit_wait_seconds": 0.2,
+    "coalesce_wait_seconds": 5.0,
+    "upstream_timeout_seconds": 2.5,
+    "circuit_failure_threshold": 3,
+    "circuit_cooldown_seconds": 10.0,
+}
 
 MCP_SERVERS = {
     "weather": {
@@ -36,7 +52,22 @@ MCP_SERVERS = {
         "host": "127.0.0.1",
         "port": 8002,
         "path": "/",
-        "method": "get_transport",
+        "method": "get_route",
+        "extra_methods": ["get_intercity_transport"],
+    },
+    "attraction": {
+        "name": "attraction_mcp_server",
+        "host": "127.0.0.1",
+        "port": 8003,
+        "path": "/",
+        "method": "search_attractions",
+    },
+    "hotel": {
+        "name": "hotel_mcp_server",
+        "host": "127.0.0.1",
+        "port": 8004,
+        "path": "/",
+        "method": "search_hotels",
     },
 }
 
@@ -45,6 +76,7 @@ AGENTS = {
         "host": "127.0.0.1",
         "port": 9010,
         "protocol": "tcp",
+        "execute_path": "/execute_task",
         "enabled": True,
         "capabilities": ["weather"],
         "keywords": [
@@ -67,12 +99,55 @@ AGENTS = {
             "预报",
         ],
     },
+    "attraction_agent": {
+        "host": "127.0.0.1",
+        "port": 9030,
+        "protocol": "tcp",
+        "execute_path": "/execute_task",
+        "enabled": True,
+        "capabilities": ["attraction", "attraction.plan"],
+        "keywords": [
+            "attraction",
+            "spot",
+            "scenic",
+            "place",
+            "景点",
+            "游玩",
+            "故宫",
+            "天安门",
+            "博物馆",
+            "门票",
+            "预约",
+            "开放时间",
+        ],
+    },
+    "hotel_agent": {
+        "host": "127.0.0.1",
+        "port": 9040,
+        "protocol": "tcp",
+        "execute_path": "/execute_task",
+        "enabled": True,
+        "capabilities": ["hotel", "accommodation", "hotel.selection"],
+        "keywords": [
+            "hotel",
+            "accommodation",
+            "stay",
+            "住宿",
+            "酒店",
+            "旅馆",
+            "青旅",
+            "民宿",
+            "住哪里",
+            "住宿区域",
+        ],
+    },
     "traffic_agent": {
         "host": "127.0.0.1",
         "port": 9020,
         "protocol": "tcp",
+        "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["traffic", "transport"],
+        "capabilities": ["traffic", "transport", "route.selection", "intercity.transport"],
         "keywords": [
             "traffic",
             "transport",
