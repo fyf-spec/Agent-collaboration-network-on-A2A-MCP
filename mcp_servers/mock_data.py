@@ -185,6 +185,43 @@ def get_weather(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) ->
     return data
 
 
+def get_packing_list(city: str = DEFAULT_CITY, days: int = 3, temperature: str = "", condition: str = "", **_: Any) -> dict[str, Any]:
+    """Return mock packing list based on destination and weather."""
+    normalized_city = (city or DEFAULT_CITY).strip()
+    
+    base_items = [
+        {"category": "证件", "items": ["身份证", "学生证/优惠证件"], "reason": "出行必备"},
+        {"category": "洗漱用品", "items": ["牙刷", "毛巾", "护肤品"], "reason": "日常所需"},
+        {"category": "电子产品", "items": ["手机", "充电器", "充电宝"], "reason": "保持联系与记录"}
+    ]
+    
+    clothing_items = ["内衣裤", "袜子"]
+    if "冷" in condition or "雪" in condition or (temperature and any(int(t) < 10 for t in __import__("re").findall(r"-?\d+", temperature))):
+        clothing_items.extend(["羽绒服", "保暖内衣", "围巾", "手套"])
+        clothing_reason = "天气寒冷，需注意保暖"
+    elif "热" in condition or (temperature and any(int(t) > 28 for t in __import__("re").findall(r"-?\d+", temperature))):
+        clothing_items.extend(["短袖", "短裤", "防晒衣"])
+        clothing_reason = "天气炎热，需透气和防晒"
+    else:
+        clothing_items.extend(["长袖", "薄外套", "长裤"])
+        clothing_reason = "气温适中，建议洋葱式穿衣"
+        
+    base_items.append({"category": "衣物", "items": clothing_items, "reason": clothing_reason})
+    
+    if "雨" in condition:
+        base_items.append({"category": "雨具", "items": ["雨伞", "雨衣", "防水鞋套"], "reason": "预报有雨"})
+    elif "晴" in condition or "太阳" in condition:
+        base_items.append({"category": "防晒", "items": ["太阳伞", "墨镜", "防晒霜"], "reason": "预报晴天，注意防晒"})
+        
+    return {
+        "city": normalized_city,
+        "days": days,
+        "weather_condition_used": condition,
+        "temperature_used": temperature,
+        "packing_list": base_items
+    }
+
+
 def get_transport(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:
     data = _lookup(TRANSPORT_DATA, city)
     data["date"] = date or DEFAULT_DATE

@@ -69,6 +69,13 @@ MCP_SERVERS = {
         "path": "/",
         "method": "search_hotels",
     },
+    "packing": {
+        "name": "packing_mcp_server",
+        "host": "127.0.0.1",
+        "port": 8005,
+        "path": "/",
+        "method": "get_packing_list",
+    },
 }
 
 AGENTS = {
@@ -170,6 +177,24 @@ AGENTS = {
             "机票",
             "开车",
             "打车",
+        ],
+    },
+    "packing_agent": {
+        "host": "127.0.0.1",
+        "port": 9050,
+        "protocol": "tcp",
+        "execute_path": "/execute_task",
+        "enabled": True,
+        "capabilities": ["packing.list", "preparation"],
+        "keywords": [
+            "packing",
+            "luggage",
+            "preparation",
+            "行李",
+            "准备",
+            "带什么",
+            "清单",
+            "衣物",
         ],
     },
 }

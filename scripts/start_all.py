@@ -24,11 +24,13 @@ SERVICES = [
     ("traffic_mcp_server", "mcp_servers/traffic_mcp_server.py"),
     ("attraction_mcp_server", "mcp_servers/attraction_mcp_server.py"),
     ("hotel_mcp_server", "mcp_servers/hotel_mcp_server.py"),
+    ("packing_mcp_server", "mcp_servers/packing_mcp_server.py"),
     ("mcp_gateway", "mcp_gateway.py"),
     ("weather_agent", "agents/weather_agent.py"),
     ("attraction_agent", "agents/attraction_agent.py"),
     ("hotel_agent", "agents/hotel_agent.py"),
     ("traffic_agent", "agents/traffic_agent.py"),
+    ("packing_agent", "agents/packing_agent.py"),
     ("coordinator", "coordinator.py"),
 ]
 

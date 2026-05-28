@@ -1280,16 +1280,27 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     lines.append(f"下面是从{origin}到{dest}的{days}天{budget_text}旅行方案，整体按{transport_text}安排。")
 
     weather_constraints = weather.get("weather_constraints", {}) or {}
-    if weather_constraints:
-        raw_condition = weather_constraints.get("raw_condition") or ""
-        schedule = weather_constraints.get("schedule_advice") or "适合正常出行"
-        clothing = weather_constraints.get("clothing_advice")
-        date = weather_constraints.get("date") or ""
+    packing_list = facts.get("packing_list", [])
+    
+    if weather_constraints or packing_list:
         lines.append("\n一、天气与出行约束")
-        weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
-        if clothing:
-            weather_line += f"{_format_advice_text(clothing)}。"
-        lines.append(weather_line)
+        if weather_constraints:
+            raw_condition = weather_constraints.get("raw_condition") or ""
+            schedule = weather_constraints.get("schedule_advice") or "适合正常出行"
+            clothing = weather_constraints.get("clothing_advice")
+            date = weather_constraints.get("date") or ""
+            weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
+            if clothing:
+                weather_line += f"{_format_advice_text(clothing)}。"
+            lines.append(weather_line)
+        
+        if packing_list:
+            lines.append("- 行李准备建议：")
+            for item in packing_list:
+                cat = item.get("category", "")
+                items = "、".join(item.get("items", []))
+                reason = item.get("reason", "")
+                lines.append(f"  * {cat}：{items}（{reason}）")
 
     ticket_total = _extract_ticket_total(estimated_cost, daily_plan)
     hotel_total = _extract_hotel_total(hotel_plan)
@@ -1708,6 +1719,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
     attraction = results.get("attraction_agent", {}) if isinstance(results.get("attraction_agent"), dict) else {}
     hotel = results.get("hotel_agent", {}) if isinstance(results.get("hotel_agent"), dict) else {}
     traffic = results.get("traffic_agent", {}) if isinstance(results.get("traffic_agent"), dict) else {}
+    packing = results.get("packing_agent", {}) if isinstance(results.get("packing_agent"), dict) else {}
 
     weather_meta = weather.get("metadata", {}) if isinstance(weather, dict) else {}
     weather_constraints = (
@@ -1741,6 +1753,10 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
         or traffic_meta.get("intercity_transport")
         or {}
     )
+
+    packing_meta = packing.get("metadata", {}) if isinstance(packing, dict) else {}
+    packing_structured = packing_meta.get("structured_result", {}) if isinstance(packing_meta, dict) else {}
+    packing_list = packing_structured.get("packing_list", [])
 
     dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
     pending_targets = snapshot.get("pending_targets", []) or []
@@ -1785,6 +1801,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
             "traffic_plan": traffic_plan,
             "traffic_summary": traffic_summary,
         },
+        "packing_list": packing_list,
         "user_visible_warnings": warnings,
     }
 
@@ -1803,8 +1820,9 @@ def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
             "如果 traffic.traffic_plan 非空，必须根据其中内容写具体交通方案，不得说交通方案缺失或暂缺。",
             "如果 daily_plan 非空，必须根据其中内容写每日景点安排，不得说景点信息缺失。",
             "如果 weather.weather_constraints 非空，必须根据其中内容写天气与出行建议。",
+            "如果 packing_list 非空，必须根据其中内容写行李准备清单（可与天气建议合并或单独列出），注意不要啰嗦，挑重点建议即可。",
             "不要编造给定 JSON 之外的班次、价格、天气或景点。",
-            "输出中文，结构清楚，包含：天气建议、每日景点、住宿建议、交通方案、费用/预约提醒。",
+            "输出中文，结构清楚，包含：天气与行李准备建议、每日景点、住宿建议、交通方案、费用/预约提醒。",
             json.dumps(clean_payload, ensure_ascii=False, default=str),
         ]
     )
