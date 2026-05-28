@@ -26,13 +26,12 @@ class HotelAgent(BaseAgent):
     mcp_server_key = "hotel"
 
     def process_task(self, task_payload: dict[str, Any]) -> None:
-        """Two-step hotel workflow: LLM selects area -> MCP returns hotels -> LLM selects hotel."""
+        """Use one LLM call to choose an area_id and hotel_id from compact candidates."""
         task_id = str(task_payload["task_id"])
         started = time.perf_counter()
-        area_llm_used = False
-        hotel_llm_used = False
-        area_llm_error: str | None = None
-        hotel_llm_error: str | None = None
+        llm_used = False
+        llm_error: str | None = None
+        quality_source = "hotel_agent_rule_fallback"
 
         try:
             context = task_payload.get("context") or {}
@@ -41,69 +40,63 @@ class HotelAgent(BaseAgent):
             daily_plan = _extract_daily_plan(context)
             city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
 
-            area_candidates = _build_area_candidates(daily_plan)
-
-            # Step 1: LLM chooses the best accommodation area from the itinerary.
-            try:
-                area_json = llm.chat_json(
-                    _hotel_area_selection_prompt(
-                        travel_task=travel_task,
-                        weather_constraints=weather_constraints,
-                        daily_plan=daily_plan,
-                        area_candidates=area_candidates,
-                    ),
-                    max_tokens=500,
-                    temperature=0.0,
-                    timeout_seconds=25.0,
-                )
-                area_selection = _normalize_area_selection(area_json, area_candidates)
-                area_llm_used = True
-            except Exception as exc:
-                area_llm_error = str(exc)
-                area_selection = _fallback_area_selection(area_candidates)
-
-            selected_area = str(area_selection.get("recommended_area") or "").strip()
-            if not selected_area:
-                selected_area = area_candidates[0]["area"] if area_candidates else "市中心地铁沿线"
-                area_selection["recommended_area"] = selected_area
-
-            # Step 2: MCP searches hotels only for the selected area.
-            hotel_candidates = self.call_hotel_mcp(
-                task_id,
+            area_options = _build_area_options(daily_plan)
+            area_candidates = _area_options_to_legacy_candidates(area_options)
+            hotel_candidates = self.call_hotel_candidates_mcp(
+                task_id=task_id,
                 city=city,
                 travel_task=travel_task,
                 daily_plan=daily_plan,
-                selected_area=selected_area,
-                area_selection=area_selection,
+                area_options=area_options,
             )
+            hotel_options_for_llm = _build_hotel_options_for_llm(hotel_candidates)
+            llm_hotel_selection: dict[str, Any] = {}
 
-            # Step 3: LLM chooses the specific hotel from MCP candidates.
             try:
-                hotel_json = llm.chat_json(
-                    _hotel_choice_prompt(
+                llm_hotel_selection = llm.chat_json(
+                    _hotel_selector_prompt(
                         travel_task=travel_task,
-                        weather_constraints=weather_constraints,
-                        daily_plan=daily_plan,
-                        area_selection=area_selection,
-                        hotel_candidates=hotel_candidates,
+                        area_options=area_options,
+                        hotel_options=hotel_options_for_llm,
                     ),
-                    max_tokens=700,
-                    temperature=0.0,
-                    timeout_seconds=25.0,
+                    max_tokens=300,
+                    temperature=0.2,
+                    timeout_seconds=45.0,
                 )
-                structured_result = _normalize_hotel_plan(
-                    hotel_json,
-                    hotel_candidates=hotel_candidates,
-                    area_selection=area_selection,
+                selection, selection_errors = _normalize_hotel_selection(
+                    llm_hotel_selection,
+                    area_options=area_options,
+                    hotel_options=hotel_options_for_llm,
                     travel_task=travel_task,
                 )
-                hotel_llm_used = True
+                llm_used = True
+                if selection_errors:
+                    llm_error = "; ".join(selection_errors)
+                    quality_source = "hotel_agent_llm_area_hotel_selector_with_partial_fallback"
+                else:
+                    quality_source = "hotel_agent_llm_area_hotel_selector"
             except Exception as exc:
-                hotel_llm_error = str(exc)
-                structured_result = _fallback_hotel_plan(hotel_candidates, area_selection, travel_task)
+                llm_error = str(exc)
+                selection = _fallback_hotel_selection(
+                    area_options=area_options,
+                    hotel_options=hotel_options_for_llm,
+                    travel_task=travel_task,
+                )
+                quality_source = "hotel_agent_rule_fallback"
+
+            hotel_plan = _expand_hotel_plan(
+                selection,
+                area_options=area_options,
+                hotel_options=hotel_options_for_llm,
+                travel_task=travel_task,
+                llm_reason=str(llm_hotel_selection.get("reason") or ""),
+            )
+            structured_result = {
+                "hotel_plan": hotel_plan,
+                "constraints_for_traffic": _default_constraints_for_traffic(),
+            }
 
             elapsed_ms = (time.perf_counter() - started) * 1000
-            hotel_plan = structured_result.get("hotel_plan", {})
             result_payload = build_result_payload(
                 source=self.agent_name,
                 target=COORDINATOR_NAME,
@@ -113,14 +106,21 @@ class HotelAgent(BaseAgent):
                 metadata={
                     "agent": self.agent_name,
                     "capability": self.capability,
-                    "workflow": "area_llm_then_hotel_mcp_then_hotel_llm",
+                    "workflow": "area_options_hotel_mcp_then_single_llm_selector",
                     "mcp_server": MCP_SERVERS[self.mcp_server_key]["name"],
                     "mcp_method": "search_hotels",
+                    "area_options_for_llm": area_options,
+                    "hotel_options_for_llm": hotel_options_for_llm,
+                    "llm_hotel_selection": llm_hotel_selection,
+                    "recommended_area_id": selection.get("recommended_area_id"),
+                    "selected_hotel_id": selection.get("selected_hotel_id"),
                     "area_candidates": area_candidates,
-                    "area_selection": area_selection,
+                    "area_selection": {"recommended_area": hotel_plan.get("recommended_area")},
                     "mcp_result": hotel_candidates,
                     "hotel_candidates": hotel_candidates.get("hotels", []) if isinstance(hotel_candidates, dict) else [],
                     "travel_task": travel_task,
+                    "hotel_constraints": _constraint_section(travel_task, "hotel"),
+                    "general_constraints": _constraint_section(travel_task, "general"),
                     "weather_constraints": weather_constraints,
                     "daily_plan_skeleton": daily_plan,
                     "structured_result": structured_result,
@@ -129,14 +129,12 @@ class HotelAgent(BaseAgent):
                     "hotel_area": hotel_plan.get("recommended_area") if isinstance(hotel_plan, dict) else None,
                     "constraints_for_traffic": structured_result.get("constraints_for_traffic", []),
                     "quality": {
-                        "area_llm_used": area_llm_used,
-                        "hotel_llm_used": hotel_llm_used,
-                        "llm_used": area_llm_used or hotel_llm_used,
-                        "area_llm_error": area_llm_error,
-                        "hotel_llm_error": hotel_llm_error,
-                        "confidence": 0.9 if (area_llm_error is None and hotel_llm_error is None) else 0.76,
+                        "llm_used": llm_used,
+                        "llm_error": llm_error,
+                        "source": quality_source,
+                        "confidence": 0.9 if llm_error is None else 0.76,
                     },
-                    "llm_error": area_llm_error or hotel_llm_error,
+                    "llm_error": llm_error,
                     "elapsed_ms": round(elapsed_ms, 2),
                 },
             )
@@ -178,8 +176,8 @@ class HotelAgent(BaseAgent):
             "params": {
                 "city": city,
                 "days": travel_task.get("days", 3),
-                "budget_level": travel_task.get("budget_level", "normal"),
-                "preferences": travel_task.get("preferences", []),
+                "budget_level": _constraint_section(travel_task, "general").get("budget_level", travel_task.get("budget_level", "normal")),
+                "preferences": _constraint_section(travel_task, "hotel").get("preferred_features", []),
                 "target_area": selected_area,
                 "preferred_areas": [selected_area],
                 "area_selection": area_selection,
@@ -242,6 +240,50 @@ class HotelAgent(BaseAgent):
         if not isinstance(result, dict):
             raise RuntimeError("Hotel MCP result missing")
         return result
+
+    def call_hotel_candidates_mcp(
+        self,
+        *,
+        task_id: str,
+        city: str,
+        travel_task: dict[str, Any],
+        daily_plan: dict[str, Any],
+        area_options: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        selected_areas = [str(item.get("area")) for item in area_options[:3] if item.get("area")]
+        if not selected_areas:
+            selected_areas = ["市中心地铁沿线"]
+
+        merged_hotels: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        raw_results: list[dict[str, Any]] = []
+        for area in selected_areas:
+            area_selection = {"recommended_area": area}
+            result = self.call_hotel_mcp(
+                task_id,
+                city=city,
+                travel_task=travel_task,
+                daily_plan=daily_plan,
+                selected_area=area,
+                area_selection=area_selection,
+            )
+            raw_results.append(result)
+            for hotel in result.get("hotels", []) if isinstance(result, dict) else []:
+                if not isinstance(hotel, dict):
+                    continue
+                key = (str(hotel.get("name") or ""), str(hotel.get("area") or ""))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_hotels.append(dict(hotel))
+
+        return {
+            "city": city,
+            "requested_city": city,
+            "searched_areas": selected_areas,
+            "raw_results": raw_results,
+            "hotels": merged_hotels,
+        }
 
     def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
         return "HotelAgent uses process_task override for structured area and hotel selection."
@@ -312,6 +354,279 @@ def _build_area_candidates(daily_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     candidates.sort(key=lambda x: (x.get("visit_day_count", 0), x.get("spot_count", 0), x.get("score_hint", 0)), reverse=True)
     return candidates[:8]
+
+
+def _build_area_options(daily_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    area_info: dict[str, dict[str, Any]] = {}
+    for day_key, day in daily_plan.items():
+        if not isinstance(day, dict):
+            continue
+        raw_area = str(day.get("area") or "").strip()
+        if not raw_area:
+            continue
+        spots = [str(item) for item in day.get("spots", []) if str(item).strip()] if isinstance(day.get("spots"), list) else []
+        for area in _split_area_phrase(raw_area):
+            item = area_info.setdefault(area, {"area": area, "days": [], "nearby_spots": []})
+            item["days"].append(str(day_key))
+            item["nearby_spots"].extend(spots)
+
+    options: list[dict[str, Any]] = []
+    for index, item in enumerate(
+        sorted(
+            area_info.values(),
+            key=lambda x: (len(set(x.get("days", []))), len(set(x.get("nearby_spots", [])))),
+            reverse=True,
+        ),
+        start=1,
+    ):
+        days = list(dict.fromkeys(str(day) for day in item.get("days", [])))
+        nearby_spots = list(dict.fromkeys(str(spot) for spot in item.get("nearby_spots", [])))
+        options.append(
+            {
+                "area_id": f"a{index}",
+                "area": item.get("area"),
+                "visit_day_count": len(days),
+                "spot_count": len(nearby_spots),
+                "days": days,
+                "nearby_spots": nearby_spots,
+            }
+        )
+    if not options:
+        options.append(
+            {
+                "area_id": "a1",
+                "area": "市中心地铁沿线",
+                "visit_day_count": 0,
+                "spot_count": 0,
+                "days": [],
+                "nearby_spots": [],
+            }
+        )
+    return options[:8]
+
+
+def _area_options_to_legacy_candidates(area_options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "area": option.get("area"),
+            "days": option.get("days", []),
+            "spots": option.get("nearby_spots", []),
+            "visit_day_count": option.get("visit_day_count", 0),
+            "spot_count": option.get("spot_count", 0),
+        }
+        for option in area_options
+    ]
+
+
+def _build_hotel_options_for_llm(hotel_candidates: dict[str, Any]) -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
+    hotels = hotel_candidates.get("hotels", []) if isinstance(hotel_candidates, dict) else []
+    for index, hotel in enumerate([item for item in hotels if isinstance(item, dict)], start=1):
+        options.append(
+            {
+                "hotel_id": f"h{index}",
+                "name": hotel.get("name"),
+                "area": hotel.get("area"),
+                "price_per_night": hotel.get("price_per_night"),
+                "type": hotel.get("type"),
+                "nearest_subway": hotel.get("nearest_subway"),
+                "tags": hotel.get("tags") if isinstance(hotel.get("tags"), list) else [],
+            }
+        )
+    return options
+
+
+def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, Any]:
+    constraints = travel_task.get("constraints")
+    if isinstance(constraints, dict) and isinstance(constraints.get(section), dict):
+        return dict(constraints[section])
+    if section == "hotel":
+        return {
+            "preferred_features": _as_str_list(travel_task.get("preferences"), default=[]),
+            "preferred_area": None,
+            "hotel_type": None,
+        }
+    if section == "traffic":
+        return {
+            "preference": travel_task.get("transport_preference", "public_transport"),
+            "avoid": [],
+            "max_transfer": None,
+            "walking_tolerance": "normal",
+        }
+    if section == "general":
+        return {
+            "budget_level": travel_task.get("budget_level", "normal"),
+            "travel_style": "budget" if travel_task.get("budget_level") == "low" else "balanced",
+            "special_needs": [],
+        }
+    if section == "attractions":
+        return {
+            "must_visit": _as_str_list(travel_task.get("must_visit"), default=[]),
+            "preferred_types": _as_str_list(travel_task.get("preferences"), default=[]),
+            "avoid": _as_str_list(travel_task.get("avoid"), default=[]),
+            "pace": "normal",
+        }
+    return {}
+
+
+def _hotel_selector_prompt(
+    *,
+    travel_task: dict[str, Any],
+    area_options: list[dict[str, Any]],
+    hotel_options: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
+        "days": travel_task.get("days", 3),
+        "hotel_constraints": _constraint_section(travel_task, "hotel"),
+        "traffic_constraints": _constraint_section(travel_task, "traffic"),
+        "general_constraints": _constraint_section(travel_task, "general"),
+        "attraction_constraints": _constraint_section(travel_task, "attractions"),
+        "area_options": area_options,
+        "hotel_options": hotel_options,
+        "output_schema": {
+            "recommended_area_id": "a1",
+            "selected_hotel_id": "h1",
+            "reason": "不超过20个中文字符",
+        },
+    }
+    return "\n".join(
+        [
+            "你是住宿区域与酒店选择器。",
+            "必须从 area_options 中选择一个 area_id；必须从 hotel_options 中选择一个 hotel_id。",
+            "hotel_id 必须来自已有候选；推荐区域最好与酒店 area 一致；不要编造酒店；不要改写酒店信息。",
+            "不要输出完整 hotel_plan；不要 Markdown；不要推理过程；不要大段解释；只输出合法 JSON。",
+            "低预算通常优先低价格；公共交通偏好通常优先地铁方便；多天行程可优先覆盖景点较多、通勤更均衡的区域。",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+        ]
+    )
+
+
+def _normalize_hotel_selection(
+    value: dict[str, Any],
+    *,
+    area_options: list[dict[str, Any]],
+    hotel_options: list[dict[str, Any]],
+    travel_task: dict[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    if not isinstance(value, dict):
+        raise ValueError("hotel selection must be a JSON object")
+
+    errors: list[str] = []
+    area_by_id = {str(item.get("area_id")): item for item in area_options if item.get("area_id")}
+    hotel_by_id = {str(item.get("hotel_id")): item for item in hotel_options if item.get("hotel_id")}
+    area_id = str(value.get("recommended_area_id") or "").strip()
+    hotel_id = str(value.get("selected_hotel_id") or "").strip()
+
+    if hotel_id not in hotel_by_id:
+        hotel_id = _fallback_hotel_id(hotel_options, area_options=area_options, travel_task=travel_task)
+        errors.append("selected_hotel_id invalid_or_missing")
+
+    if area_id not in area_by_id:
+        hotel_area = str(hotel_by_id.get(hotel_id, {}).get("area") or "")
+        area_id = _find_area_id_by_name(area_options, hotel_area) or _fallback_area_id(area_options)
+        errors.append("recommended_area_id invalid_or_missing")
+
+    return {"recommended_area_id": area_id, "selected_hotel_id": hotel_id}, errors
+
+
+def _fallback_hotel_selection(
+    *,
+    area_options: list[dict[str, Any]],
+    hotel_options: list[dict[str, Any]],
+    travel_task: dict[str, Any],
+) -> dict[str, str]:
+    hotel_id = _fallback_hotel_id(hotel_options, area_options=area_options, travel_task=travel_task)
+    hotel = _find_hotel_option(hotel_options, hotel_id)
+    area_id = _find_area_id_by_name(area_options, str(hotel.get("area") if hotel else "")) or _fallback_area_id(area_options)
+    return {"recommended_area_id": area_id, "selected_hotel_id": hotel_id}
+
+
+def _expand_hotel_plan(
+    selection: dict[str, str],
+    *,
+    area_options: list[dict[str, Any]],
+    hotel_options: list[dict[str, Any]],
+    travel_task: dict[str, Any],
+    llm_reason: str,
+) -> dict[str, Any]:
+    area = _find_area_option(area_options, selection.get("recommended_area_id")) or (area_options[0] if area_options else {})
+    hotel = _find_hotel_option(hotel_options, selection.get("selected_hotel_id")) or (hotel_options[0] if hotel_options else {})
+    selected_hotel = {
+        "name": hotel.get("name") or "待确认住宿",
+        "area": hotel.get("area") or area.get("area") or "市中心地铁沿线",
+        "price_per_night": hotel.get("price_per_night") or "待确认",
+        "nearest_subway": hotel.get("nearest_subway") or "待确认",
+        "type": hotel.get("type") or "经济型酒店",
+    }
+    reason_prefix = f"LLM选择理由：{_truncate_text(llm_reason, 20)}；" if llm_reason else ""
+    return {
+        "recommended_area": area.get("area") or selected_hotel["area"],
+        "area_reason": "该区域覆盖较多行程景点，适合减少通勤。",
+        "selected_hotel": selected_hotel,
+        "hotel_reason": (
+            f"{reason_prefix}该酒店价格为{selected_hotel['price_per_night']}，"
+            f"附近地铁为{selected_hotel['nearest_subway']}。"
+        ),
+        "estimated_total_hotel_cost": _estimate_total_cost(selected_hotel, travel_task),
+    }
+
+
+def _fallback_hotel_id(
+    hotel_options: list[dict[str, Any]],
+    *,
+    area_options: list[dict[str, Any]],
+    travel_task: dict[str, Any],
+) -> str:
+    if not hotel_options:
+        return ""
+    top_area = str((area_options[0] if area_options else {}).get("area") or "")
+    budget_level = str(_constraint_section(travel_task, "general").get("budget_level") or travel_task.get("budget_level") or "")
+
+    def key(hotel: dict[str, Any]) -> tuple[int, int, int]:
+        price = _safe_int(hotel.get("price_per_night"), default=9999)
+        has_subway = 0 if str(hotel.get("nearest_subway") or "").strip() else 1
+        area_match = 0 if top_area and str(hotel.get("area") or "") == top_area else 1
+        if budget_level == "low":
+            return price, has_subway, area_match
+        return area_match, has_subway, price
+
+    selected = min(hotel_options, key=key)
+    return str(selected.get("hotel_id") or "")
+
+
+def _fallback_area_id(area_options: list[dict[str, Any]]) -> str:
+    return str((area_options[0] if area_options else {}).get("area_id") or "")
+
+
+def _find_area_id_by_name(area_options: list[dict[str, Any]], area_name: str) -> str:
+    for option in area_options:
+        area = str(option.get("area") or "")
+        if area_name and (area_name == area or area_name in area or area in area_name):
+            return str(option.get("area_id") or "")
+    return ""
+
+
+def _find_area_option(area_options: list[dict[str, Any]], area_id: str | None) -> dict[str, Any] | None:
+    for option in area_options:
+        if option.get("area_id") == area_id:
+            return option
+    return None
+
+
+def _find_hotel_option(hotel_options: list[dict[str, Any]], hotel_id: str | None) -> dict[str, Any] | None:
+    for option in hotel_options:
+        if option.get("hotel_id") == hotel_id:
+            return option
+    return None
+
+
+def _default_constraints_for_traffic() -> list[str]:
+    return ["住宿地到每日首个景点要纳入交通规划", "每日最后一个景点回住宿地要纳入交通规划", "优先地铁/步行"]
+
+
+def _truncate_text(value: Any, limit: int) -> str:
+    return str(value or "").strip()[:limit]
 
 
 def _split_area_phrase(raw_area: str) -> list[str]:

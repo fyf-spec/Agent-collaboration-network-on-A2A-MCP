@@ -228,7 +228,9 @@ class MCPGatewayState:
             str(server["method"]): server_key
             for server_key, server in MCP_SERVERS.items()
         }
-        self.routes["get_intercity_transport"] = "traffic"
+        for server_key, server in MCP_SERVERS.items():
+            for method in server.get("extra_methods", []):
+                self.routes[str(method)] = server_key
         self.cache = TTLCache(float(MCP_GATEWAY["cache_ttl_seconds"]))
         self.metrics = GatewayMetrics()
         self.rate_limiter = RateLimiter(

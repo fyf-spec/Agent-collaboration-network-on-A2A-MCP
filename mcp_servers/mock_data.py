@@ -18,12 +18,16 @@ WEATHER_DATA = {
     "北京": {"city": "北京", "date": "明天", "temp": "15°C", "condition": "晴", "wind": "微风"},
     "上海": {"city": "上海", "date": "明天", "temp": "18°C", "condition": "多云", "wind": "东南风 3 级"},
     "广州": {"city": "广州", "date": "明天", "temp": "24°C", "condition": "小雨", "wind": "南风 2 级"},
+    "杭州": {"city": "杭州", "date": "明天", "temp": "19°C", "condition": "多云", "wind": "东风 2 级"},
+    "南京": {"city": "南京", "date": "明天", "temp": "20°C", "condition": "晴到多云", "wind": "东南风 2 级"},
 }
 
 TRANSPORT_DATA = {
     "北京": {"city": "北京", "route": "地铁 4 号线 -> 2 号线", "status": "早高峰局部拥堵", "duration": "约 45 分钟"},
     "上海": {"city": "上海", "route": "地铁 2 号线 -> 10 号线", "status": "主干道通行正常", "duration": "约 38 分钟"},
     "广州": {"city": "广州", "route": "地铁 3 号线 -> 1 号线", "status": "雨天车速偏慢", "duration": "约 50 分钟"},
+    "杭州": {"city": "杭州", "route": "地铁 1 号线/2 号线/5 号线按景区就近换乘", "status": "主城区通行正常，西湖周边建议步行接驳", "duration": "约 30-50 分钟"},
+    "南京": {"city": "南京", "route": "地铁 1 号线/2 号线/3 号线按景点换乘", "status": "主干线路通行正常，夫子庙秦淮河周边建议步行", "duration": "约 30-55 分钟"},
 }
 
 ATTRACTION_DATA = {
@@ -176,6 +180,142 @@ ATTRACTION_DATA = {
             "tags": ["地标", "经典景点"],
         }
     ],
+    "杭州": [
+        {
+            "name": "西湖",
+            "area": "湖滨-西湖边",
+            "ticket": "免费",
+            "duration": "3-4小时",
+            "open_time": "全天",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "龙翔桥/凤起路",
+            "tags": ["经典景点", "免费", "地标", "必去", "公共交通方便"],
+        },
+        {
+            "name": "灵隐寺",
+            "area": "灵隐-西湖西线",
+            "ticket": "45-75元",
+            "duration": "2-3小时",
+            "open_time": "07:00-18:00",
+            "reservation_required": False,
+            "indoor_or_outdoor": "mixed",
+            "nearest_subway": "黄龙体育中心换乘公交",
+            "tags": ["经典景点", "历史", "寺庙", "mixed"],
+        },
+        {
+            "name": "河坊街",
+            "area": "吴山-河坊街区域",
+            "ticket": "免费",
+            "duration": "1-2小时",
+            "open_time": "全天",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "定安路",
+            "tags": ["免费", "街区", "低预算", "公共交通方便"],
+        },
+        {
+            "name": "西溪湿地",
+            "area": "西溪湿地区域",
+            "ticket": "70-80元",
+            "duration": "3-4小时",
+            "open_time": "08:00-17:30",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "西溪湿地南",
+            "tags": ["自然", "经典景点", "户外"],
+        },
+        {
+            "name": "京杭大运河",
+            "area": "拱宸桥-运河区域",
+            "ticket": "免费",
+            "duration": "2-3小时",
+            "open_time": "全天",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "拱宸桥东",
+            "tags": ["免费", "历史", "低预算", "公共交通方便"],
+        },
+        {
+            "name": "雷峰塔",
+            "area": "湖滨-西湖边",
+            "ticket": "40元",
+            "duration": "1-2小时",
+            "open_time": "08:00-20:00",
+            "reservation_required": False,
+            "indoor_or_outdoor": "mixed",
+            "nearest_subway": "龙翔桥换乘公交",
+            "tags": ["经典景点", "历史", "西湖周边"],
+        },
+    ],
+    "南京": [
+        {
+            "name": "中山陵",
+            "area": "钟山风景区",
+            "ticket": "免费",
+            "duration": "2-3小时",
+            "open_time": "08:30-17:00",
+            "reservation_required": True,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "苜蓿园换乘景区交通",
+            "tags": ["经典景点", "免费", "历史", "必去"],
+        },
+        {
+            "name": "夫子庙",
+            "area": "夫子庙-秦淮河区域",
+            "ticket": "免费",
+            "duration": "1-2小时",
+            "open_time": "全天",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "夫子庙",
+            "tags": ["经典景点", "免费", "街区", "公共交通方便"],
+        },
+        {
+            "name": "秦淮河",
+            "area": "夫子庙-秦淮河区域",
+            "ticket": "河岸免费，游船另收费",
+            "duration": "1-2小时",
+            "open_time": "全天",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "夫子庙/武定门",
+            "tags": ["经典景点", "夜景", "低预算"],
+        },
+        {
+            "name": "明孝陵",
+            "area": "钟山风景区",
+            "ticket": "70元",
+            "duration": "2-3小时",
+            "open_time": "06:30-18:30",
+            "reservation_required": False,
+            "indoor_or_outdoor": "outdoor",
+            "nearest_subway": "苜蓿园",
+            "tags": ["经典景点", "历史", "户外"],
+        },
+        {
+            "name": "南京博物院",
+            "area": "中山东路-博物院区域",
+            "ticket": "免费",
+            "duration": "2-4小时",
+            "open_time": "09:00-17:00",
+            "reservation_required": True,
+            "indoor_or_outdoor": "indoor",
+            "nearest_subway": "博物院周边地铁站",
+            "tags": ["室内", "雨天备选", "免费", "博物馆"],
+        },
+        {
+            "name": "总统府",
+            "area": "新街口-总统府区域",
+            "ticket": "35元",
+            "duration": "1-2小时",
+            "open_time": "08:30-17:00",
+            "reservation_required": False,
+            "indoor_or_outdoor": "mixed",
+            "nearest_subway": "大行宫",
+            "tags": ["经典景点", "历史", "公共交通方便"],
+        },
+    ],
 }
 
 
@@ -324,7 +464,7 @@ def get_route(
         ]
 
     return {
-        "city": normalized_city if normalized_city in ATTRACTION_DATA else DEFAULT_CITY,
+        "city": normalized_city,
         "requested_city": normalized_city,
         "fallback_used": normalized_city not in ATTRACTION_DATA,
         "origin": origin,
@@ -367,7 +507,7 @@ def _lookup(dataset: dict[str, dict[str, Any]], city: str) -> dict[str, Any]:
 
 
 def _spot_area(city: str, spot_name: str) -> str | None:
-    spots = ATTRACTION_DATA.get(city) or ATTRACTION_DATA.get(DEFAULT_CITY, [])
+    spots = ATTRACTION_DATA.get(city, [])
     for spot in spots:
         name = str(spot.get("name", ""))
         if spot_name == name or spot_name in name or name in spot_name:
@@ -377,7 +517,7 @@ def _spot_area(city: str, spot_name: str) -> str | None:
     # before Traffic Agent. HOTEL_DATA is defined later in this module; the
     # lookup happens at runtime after module initialization, so globals() is safe.
     hotel_data = globals().get("HOTEL_DATA", {})
-    hotels = hotel_data.get(city) or hotel_data.get(DEFAULT_CITY, []) if isinstance(hotel_data, dict) else []
+    hotels = hotel_data.get(city, []) if isinstance(hotel_data, dict) else []
     for hotel in hotels:
         if not isinstance(hotel, dict):
             continue
@@ -401,6 +541,10 @@ def _generic_subway_route(city: str, origin: str, destination: str) -> str:
         return "地铁 2/10 号线等市区线路换乘"
     if city == "广州":
         return "地铁 3/1 号线等市区线路换乘"
+    if city == "杭州":
+        return "地铁 1/2/5 号线结合公交或步行接驳"
+    if city == "南京":
+        return "地铁 1/2/3 号线结合景区步行接驳"
     return "城市轨道交通换乘"
 
 
@@ -468,6 +612,70 @@ HOTEL_DATA = {
             "pros": ["地铁换乘方便", "靠近南京路"],
             "cons": ["热门区域价格波动大"],
         }
+    ],
+    "杭州": [
+        {
+            "name": "湖滨西湖便捷酒店",
+            "area": "湖滨-西湖边",
+            "price_per_night": 280,
+            "type": "经济型酒店",
+            "nearest_subway": "龙翔桥",
+            "tags": ["地铁方便", "近西湖", "公共交通方便", "市中心"],
+            "pros": ["步行可到西湖湖滨", "地铁和公交换乘方便", "适合首次游览杭州"],
+            "cons": ["热门区域节假日价格可能上涨"],
+        },
+        {
+            "name": "武林广场地铁酒店",
+            "area": "武林广场",
+            "price_per_night": 240,
+            "type": "经济型酒店",
+            "nearest_subway": "武林广场",
+            "tags": ["低预算", "地铁方便", "公共交通方便", "市中心"],
+            "pros": ["多条线路换乘方便", "前往西湖和运河都较顺路", "价格相对稳妥"],
+            "cons": ["距离湖滨核心景观需短途地铁或公交"],
+        },
+        {
+            "name": "杭州东站轻住酒店",
+            "area": "杭州东站附近",
+            "price_per_night": 220,
+            "type": "经济型酒店",
+            "nearest_subway": "火车东站",
+            "tags": ["低预算", "高铁方便", "地铁方便"],
+            "pros": ["适合高铁往返", "地铁接入主城区方便", "价格较低"],
+            "cons": ["去西湖和灵隐寺通勤时间稍长"],
+        },
+    ],
+    "南京": [
+        {
+            "name": "新街口地铁精选酒店",
+            "area": "新街口",
+            "price_per_night": 260,
+            "type": "经济型酒店",
+            "nearest_subway": "新街口",
+            "tags": ["地铁方便", "市中心", "公共交通方便"],
+            "pros": ["地铁换乘便利", "前往总统府、夫子庙和钟山都较均衡", "餐饮选择多"],
+            "cons": ["核心商圈价格可能波动"],
+        },
+        {
+            "name": "夫子庙秦淮客栈",
+            "area": "夫子庙-秦淮河区域",
+            "price_per_night": 230,
+            "type": "经济型客栈",
+            "nearest_subway": "夫子庙",
+            "tags": ["低预算", "近夫子庙", "地铁方便", "公共交通方便"],
+            "pros": ["夜游秦淮河方便", "步行覆盖夫子庙周边", "适合低预算"],
+            "cons": ["热门街区夜间可能较热闹"],
+        },
+        {
+            "name": "南京南站便捷酒店",
+            "area": "南京南站附近",
+            "price_per_night": 210,
+            "type": "经济型酒店",
+            "nearest_subway": "南京南站",
+            "tags": ["低预算", "高铁方便", "地铁方便"],
+            "pros": ["高铁抵离方便", "价格相对低", "地铁进城线路明确"],
+            "cons": ["距离主要景点通勤时间略长"],
+        },
     ],
 }
 
@@ -561,7 +769,7 @@ def search_hotels(
         hotels = [{key: value for key, value in hotel.items() if key in keep} for hotel in hotels]
 
     return {
-        "city": normalized_city if normalized_city in HOTEL_DATA else DEFAULT_CITY,
+        "city": normalized_city,
         "requested_city": normalized_city,
         "fallback_used": normalized_city not in HOTEL_DATA,
         "days": days,

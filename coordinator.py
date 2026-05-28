@@ -1054,15 +1054,39 @@ def _task_analysis_prompt(question: str, fallback: dict[str, Any]) -> str:
         "rule_fallback": fallback,
         "output_schema": {
             "travel_task": {
-                "origin_city": "城市或null",
-                "destination_city": "城市",
+                "origin_city": "city or null",
+                "destination_city": "city",
                 "days": 5,
-                "start_date": "明天|未指定|具体日期",
+                "start_date": "tomorrow|unspecified|specific date",
                 "budget_level": "low|normal|high|unknown",
                 "transport_preference": "public_transport|fastest|cheapest|taxi|normal",
-                "must_visit": ["景点名"],
-                "preferences": ["偏好"],
-                "avoid": ["需要避免的事项"]
+                "must_visit": ["legacy attraction names for compatibility"],
+                "preferences": ["legacy preference tags for compatibility"],
+                "avoid": ["legacy avoid tags for compatibility"],
+                "constraints": {
+                    "attractions": {
+                        "must_visit": ["attraction names user explicitly requires"],
+                        "preferred_types": ["nature", "museum", "history", "food street"],
+                        "avoid": [],
+                        "pace": "relaxed|normal|packed|unknown",
+                    },
+                    "traffic": {
+                        "preference": "public_transport|fastest|cheapest|taxi|normal",
+                        "avoid": [],
+                        "max_transfer": None,
+                        "walking_tolerance": "low|normal|high|unknown",
+                    },
+                    "hotel": {
+                        "preferred_features": ["quiet", "good environment", "near subway"],
+                        "preferred_area": None,
+                        "hotel_type": None,
+                    },
+                    "general": {
+                        "budget_level": "low|normal|high|unknown",
+                        "travel_style": "budget|comfort|balanced|unknown",
+                        "special_needs": [],
+                    },
+                },
             }
         },
     }
@@ -1089,6 +1113,8 @@ def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str)
     for key in ["must_visit", "preferences", "avoid"]:
         if isinstance(value.get(key), list):
             result[key] = [str(item).strip() for item in value[key] if str(item).strip()]
+    result["constraints"] = _normalize_task_constraints(value.get("constraints"), result)
+    _sync_legacy_fields_from_constraints(result)
     result.setdefault("avoid", [])
     result["_parser"] = parser
     return result
@@ -1120,8 +1146,117 @@ def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
         "must_visit": must_visit,
         "preferences": preferences,
         "avoid": [],
+        "constraints": _build_task_constraints(
+            must_visit=must_visit,
+            preferences=preferences,
+            avoid=[],
+            budget_level=budget_level,
+            transport_preference=transport_preference,
+            question=question,
+        ),
         "_parser": "rule_fallback",
     }
+
+
+def _normalize_task_constraints(value: Any, flat_task: dict[str, Any]) -> dict[str, Any]:
+    fallback = _build_task_constraints(
+        must_visit=_as_clean_list(flat_task.get("must_visit")),
+        preferences=_as_clean_list(flat_task.get("preferences")),
+        avoid=_as_clean_list(flat_task.get("avoid")),
+        budget_level=str(flat_task.get("budget_level") or "normal"),
+        transport_preference=str(flat_task.get("transport_preference") or "normal"),
+        question="",
+    )
+    if not isinstance(value, dict):
+        return fallback
+
+    result = dict(fallback)
+    for section in ["attractions", "traffic", "hotel", "general"]:
+        incoming = value.get(section)
+        if not isinstance(incoming, dict):
+            continue
+        merged = dict(result.get(section, {}))
+        for key, item in incoming.items():
+            if isinstance(item, list):
+                merged[key] = [str(x).strip() for x in item if str(x).strip()]
+            elif isinstance(item, (str, int, float, bool)) or item is None:
+                merged[key] = item
+        result[section] = merged
+    return result
+
+
+def _build_task_constraints(
+    *,
+    must_visit: list[str],
+    preferences: list[str],
+    avoid: list[str],
+    budget_level: str,
+    transport_preference: str,
+    question: str,
+) -> dict[str, Any]:
+    preferred_types = [item for item in preferences if item not in {"低预算", "公共交通方便"}]
+    if any(word in question for word in ["自然", "风景", "山水", "湖"]):
+        preferred_types.append("自然风景")
+    if any(word in question for word in ["博物馆", "历史", "文化"]):
+        preferred_types.append("历史文化")
+
+    traffic_avoid: list[str] = []
+    if any(word in question for word in ["不打车", "少打车"]):
+        traffic_avoid.append("taxi")
+
+    hotel_features: list[str] = []
+    if any(word in question for word in ["环境好", "安静", "舒适", "干净"]):
+        hotel_features.append("环境好")
+    if any(word in question for word in ["近地铁", "地铁方便", "交通方便"]):
+        hotel_features.append("近地铁")
+
+    return {
+        "attractions": {
+            "must_visit": list(dict.fromkeys(must_visit)),
+            "preferred_types": list(dict.fromkeys(preferred_types)),
+            "avoid": avoid,
+            "pace": "normal",
+        },
+        "traffic": {
+            "preference": transport_preference or "normal",
+            "avoid": traffic_avoid,
+            "max_transfer": None,
+            "walking_tolerance": "normal",
+        },
+        "hotel": {
+            "preferred_features": list(dict.fromkeys(hotel_features)),
+            "preferred_area": None,
+            "hotel_type": None,
+        },
+        "general": {
+            "budget_level": budget_level or "normal",
+            "travel_style": "budget" if budget_level == "low" else "balanced",
+            "special_needs": [],
+        },
+    }
+
+
+def _sync_legacy_fields_from_constraints(task: dict[str, Any]) -> None:
+    constraints = task.get("constraints")
+    if not isinstance(constraints, dict):
+        return
+    attractions = constraints.get("attractions") if isinstance(constraints.get("attractions"), dict) else {}
+    traffic = constraints.get("traffic") if isinstance(constraints.get("traffic"), dict) else {}
+    general = constraints.get("general") if isinstance(constraints.get("general"), dict) else {}
+    if isinstance(attractions.get("must_visit"), list):
+        task["must_visit"] = _as_clean_list(attractions.get("must_visit"))
+    if isinstance(attractions.get("preferred_types"), list):
+        task["preferences"] = _as_clean_list(attractions.get("preferred_types"))
+    if isinstance(general.get("budget_level"), str) and general.get("budget_level"):
+        task["budget_level"] = str(general["budget_level"])
+    if isinstance(traffic.get("preference"), str) and traffic.get("preference"):
+        task["transport_preference"] = str(traffic["preference"])
+
+
+def _as_clean_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _extract_origin_city(text: str) -> str | None:
@@ -1163,14 +1298,21 @@ def build_weather_constraints(weather_result: dict[str, Any] | None, travel_task
     all_days = [f"day{i}" for i in range(1, days + 1)]
     constraints = {
         "outdoor_good_days": all_days,
+        "outdoor_suitable_days": all_days,
         "indoor_preferred_days": [],
         "rainy_days": [],
-        "risk_level": "low",
+        "weather_by_day": [
+            {
+                "day": day,
+                "outdoor_suitable": True,
+                "indoor_preferred": False,
+            }
+            for day in all_days
+        ],
         "source": "coordinator_from_weather_mcp_result",
     }
     if not isinstance(weather_result, dict):
         constraints["source"] = "coordinator_default_no_weather_result"
-        constraints["risk_level"] = "unknown"
         return constraints
 
     metadata = weather_result.get("metadata") or {}
@@ -1188,7 +1330,16 @@ def build_weather_constraints(weather_result: dict[str, Any] | None, travel_task
             constraints["rainy_days"] = ["day1"]
             constraints["indoor_preferred_days"] = ["day1"]
             constraints["outdoor_good_days"] = [day for day in all_days if day != "day1"]
-            constraints["risk_level"] = "medium"
+            constraints["outdoor_suitable_days"] = constraints["outdoor_good_days"]
+            constraints["weather_by_day"] = [
+                {
+                    "day": day,
+                    "condition": condition,
+                    "outdoor_suitable": day != "day1",
+                    "indoor_preferred": day == "day1",
+                }
+                for day in all_days
+            ]
         constraints["raw_condition"] = condition
         constraints["city"] = mcp_result.get("city")
         constraints["date"] = mcp_result.get("date")
@@ -1481,13 +1632,16 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     weather_constraints = weather.get("weather_constraints", {}) or {}
     if weather_constraints:
         raw_condition = weather_constraints.get("raw_condition") or ""
-        schedule = weather_constraints.get("schedule_advice") or "适合正常出行"
-        clothing = weather_constraints.get("clothing_advice")
+        indoor_days = weather_constraints.get("indoor_preferred_days") or []
+        outdoor_days = weather_constraints.get("outdoor_suitable_days") or weather_constraints.get("outdoor_good_days") or []
+        schedule = (
+            f"{'、'.join(str(day) for day in indoor_days)}优先安排室内或 mixed 景点"
+            if indoor_days
+            else f"{'、'.join(str(day) for day in outdoor_days) or '多数日期'}适合安排户外景点"
+        )
         date = weather_constraints.get("date") or ""
         lines.append("\n一、天气与出行约束")
         weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
-        if clothing:
-            weather_line += f"{_format_advice_text(clothing)}。"
         lines.append(weather_line)
 
     ticket_total = _extract_ticket_total(estimated_cost, daily_plan)
@@ -1583,7 +1737,7 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     lines.append("- 说明：以上为示例估算，实际票价、酒店价格和交通费用以出行当天平台信息为准；餐饮和购物未计入。")
 
     lines.append("\n七、提醒")
-    lines.append("- 故宫、天安门广场等热门景点请提前通过官方渠道预约，并以当天开放信息为准。")
+    lines.append("- 需要预约的热门景点请提前通过官方渠道预约，并以当天开放信息为准。")
     lines.append("- 交通耗时、费用和住宿价格为估算结果，实际出行前以当天平台信息为准。")
     for warning in warnings:
         # Safety guard: final user answer should not contain stale data-missing

@@ -38,7 +38,7 @@ from common.schemas import (
     build_result_payload,
     validate_task_payload,
 )
-from llm_client import LLMClientError, llm
+from llm_client import llm
 
 
 AGENT_NAME = "attraction_agent"
@@ -171,35 +171,70 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
         mcp_result = call_attraction_mcp(task_id, travel_task)
         spots = mcp_result.get("spots", [])
         days = int(travel_task.get("days") or mcp_result.get("days") or 3)
+        compact_spots = build_compact_spots(spots)
+        grouped_spots = build_grouped_spots(compact_spots)
+        spot_relations = build_spot_relations(grouped_spots)
+        llm_daily_spot_ids: dict[str, list[str]] = {}
+        quality_source = "attraction_agent_rule_fallback"
 
         try:
             llm_json = llm.chat_json(
-                _attraction_selection_prompt(travel_task, weather_constraints, spots),
-                max_tokens=1100,
-                temperature=0.0,
-                timeout_seconds=18.0,
+                _attraction_selection_prompt(
+                    travel_task=travel_task,
+                    weather_constraints=weather_constraints,
+                    grouped_spots=grouped_spots,
+                    spot_relations=spot_relations,
+                ),
+                max_tokens=400,
+                temperature=0.2,
+                timeout_seconds=45.0,
             )
-            daily_plan_skeleton = _normalize_daily_plan(
-                llm_json.get("daily_plan") or llm_json.get("daily_plan_skeleton"),
-                spots=spots,
+            llm_daily_spot_ids = normalize_daily_spot_ids(
+                llm_json.get("daily_spot_ids"),
+                compact_spots=compact_spots,
                 days=days,
+                must_visit=_attraction_must_visit(travel_task),
                 weather_constraints=weather_constraints,
             )
-            constraints_for_traffic = _normalize_constraints_for_traffic(
-                llm_json.get("constraints_for_traffic"),
-                weather_constraints=weather_constraints,
-            )
-            rejected_spots = llm_json.get("rejected_spots") if isinstance(llm_json.get("rejected_spots"), list) else []
+            if not any(llm_daily_spot_ids.values()):
+                raise ValueError("LLM daily_spot_ids is empty after validation")
             llm_used = True
+            quality_source = "attraction_agent_llm_spot_selector"
         except Exception as exc:
             llm_error = str(exc)
-            daily_plan_skeleton = build_daily_plan_skeleton(
-                spots=spots,
+            llm_daily_spot_ids = build_rule_daily_spot_ids(
+                compact_spots=compact_spots,
+                days=days,
+                must_visit=_attraction_must_visit(travel_task),
+                weather_constraints=weather_constraints,
+            )
+            quality_source = "attraction_agent_rule_fallback"
+
+        daily_plan_skeleton = expand_daily_plan_skeleton(
+            llm_daily_spot_ids,
+            compact_spots=compact_spots,
+            days=days,
+            weather_constraints=weather_constraints,
+        )
+        if not any(day.get("spots") for day in daily_plan_skeleton.values() if isinstance(day, dict)):
+            llm_error = llm_error or "daily_plan_skeleton is empty after expansion"
+            llm_used = False
+            quality_source = "attraction_agent_rule_fallback"
+            llm_daily_spot_ids = build_rule_daily_spot_ids(
+                compact_spots=compact_spots,
+                days=days,
+                must_visit=_attraction_must_visit(travel_task),
+                weather_constraints=weather_constraints,
+            )
+            daily_plan_skeleton = expand_daily_plan_skeleton(
+                llm_daily_spot_ids,
+                compact_spots=compact_spots,
                 days=days,
                 weather_constraints=weather_constraints,
             )
-            constraints_for_traffic = _normalize_constraints_for_traffic(None, weather_constraints=weather_constraints)
-            rejected_spots = []
+
+        constraints_for_traffic = _normalize_constraints_for_traffic(None, weather_constraints=weather_constraints)
+        rejected_spots = []
 
         ticket_total = estimate_ticket_total(daily_plan_skeleton)
         summary = build_summary(travel_task, weather_constraints, daily_plan_skeleton)
@@ -217,7 +252,13 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             "mcp_method": MCP_SERVERS[MCP_SERVER_KEY]["method"],
             "mcp_result": mcp_result,
             "travel_task": travel_task,
+            "attraction_constraints": _constraint_section(travel_task, "attractions"),
+            "general_constraints": _constraint_section(travel_task, "general"),
             "weather_constraints": weather_constraints,
+            "compact_spots": compact_spots,
+            "grouped_spots": grouped_spots,
+            "spot_relations": spot_relations,
+            "llm_daily_spot_ids": llm_daily_spot_ids,
             "daily_plan_skeleton": daily_plan_skeleton,
             "constraints_for_traffic": constraints_for_traffic,
             "estimated_cost": {"ticket_total": ticket_total},
@@ -225,6 +266,7 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             "quality": {
                 "llm_used": llm_used,
                 "llm_error": llm_error,
+                "source": quality_source,
                 "missing_fields": [],
                 "confidence": 0.9 if llm_error is None else 0.78,
             },
@@ -308,9 +350,9 @@ def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, 
     params = {
         "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
         "days": travel_task.get("days", 3),
-        "budget_level": travel_task.get("budget_level", "normal"),
-        "must_visit": travel_task.get("must_visit", []),
-        "preferences": travel_task.get("preferences", []),
+        "budget_level": _constraint_section(travel_task, "general").get("budget_level", travel_task.get("budget_level", "normal")),
+        "must_visit": _attraction_must_visit(travel_task),
+        "preferences": _constraint_section(travel_task, "attractions").get("preferred_types", travel_task.get("preferences", [])),
         "requested_fields": [
             "name",
             "area",
@@ -363,40 +405,383 @@ def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, 
 
 
 def _attraction_selection_prompt(
+    *,
     travel_task: dict[str, Any],
     weather_constraints: dict[str, Any],
-    spots: list[dict[str, Any]],
+    grouped_spots: list[dict[str, Any]],
+    spot_relations: list[dict[str, Any]],
 ) -> str:
     payload = {
-        "travel_task": travel_task,
-        "weather_constraints": weather_constraints,
-        "attraction_candidates": spots[:14],
+        "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
+        "days": travel_task.get("days", 3),
+        "attraction_constraints": _constraint_section(travel_task, "attractions"),
+        "general_constraints": _constraint_section(travel_task, "general"),
+        "weather_summary": _weather_summary(weather_constraints),
+        "grouped_spots": grouped_spots,
+        "spot_relations": spot_relations,
         "output_schema": {
-            "daily_plan": {
-                "day1": {
-                    "theme": "不超过20字",
-                    "spots": ["景点名"],
-                    "area": "区域名",
-                    "reason": "不超过35字",
-                    "estimated_visit_time": "如 4-6小时",
-                    "estimated_ticket_cost": "如 40-60元",
-                    "reservation_required": ["景点名"],
-                    "notes": ["短提示"],
-                }
+            "daily_spot_ids": {
+                "day1": ["s1", "s2"],
+                "day2": ["s3"],
             },
-            "constraints_for_traffic": ["优先公共交通"],
-            "rejected_spots": [{"spot": "景点名", "reason": "短原因"}],
+            "reason": "不超过20个中文字符",
         },
     }
     return "\n".join(
         [
-            "你是 Attraction Agent，只做景点筛选和每日分配。",
-            "根据 travel_task、weather_constraints 和 attraction_candidates 输出严格 JSON。",
-            "必须满足 must_visit；优先低预算、同区域集中游玩、公共交通方便；雨天优先室内或 mixed 景点。",
-            "不要 Markdown，不要解释，不要生成最终旅行攻略。",
-            json.dumps(payload, ensure_ascii=False, default=str),
+            "你是景点选择器，只从给定 spot_id 中选择每天安排哪些景点。",
+            "景点已按地理区域分组；spot_relations 已给出远近关系，不要根据地址自行猜测距离。",
+            "优先把同一区域/very_close 景点放在同一天；不同区域除非必要不要强行同一天。",
+            "每天安排 1-3 个景点；attraction_constraints.must_visit 尽量必须出现；general_constraints 预算有限时优先免费或低价；雨天优先 indoor 或 mixed。",
+            "不要编造新景点；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
+            "输出格式只能是 {\"daily_spot_ids\":{\"day1\":[\"s1\"]},\"reason\":\"不超过20个中文字符\"}。",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
         ]
     )
+
+
+def build_compact_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for index, spot in enumerate(spots, start=1):
+        if not isinstance(spot, dict):
+            continue
+        area = spot.get("area") or spot.get("area_cluster") or "未知区域"
+        compact.append(
+            {
+                "id": f"s{index}",
+                "name": spot.get("name"),
+                "area": area,
+                "ticket": spot.get("ticket"),
+                "duration": spot.get("duration"),
+                "indoor_or_outdoor": spot.get("indoor_or_outdoor"),
+                "reservation_required": bool(spot.get("reservation_required")),
+                "tags": spot.get("tags") if isinstance(spot.get("tags"), list) else [],
+            }
+        )
+    return compact
+
+
+def build_grouped_spots(compact_spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for spot in compact_spots:
+        groups[str(spot.get("area") or "未知区域")].append(spot)
+    result: list[dict[str, Any]] = []
+    for area, area_spots in groups.items():
+        result.append(
+            {
+                "area": area,
+                "spot_ids": [str(spot.get("id")) for spot in area_spots],
+                "spots": area_spots,
+                "internal_travel_hint": "同一区域，优先安排在同一天",
+            }
+        )
+    result.sort(key=lambda item: len(item["spot_ids"]), reverse=True)
+    return result
+
+
+def build_spot_relations(grouped_spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    relations: list[dict[str, Any]] = []
+    for group in grouped_spots:
+        spot_ids = [str(spot_id) for spot_id in group.get("spot_ids", []) if str(spot_id).strip()]
+        for index, source_id in enumerate(spot_ids):
+            for target_id in spot_ids[index + 1 :]:
+                relations.append(
+                    {
+                        "from": source_id,
+                        "to": target_id,
+                        "relation": "very_close",
+                        "hint": "适合安排在同一天",
+                    }
+                )
+                if len(relations) >= 18:
+                    return relations
+    if len(grouped_spots) > 1:
+        first_group = grouped_spots[0].get("spot_ids", [])
+        for group in grouped_spots[1:4]:
+            other_ids = group.get("spot_ids", [])
+            if first_group and other_ids:
+                relations.append(
+                    {
+                        "from": str(first_group[0]),
+                        "to": str(other_ids[0]),
+                        "relation": "far_or_unknown",
+                        "hint": "除非必要，不要强行安排在同一天",
+                    }
+                )
+    return relations
+
+
+def _weather_summary(weather_constraints: dict[str, Any]) -> str:
+    if not isinstance(weather_constraints, dict) or not weather_constraints:
+        return "天气约束未知，按常规户外安排"
+    risk = str(weather_constraints.get("risk_level") or "unknown")
+    rainy_days = _as_short_list(weather_constraints.get("rainy_days"))
+    indoor_days = _as_short_list(weather_constraints.get("indoor_preferred_days"))
+    condition = str(weather_constraints.get("raw_condition") or "")
+    if rainy_days or indoor_days:
+        return f"风险{risk}；{','.join(rainy_days or indoor_days)}优先室内/mixed；天气{condition}"
+    return f"风险{risk}；适合户外；天气{condition}"
+
+
+def _as_short_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, Any]:
+    constraints = travel_task.get("constraints")
+    if isinstance(constraints, dict) and isinstance(constraints.get(section), dict):
+        return dict(constraints[section])
+    if section == "attractions":
+        return {
+            "must_visit": _as_short_list(travel_task.get("must_visit")),
+            "preferred_types": _as_short_list(travel_task.get("preferences")),
+            "avoid": _as_short_list(travel_task.get("avoid")),
+            "pace": "normal",
+        }
+    if section == "general":
+        return {
+            "budget_level": travel_task.get("budget_level", "normal"),
+            "travel_style": "budget" if travel_task.get("budget_level") == "low" else "balanced",
+            "special_needs": [],
+        }
+    return {}
+
+
+def _attraction_must_visit(travel_task: dict[str, Any]) -> list[str]:
+    attractions = _constraint_section(travel_task, "attractions")
+    must_visit = attractions.get("must_visit")
+    if isinstance(must_visit, list):
+        return _as_short_list(must_visit)
+    return _as_short_list(travel_task.get("must_visit"))
+
+
+def _weather_summary(weather_constraints: dict[str, Any]) -> str:
+    if not isinstance(weather_constraints, dict) or not weather_constraints:
+        return "weather unknown; plan outdoor normally"
+    rainy_days = _as_short_list(weather_constraints.get("rainy_days"))
+    indoor_days = _as_short_list(weather_constraints.get("indoor_preferred_days"))
+    outdoor_days = _as_short_list(weather_constraints.get("outdoor_suitable_days") or weather_constraints.get("outdoor_good_days"))
+    condition = str(weather_constraints.get("raw_condition") or "")
+    if rainy_days or indoor_days:
+        return f"{','.join(rainy_days or indoor_days)} prefer indoor/mixed; weather={condition}"
+    return f"{','.join(outdoor_days) or 'most_days'} suitable outdoor; weather={condition}"
+
+
+def _truncate_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    return text[:limit]
+
+
+def normalize_daily_spot_ids(
+    value: Any,
+    *,
+    compact_spots: list[dict[str, Any]],
+    days: int,
+    must_visit: list[str],
+    weather_constraints: dict[str, Any],
+) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        raise ValueError("daily_spot_ids must be a JSON object")
+    known_ids = {str(spot.get("id")) for spot in compact_spots if spot.get("id")}
+    result: dict[str, list[str]] = {}
+    used: set[str] = set()
+    for day in range(1, max(1, days) + 1):
+        day_key = f"day{day}"
+        raw_ids = value.get(day_key)
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+        clean_ids: list[str] = []
+        for item in raw_ids:
+            spot_id = str(item).strip()
+            if spot_id in known_ids and spot_id not in used and spot_id not in clean_ids:
+                clean_ids.append(spot_id)
+            if len(clean_ids) >= 3:
+                break
+        used.update(clean_ids)
+        result[day_key] = clean_ids
+
+    _add_missing_must_visit(result, compact_spots=compact_spots, must_visit=must_visit)
+    _fill_empty_days(result, compact_spots=compact_spots, weather_constraints=weather_constraints)
+    return result
+
+
+def build_rule_daily_spot_ids(
+    *,
+    compact_spots: list[dict[str, Any]],
+    days: int,
+    must_visit: list[str],
+    weather_constraints: dict[str, Any],
+) -> dict[str, list[str]]:
+    ranked = sorted(
+        compact_spots,
+        key=lambda spot: (
+            0 if _matches_any_must_visit(spot, must_visit) else 1,
+            0 if _is_free_or_low_cost(spot) else 1,
+            str(spot.get("area") or ""),
+        ),
+    )
+    result = {f"day{day}": [] for day in range(1, max(1, days) + 1)}
+    used: set[str] = set()
+    rainy_days = {str(day) for day in weather_constraints.get("rainy_days", [])}
+    indoor_days = {str(day) for day in weather_constraints.get("indoor_preferred_days", [])}
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for spot in ranked:
+        groups[str(spot.get("area") or "未知区域")].append(spot)
+    area_groups = sorted(groups.values(), key=len, reverse=True)
+    area_index = 0
+
+    for day in range(1, max(1, days) + 1):
+        day_key = f"day{day}"
+        prefer_indoor = day_key in rainy_days or day_key in indoor_days
+        selected: list[dict[str, Any]] = []
+        if prefer_indoor:
+            selected = [
+                spot
+                for spot in ranked
+                if str(spot.get("id")) not in used and spot.get("indoor_or_outdoor") in {"indoor", "mixed"}
+            ][:3]
+        if not selected and area_groups:
+            attempts = 0
+            while attempts < len(area_groups):
+                group = area_groups[area_index % len(area_groups)]
+                area_index += 1
+                attempts += 1
+                selected = [spot for spot in group if str(spot.get("id")) not in used][:3]
+                if selected:
+                    break
+        if not selected:
+            selected = [spot for spot in ranked if str(spot.get("id")) not in used][:1]
+        result[day_key] = [str(spot.get("id")) for spot in selected if spot.get("id")]
+        used.update(result[day_key])
+
+    _add_missing_must_visit(result, compact_spots=compact_spots, must_visit=must_visit)
+    _fill_empty_days(result, compact_spots=compact_spots, weather_constraints=weather_constraints)
+    return result
+
+
+def expand_daily_plan_skeleton(
+    daily_spot_ids: dict[str, list[str]],
+    *,
+    compact_spots: list[dict[str, Any]],
+    days: int,
+    weather_constraints: dict[str, Any],
+) -> dict[str, Any]:
+    spots_by_id = {str(spot.get("id")): spot for spot in compact_spots if spot.get("id")}
+    rainy_days = {str(day) for day in weather_constraints.get("rainy_days", [])}
+    indoor_days = {str(day) for day in weather_constraints.get("indoor_preferred_days", [])}
+    daily_plan: dict[str, Any] = {}
+    for day in range(1, max(1, days) + 1):
+        day_key = f"day{day}"
+        selected = [
+            spots_by_id[spot_id]
+            for spot_id in daily_spot_ids.get(day_key, [])
+            if spot_id in spots_by_id
+        ][:3]
+        prefer_indoor = day_key in rainy_days or day_key in indoor_days
+        daily_plan[day_key] = _format_compact_day_plan(selected, prefer_indoor)
+    return daily_plan
+
+
+def _format_compact_day_plan(selected: list[dict[str, Any]], prefer_indoor: bool) -> dict[str, Any]:
+    names = [str(spot.get("name")) for spot in selected if spot.get("name")]
+    areas = [str(spot.get("area")) for spot in selected if spot.get("area")]
+    area = _dominant_area(areas)
+    same_area = bool(area and areas and all(item == area for item in areas))
+    notes = ["低预算下优先公共交通和步行"]
+    if same_area and len(selected) > 1:
+        notes.insert(0, "同一区域景点优先安排在同一天")
+    if prefer_indoor:
+        notes.append("雨天优先室内或室内外结合景点")
+    reservation_required = [str(spot.get("name")) for spot in selected if spot.get("reservation_required") and spot.get("name")]
+    return {
+        "theme": "雨天室内安排" if prefer_indoor else f"{area or '景点'}集中游玩",
+        "spots": names,
+        "area": area or "待定区域",
+        "estimated_visit_time": estimate_visit_time_parts(selected),
+        "estimated_ticket_cost": estimate_ticket_cost(selected),
+        "reservation_required": reservation_required,
+        "notes": notes,
+    }
+
+
+def _add_missing_must_visit(
+    daily_spot_ids: dict[str, list[str]],
+    *,
+    compact_spots: list[dict[str, Any]],
+    must_visit: list[str],
+) -> None:
+    if not must_visit:
+        return
+    used = {spot_id for ids in daily_spot_ids.values() for spot_id in ids}
+    for spot in compact_spots:
+        spot_id = str(spot.get("id") or "")
+        if not spot_id or spot_id in used or not _matches_any_must_visit(spot, must_visit):
+            continue
+        target_day = _find_day_with_capacity(daily_spot_ids)
+        if target_day:
+            daily_spot_ids[target_day].append(spot_id)
+            used.add(spot_id)
+
+
+def _fill_empty_days(
+    daily_spot_ids: dict[str, list[str]],
+    *,
+    compact_spots: list[dict[str, Any]],
+    weather_constraints: dict[str, Any],
+) -> None:
+    used = {spot_id for ids in daily_spot_ids.values() for spot_id in ids}
+    pool = [spot for spot in compact_spots if str(spot.get("id")) not in used]
+    rainy_days = {str(day) for day in weather_constraints.get("rainy_days", [])}
+    indoor_days = {str(day) for day in weather_constraints.get("indoor_preferred_days", [])}
+    for day_key, ids in daily_spot_ids.items():
+        if ids:
+            continue
+        prefer_indoor = day_key in rainy_days or day_key in indoor_days
+        selected = _pick_next_spot(pool, prefer_indoor=prefer_indoor)
+        if selected is None:
+            selected = compact_spots[0] if compact_spots else None
+        if selected and selected.get("id"):
+            spot_id = str(selected["id"])
+            ids.append(spot_id)
+            used.add(spot_id)
+            pool = [spot for spot in pool if str(spot.get("id")) != spot_id]
+
+
+def _pick_next_spot(pool: list[dict[str, Any]], *, prefer_indoor: bool) -> dict[str, Any] | None:
+    if prefer_indoor:
+        for spot in pool:
+            if spot.get("indoor_or_outdoor") in {"indoor", "mixed"}:
+                return spot
+    return pool[0] if pool else None
+
+
+def _find_day_with_capacity(daily_spot_ids: dict[str, list[str]]) -> str | None:
+    for day_key, ids in daily_spot_ids.items():
+        if len(ids) < 3:
+            return day_key
+    return None
+
+
+def _matches_any_must_visit(spot: dict[str, Any], must_visit: list[str]) -> bool:
+    name = str(spot.get("name") or "")
+    return any(item and (item in name or name in item) for item in must_visit)
+
+
+def _is_free_or_low_cost(spot: dict[str, Any]) -> bool:
+    ticket = str(spot.get("ticket") or "")
+    tags = [str(item) for item in spot.get("tags", [])] if isinstance(spot.get("tags"), list) else []
+    return "免费" in ticket or "低价" in tags or "低预算" in tags
+
+
+def _dominant_area(areas: list[str]) -> str:
+    if not areas:
+        return ""
+    counts: dict[str, int] = {}
+    for area in areas:
+        counts[area] = counts.get(area, 0) + 1
+    return max(counts.items(), key=lambda item: item[1])[0]
 
 
 def _normalize_daily_plan(value: Any, *, spots: list[dict[str, Any]], days: int, weather_constraints: dict[str, Any]) -> dict[str, Any]:
@@ -422,7 +807,7 @@ def _normalize_daily_plan(value: Any, *, spots: list[dict[str, Any]], days: int,
             "theme": str(raw.get("theme") or fallback.get(key, {}).get("theme") or "景点集中游玩"),
             "spots": spot_names,
             "area": str(raw.get("area") or (selected[0].get("area") if selected else fallback.get(key, {}).get("area", "待定区域"))),
-            "reason": str(raw.get("reason") or "根据预算、天气和区域集中原则安排"),
+            "reason": _truncate_text(raw.get("reason") or "区域集中兼顾预算", 20),
             "estimated_visit_time": str(raw.get("estimated_visit_time") or estimate_visit_time(selected)),
             "estimated_ticket_cost": str(raw.get("estimated_ticket_cost") or estimate_ticket_cost(selected)),
             "reservation_required": [str(x) for x in reservation_required],
@@ -609,6 +994,11 @@ def estimate_visit_time(spots: list[dict[str, Any]]) -> str:
     if total_low and total_high:
         return f"{total_low}-{total_high}小时"
     return "待确认"
+
+
+def estimate_visit_time_parts(spots: list[dict[str, Any]]) -> str:
+    values = [str(spot.get("duration")) for spot in spots if spot.get("duration")]
+    return " + ".join(values) if values else "待确认"
 
 
 def estimate_ticket_total(daily_plan_skeleton: dict[str, Any]) -> str:
