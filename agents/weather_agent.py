@@ -68,7 +68,6 @@ class WeatherAgent(BaseAgent):
                     "mcp_method": MCP_SERVERS[self.mcp_server_key]["method"],
                     "mcp_result": mcp_result,
                     "travel_task": travel_task,
-                    "weather_constraints": weather_constraints,
                     "structured_result": {"weather_constraints": weather_constraints},
                     "quality": {
                         "llm_used": llm_used,
@@ -115,6 +114,7 @@ class WeatherAgent(BaseAgent):
 
 
 def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
+    '''返回payload里面的task'''
     context = task_payload.get("context") or {}
     if isinstance(context.get("travel_task"), dict):
         return dict(context["travel_task"])

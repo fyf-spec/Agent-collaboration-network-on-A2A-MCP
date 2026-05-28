@@ -168,14 +168,16 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
 
     try:
         travel_task = _extract_travel_task(instruction, context)
-        weather_constraints = _extract_weather_constraints(context)
+        inputs = context.get("inputs", {})
+        upstream_results = inputs.get("upstream_results", {})
+        
         mcp_result = call_attraction_mcp(task_id, travel_task)
         spots = mcp_result.get("spots", [])
         days = int(travel_task.get("days") or mcp_result.get("days") or 3)
 
         try:
             llm_json = llm.chat_json(
-                _attraction_selection_prompt(travel_task, weather_constraints, spots),
+                _attraction_selection_prompt(travel_task, upstream_results, spots),
                 max_tokens=1100,
                 temperature=0.0,
                 timeout_seconds=18.0,
@@ -184,11 +186,6 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
                 llm_json.get("daily_plan") or llm_json.get("daily_plan_skeleton"),
                 spots=spots,
                 days=days,
-                weather_constraints=weather_constraints,
-            )
-            constraints_for_traffic = _normalize_constraints_for_traffic(
-                llm_json.get("constraints_for_traffic"),
-                weather_constraints=weather_constraints,
             )
             rejected_spots = llm_json.get("rejected_spots") if isinstance(llm_json.get("rejected_spots"), list) else []
             llm_used = True
@@ -197,17 +194,13 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             daily_plan_skeleton = build_daily_plan_skeleton(
                 spots=spots,
                 days=days,
-                weather_constraints=weather_constraints,
             )
-            constraints_for_traffic = _normalize_constraints_for_traffic(None, weather_constraints=weather_constraints)
             rejected_spots = []
 
         ticket_total = estimate_ticket_total(daily_plan_skeleton)
-        summary = build_summary(travel_task, weather_constraints, daily_plan_skeleton)
+        summary = build_summary(travel_task, daily_plan_skeleton)
         structured_result = {
-            "daily_plan": daily_plan_skeleton,
             "daily_plan_skeleton": daily_plan_skeleton,
-            "constraints_for_traffic": constraints_for_traffic,
             "estimated_cost": {"ticket_total": ticket_total},
             "rejected_spots": rejected_spots,
         }
@@ -218,10 +211,7 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             "mcp_method": MCP_SERVERS[MCP_SERVER_KEY]["method"],
             "mcp_result": mcp_result,
             "travel_task": travel_task,
-            "weather_constraints": weather_constraints,
-            "daily_plan_skeleton": daily_plan_skeleton,
-            "constraints_for_traffic": constraints_for_traffic,
-            "estimated_cost": {"ticket_total": ticket_total},
+            "upstream_results": upstream_results,
             "structured_result": structured_result,
             "quality": {
                 "llm_used": llm_used,
@@ -365,12 +355,12 @@ def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, 
 
 def _attraction_selection_prompt(
     travel_task: dict[str, Any],
-    weather_constraints: dict[str, Any],
+    upstream_results: dict[str, Any],
     spots: list[dict[str, Any]],
 ) -> str:
     payload = {
         "travel_task": travel_task,
-        "weather_constraints": weather_constraints,
+        "upstream_results": upstream_results,
         "attraction_candidates": spots[:14],
         "output_schema": {
             "daily_plan": {
@@ -385,14 +375,14 @@ def _attraction_selection_prompt(
                     "notes": ["短提示"],
                 }
             },
-            "constraints_for_traffic": ["优先公共交通"],
             "rejected_spots": [{"spot": "景点名", "reason": "短原因"}],
         },
     }
     return "\n".join(
         [
             "你是 Attraction Agent，只做景点筛选和每日分配。",
-            "根据 travel_task、weather_constraints 和 attraction_candidates 输出严格 JSON。",
+            "请仔细参考上下文中 upstream_results 内的前置依赖智能体给出的结果，并据此作出合理调整。",
+            "根据 travel_task 和 attraction_candidates 输出严格 JSON。",
             "必须满足 must_visit；优先低预算、同区域集中游玩、公共交通方便；雨天优先室内或 mixed 景点。",
             "不要 Markdown，不要解释，不要生成最终旅行攻略。",
             json.dumps(payload, ensure_ascii=False, default=str),
@@ -400,12 +390,12 @@ def _attraction_selection_prompt(
     )
 
 
-def _normalize_daily_plan(value: Any, *, spots: list[dict[str, Any]], days: int, weather_constraints: dict[str, Any]) -> dict[str, Any]:
+def _normalize_daily_plan(value: Any, *, spots: list[dict[str, Any]], days: int) -> dict[str, Any]:
     if not isinstance(value, dict):
-        return build_daily_plan_skeleton(spots=spots, days=days, weather_constraints=weather_constraints)
+        return build_daily_plan_skeleton(spots=spots, days=days)
     daily_plan: dict[str, Any] = {}
     known_names = {str(spot.get("name")): spot for spot in spots if spot.get("name")}
-    fallback = build_daily_plan_skeleton(spots=spots, days=days, weather_constraints=weather_constraints)
+    fallback = build_daily_plan_skeleton(spots=spots, days=days)
     for i in range(1, max(1, days) + 1):
         key = f"day{i}"
         raw = value.get(key)
@@ -432,16 +422,7 @@ def _normalize_daily_plan(value: Any, *, spots: list[dict[str, Any]], days: int,
     return daily_plan
 
 
-def _normalize_constraints_for_traffic(value: Any, *, weather_constraints: dict[str, Any]) -> list[str]:
-    constraints = ["每天景点尽量集中在同一区域", "优先选择地铁可达景点", "低预算下优先公共交通和步行"]
-    if isinstance(value, list):
-        for item in value:
-            text = str(item).strip()
-            if text and text not in constraints:
-                constraints.append(text)
-    if weather_constraints.get("rainy_days") and "雨天减少长距离步行和户外换乘" not in constraints:
-        constraints.append("雨天减少长距离步行和户外换乘")
-    return constraints
+
 
 
 def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -473,22 +454,7 @@ def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str,
     return travel_task
 
 
-def _extract_weather_constraints(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    weather_result = inputs.get("weather_result") or context.get("weather_result") or {}
-    if isinstance(weather_result, dict):
-        metadata = weather_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict) and isinstance(structured.get("weather_constraints"), dict):
-                return structured["weather_constraints"]
-            if isinstance(metadata.get("weather_constraints"), dict):
-                return metadata["weather_constraints"]
-    if isinstance(inputs.get("weather_constraints"), dict):
-        return inputs["weather_constraints"]
-    if isinstance(context.get("weather_constraints"), dict):
-        return context["weather_constraints"]
-    return {}
+
 
 
 def _extract_origin_city(text: str) -> str | None:
@@ -524,67 +490,31 @@ def _extract_must_visit(text: str) -> list[str]:
     return [spot for spot in known_spots if spot in text]
 
 
-def build_daily_plan_skeleton(*, spots: list[dict[str, Any]], days: int, weather_constraints: dict[str, Any]) -> dict[str, Any]:
+def build_daily_plan_skeleton(*, spots: list[dict[str, Any]], days: int) -> dict[str, Any]:
     if days <= 0:
         days = 3
-    used: set[str] = set()
-    area_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for spot in spots:
-        area_groups[str(spot.get("area", "其他区域"))].append(spot)
-    indoor_preferred_days = set(str(day) for day in weather_constraints.get("indoor_preferred_days", []))
-    rainy_days = set(str(day) for day in weather_constraints.get("rainy_days", []))
     daily_plan: dict[str, Any] = {}
-    sorted_areas = sorted(area_groups.items(), key=lambda item: len(item[1]), reverse=True)
-    area_index = 0
-    for day in range(1, days + 1):
-        day_key = f"day{day}"
-        prefer_indoor = day_key in indoor_preferred_days or day_key in rainy_days
-        selected: list[dict[str, Any]] = []
-        if prefer_indoor:
-            selected = [
-                spot
-                for spot in spots
-                if spot.get("name") not in used and spot.get("indoor_or_outdoor") in {"indoor", "mixed"}
-            ][:2]
-        if not selected and sorted_areas:
-            attempts = 0
-            while attempts < len(sorted_areas):
-                area, group = sorted_areas[area_index % len(sorted_areas)]
-                area_index += 1
-                attempts += 1
-                selected = [spot for spot in group if spot.get("name") not in used][:3]
-                if selected:
-                    break
-        if not selected:
-            selected = [spot for spot in spots if spot.get("name") not in used][:2]
-        for spot in selected:
-            used.add(str(spot.get("name")))
-        daily_plan[day_key] = _format_day_plan(day_key, selected, prefer_indoor)
+    known_names = {str(spot.get("name")): spot for spot in spots if spot.get("name")}
+    spots_per_day = max(1, len(spots) // days)
+
+    for i in range(1, days + 1):
+        start_idx = (i - 1) * spots_per_day
+        end_idx = start_idx + spots_per_day if i < days else len(spots)
+        day_spots = spots[start_idx:end_idx]
+        
+        daily_plan[f"day{i}"] = {
+            "theme": "景点集中游玩",
+            "spots": [str(s.get("name")) for s in day_spots if s.get("name")],
+            "area": str(day_spots[0].get("area")) if day_spots else "待定区域",
+            "reason": "根据景点顺序排列",
+            "estimated_visit_time": estimate_visit_time(day_spots),
+            "estimated_ticket_cost": estimate_ticket_cost(day_spots),
+            "reservation_required": [str(s.get("name")) for s in day_spots if s.get("reservation_required")],
+            "notes": ["规则回退方案，未参考天气。"],
+        }
     return daily_plan
 
 
-def _format_day_plan(day_key: str, selected: list[dict[str, Any]], prefer_indoor: bool) -> dict[str, Any]:
-    spots = [str(spot.get("name", "")) for spot in selected if spot.get("name")]
-    areas = [str(spot.get("area", "")) for spot in selected if spot.get("area")]
-    area = areas[0] if areas else "待定区域"
-    notes: list[str] = []
-    reservation_required: list[str] = []
-    for spot in selected:
-        if spot.get("reservation_required"):
-            reservation_required.append(str(spot.get("name")))
-            notes.append(f"{spot.get('name')}需要提前预约")
-    if prefer_indoor:
-        notes.append("当天受天气影响，优先安排室内或室内外结合景点")
-    return {
-        "theme": "雨天室内安排" if prefer_indoor else f"{area}集中游玩",
-        "spots": spots,
-        "area": area,
-        "reason": "根据预算、天气和区域集中原则安排",
-        "estimated_visit_time": estimate_visit_time(selected),
-        "estimated_ticket_cost": estimate_ticket_cost(selected),
-        "reservation_required": reservation_required,
-        "notes": notes,
-    }
 
 
 def estimate_ticket_cost(spots: list[dict[str, Any]]) -> str:
@@ -620,14 +550,12 @@ def estimate_ticket_total(daily_plan_skeleton: dict[str, Any]) -> str:
     return "；".join(costs) if costs else "待确认"
 
 
-def build_summary(travel_task: dict[str, Any], weather_constraints: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
+def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
     city = travel_task.get("destination_city", "目的地")
     days = travel_task.get("days", len(daily_plan_skeleton))
     budget_level = travel_task.get("budget_level", "normal")
-    rainy_days = weather_constraints.get("rainy_days", [])
     budget_text = "低预算" if budget_level == "low" else "普通预算"
-    weather_text = f"其中 {', '.join(rainy_days)} 优先安排室内景点" if rainy_days else "整体按天气约束安排"
-    return f"已根据{budget_text}、用户偏好和天气约束，为{city}{days}天行程生成结构化景点计划；{weather_text}。"
+    return f"已根据{budget_text}，为{city}{days}天行程生成结构化景点计划"
 
 
 def _register_to_registry(host: str, port: int) -> None:

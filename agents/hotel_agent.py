@@ -37,8 +37,10 @@ class HotelAgent(BaseAgent):
         try:
             context = task_payload.get("context") or {}
             travel_task = _extract_travel_task(context)
-            weather_constraints = _extract_weather_constraints(context)
-            daily_plan = _extract_daily_plan(context)
+            inputs = context.get("inputs") or {}
+            upstream_results = inputs.get("upstream_results", {})
+            
+            daily_plan = _extract_daily_plan(inputs)
             city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
 
             area_candidates = _build_area_candidates(daily_plan)
@@ -48,7 +50,7 @@ class HotelAgent(BaseAgent):
                 area_json = llm.chat_json(
                     _hotel_area_selection_prompt(
                         travel_task=travel_task,
-                        weather_constraints=weather_constraints,
+                        upstream_results=upstream_results,
                         daily_plan=daily_plan,
                         area_candidates=area_candidates,
                     ),
@@ -82,7 +84,7 @@ class HotelAgent(BaseAgent):
                 hotel_json = llm.chat_json(
                     _hotel_choice_prompt(
                         travel_task=travel_task,
-                        weather_constraints=weather_constraints,
+                        upstream_results=upstream_results,
                         daily_plan=daily_plan,
                         area_selection=area_selection,
                         hotel_candidates=hotel_candidates,
@@ -121,13 +123,8 @@ class HotelAgent(BaseAgent):
                     "mcp_result": hotel_candidates,
                     "hotel_candidates": hotel_candidates.get("hotels", []) if isinstance(hotel_candidates, dict) else [],
                     "travel_task": travel_task,
-                    "weather_constraints": weather_constraints,
-                    "daily_plan_skeleton": daily_plan,
+                    "upstream_results": upstream_results,
                     "structured_result": structured_result,
-                    "hotel_plan": hotel_plan,
-                    "selected_hotel": hotel_plan.get("selected_hotel") if isinstance(hotel_plan, dict) else {},
-                    "hotel_area": hotel_plan.get("recommended_area") if isinstance(hotel_plan, dict) else None,
-                    "constraints_for_traffic": structured_result.get("constraints_for_traffic", []),
                     "quality": {
                         "area_llm_used": area_llm_used,
                         "hotel_llm_used": hotel_llm_used,
@@ -259,31 +256,13 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _extract_weather_constraints(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    if isinstance(inputs.get("weather_constraints"), dict):
-        return dict(inputs["weather_constraints"])
-    return {}
 
 
-def _extract_daily_plan(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    value = inputs.get("daily_plan_skeleton") or inputs.get("daily_plan")
-    if isinstance(value, dict):
-        return value
-    attraction_result = inputs.get("attraction_result")
-    if isinstance(attraction_result, dict):
-        metadata = attraction_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict):
-                value = structured.get("daily_plan") or structured.get("daily_plan_skeleton")
-                if isinstance(value, dict):
-                    return value
-            value = metadata.get("daily_plan_skeleton")
-            if isinstance(value, dict):
-                return value
-    return {}
+
+def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
+    upstream = inputs.get("upstream_results", {})
+    attr_res = upstream.get("attraction_agent", {}).get("structured", {})
+    return attr_res.get("daily_plan") or attr_res.get("daily_plan_skeleton") or {}
 
 
 def _build_area_candidates(daily_plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -327,16 +306,16 @@ def _split_area_phrase(raw_area: str) -> list[str]:
 def _hotel_area_selection_prompt(
     *,
     travel_task: dict[str, Any],
-    weather_constraints: dict[str, Any],
+    upstream_results: dict[str, Any],
     daily_plan: dict[str, Any],
     area_candidates: list[dict[str, Any]],
 ) -> str:
     payload = {
         "travel_task": travel_task,
-        "weather_constraints": weather_constraints,
+        "upstream_results": upstream_results,
         "daily_plan": daily_plan,
         "area_candidates": area_candidates,
-        "decision_goal": "先选择住宿区域。住宿区域应尽量位于多日行程的中心位置，或者靠近地铁枢纽，使到各天景点都方便；低预算用户优先公共交通便利、减少通勤成本。",
+        "decision_goal": "请仔细参考上下文中 upstream_results 内的前置依赖节点给出的结果，并据此作出合理调整。先选择住宿区域。住宿区域应尽量位于多日行程的中心位置，或者靠近地铁枢纽，使到各天景点都方便；低预算用户优先公共交通便利、减少通勤成本。",
         "selection_rules": [
             "必须从 area_candidates 中选择一个 recommended_area；如果候选里没有完美中心，则选综合通勤最方便的区域。",
             "不要因为某一天景点很多就机械选择该区域，要综合五天景点分布。",
@@ -363,7 +342,7 @@ def _hotel_area_selection_prompt(
 def _hotel_choice_prompt(
     *,
     travel_task: dict[str, Any],
-    weather_constraints: dict[str, Any],
+    upstream_results: dict[str, Any],
     daily_plan: dict[str, Any],
     area_selection: dict[str, Any],
     hotel_candidates: dict[str, Any],
@@ -372,12 +351,12 @@ def _hotel_choice_prompt(
     nights = max(1, days - 1)
     payload = {
         "travel_task": travel_task,
-        "weather_constraints": weather_constraints,
+        "upstream_results": upstream_results,
         "daily_plan": daily_plan,
         "area_selection": area_selection,
         "hotel_candidates_from_mcp": hotel_candidates.get("hotels", []),
         "nights": nights,
-        "decision_goal": "在 MCP 返回的该区域酒店候选中，结合低预算、公共交通、离景点方便程度选择最合适酒店。",
+        "decision_goal": "请结合travel task的要求、仔细参考上下文中 upstream_results 内的前置依赖节点(比如daily plan、hotel plan等计划给出的结果，在 MCP 返回的该区域酒店候选中，选择最合适酒店。",
         "selection_rules": [
             "必须从 hotel_candidates_from_mcp 中选择，不得编造酒店。",
             "低预算优先价格低；如果价格差距不大，优先地铁方便和到景点方便。",
@@ -488,11 +467,8 @@ def _normalize_hotel_plan(
     if not hotel_plan.get("estimated_total_hotel_cost"):
         hotel_plan["estimated_total_hotel_cost"] = _estimate_total_cost(selected_hotel, travel_task)
 
-    constraints = _as_str_list(
-        value.get("constraints_for_traffic"),
-        default=["住宿地到每日首个景点要纳入交通规划", "每日最后一个景点回住宿地要纳入交通规划", "优先公共交通和步行"],
-    )
-    return {"hotel_plan": hotel_plan, "constraints_for_traffic": constraints}
+
+    return {"hotel_plan": hotel_plan}
 
 
 def _fallback_hotel_plan(hotel_candidates: dict[str, Any], area_selection: dict[str, Any], travel_task: dict[str, Any]) -> dict[str, Any]:
@@ -523,7 +499,6 @@ def _fallback_hotel_plan(hotel_candidates: dict[str, Any], area_selection: dict[
             "hotel_reason": "在所选区域候选酒店中兼顾低预算和交通便利",
             "estimated_total_hotel_cost": _estimate_total_cost(selected, travel_task),
         },
-        "constraints_for_traffic": ["住宿地到每日首个景点要纳入交通规划", "每日最后一个景点回住宿地要纳入交通规划", "优先公共交通和步行"],
     }
 
 

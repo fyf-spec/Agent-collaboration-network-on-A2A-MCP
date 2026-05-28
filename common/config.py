@@ -17,7 +17,7 @@ REGISTRY_HOST = "127.0.0.1"
 REGISTRY_PORT = 7000
 
 DEFAULT_TASK_TIMEOUT_SECONDS = 120.0
-MAX_TASK_TIMEOUT_SECONDS = 180.0
+MAX_TASK_TIMEOUT_SECONDS = 900.0
 DISPATCH_HTTP_TIMEOUT_SECONDS = 5.0
 A2A_TCP_TIMEOUT_SECONDS = 3.0
 MCP_HTTP_TIMEOUT_SECONDS = 3.0
@@ -78,7 +78,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["weather"],
+        "capabilities": ["weather.query", "weather.forecast"],
         "keywords": [
             "weather",
             "temperature",
@@ -105,7 +105,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["attraction", "attraction.plan"],
+        "capabilities": ["attraction.query", "attraction.plan"],
         "keywords": [
             "attraction",
             "spot",
@@ -127,7 +127,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["hotel", "accommodation", "hotel.selection"],
+        "capabilities": ["hotel.query", "hotel.selection"],
         "keywords": [
             "hotel",
             "accommodation",
@@ -147,7 +147,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["traffic", "transport", "route.selection", "intercity.transport"],
+        "capabilities": ["traffic.query", "route.selection", "intercity.transport"],
         "keywords": [
             "traffic",
             "transport",

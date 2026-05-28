@@ -35,13 +35,15 @@ def main() -> None:
             time.sleep(1)  # 等待服务完全启动
 
             url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/submit_task"
-            payload = {
-                "question": "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
-                "timeout": 20.0,
-            }
-
             try:
-                response = post_json(url, payload, timeout=45.0)
+                response = post_json(
+                    url,
+                    {
+                        "question": "明天从广州去北京开会，开完会顺便在北京玩一天，帮我规划一下行程。",
+                        "timeout": 180.0,
+                    },
+                    timeout=240.0,
+                )
                 print(f"====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
                 print(f"HTTP Status Code: {response.status_code}")
                 
@@ -50,16 +52,15 @@ def main() -> None:
                     print(f"\nTask Status: {task.get('status')}")
                     print(f"Final Answer:\n")
                     print(task.get("final_answer", ""))
+                    # print("\nAnswers of Agents:")
+                    # results = task.get("results", {})
+                    # errors = task.get("dispatch_errors", {})
                     
-                    print("\nAnswers of Agents:")
-                    results = task.get("results", {})
-                    errors = task.get("dispatch_errors", {})
+                    # for agent, result in results.items():
+                    #     print(f"- {agent}: {result.get('status')}\n{result.get('error') or result.get('result')[:50] + '...'}")
                     
-                    for agent, result in results.items():
-                        print(f"- {agent}: {result.get('status')}\n{result.get('error') or result.get('result')[:50] + '...'}")
-                    
-                    for agent, err in errors.items():
-                        print(f"- {agent} [DISPATCH_ERROR]: {err}")
+                    # for agent, err in errors.items():
+                    #     print(f"- {agent} [DISPATCH_ERROR]: {err}")
                 else:
                     print(f"Request Failed:\n{json.dumps(response.data, indent=2, ensure_ascii=False)}")
 

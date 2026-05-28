@@ -36,9 +36,10 @@ class TrafficAgent(BaseAgent):
         try:
             context = task_payload.get("context") or {}
             travel_task = _extract_travel_task(context)
-            daily_plan = _extract_daily_plan(context)
-            hotel_plan = _extract_hotel_plan(context)
-            constraints_for_traffic = _extract_constraints_for_traffic(context)
+            inputs = context.get("inputs") or {}
+            upstream_results = inputs.get("upstream_results", {})
+            daily_plan = _extract_daily_plan(inputs)
+            hotel_plan = _extract_hotel_plan(inputs)
             city = str(travel_task.get("destination_city") or travel_task.get("city") or self.build_mcp_params(task_payload).get("city") or "北京")
             preference = str(travel_task.get("transport_preference") or "public_transport")
             intercity_transport = self.call_intercity_transport_mcp(task_id, travel_task=travel_task)
@@ -51,7 +52,7 @@ class TrafficAgent(BaseAgent):
 
             try:
                 llm_json = llm.chat_json(
-                    _traffic_selection_prompt(travel_task, daily_plan, hotel_plan, constraints_for_traffic, route_results),
+                    _traffic_selection_prompt(travel_task, daily_plan, hotel_plan, upstream_results, route_results),
                     max_tokens=1100,
                     temperature=0.0,
                     timeout_seconds=18.0,
@@ -82,13 +83,8 @@ class TrafficAgent(BaseAgent):
                     "mcp_method": "get_route",
                     "mcp_result": {"intercity_transport": intercity_transport, "route_queries": route_results},
                     "travel_task": travel_task,
-                    "daily_plan_skeleton": daily_plan,
-                    "hotel_plan": hotel_plan,
-                    "constraints_for_traffic": constraints_for_traffic,
+                    "upstream_results": upstream_results,
                     "structured_result": structured_result,
-                    "intercity_transport": intercity_transport,
-                    "traffic_plan": structured_result.get("traffic_plan", {}),
-                    "traffic_summary": structured_result.get("traffic_summary", {}),
                     "quality": {
                         "llm_used": llm_used,
                         "llm_error": llm_error,
@@ -257,54 +253,20 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _extract_daily_plan(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    value = inputs.get("daily_plan_skeleton") or inputs.get("daily_plan")
-    if isinstance(value, dict):
-        return value
-    attraction_result = inputs.get("attraction_result")
-    if isinstance(attraction_result, dict):
-        metadata = attraction_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict):
-                value = structured.get("daily_plan") or structured.get("daily_plan_skeleton")
-                if isinstance(value, dict):
-                    return value
-            value = metadata.get("daily_plan_skeleton")
-            if isinstance(value, dict):
-                return value
-    return {}
+def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
+
+    upstream = inputs.get("upstream_results", {})
+    attr_res = upstream.get("attraction_agent", {}).get("structured", {})
+    return attr_res.get("daily_plan") or attr_res.get("daily_plan_skeleton") or {}
 
 
-def _extract_hotel_plan(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    value = inputs.get("hotel_plan")
-    if isinstance(value, dict):
-        return value
-    hotel_result = inputs.get("hotel_result")
-    if isinstance(hotel_result, dict):
-        metadata = hotel_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict) and isinstance(structured.get("hotel_plan"), dict):
-                return structured["hotel_plan"]
-            value = metadata.get("hotel_plan")
-            if isinstance(value, dict):
-                return value
-    return {}
+def _extract_hotel_plan(inputs: dict[str, Any]) -> dict[str, Any]:
+    upstream = inputs.get("upstream_results", {})
+    hotel_res = upstream.get("hotel_agent", {}).get("structured", {})
+    return hotel_res.get("hotel_plan") or {}
 
 
-def _extract_constraints_for_traffic(context: dict[str, Any]) -> list[str]:
-    inputs = context.get("inputs") or {}
-    result: list[str] = []
-    value = inputs.get("constraints_for_traffic")
-    if isinstance(value, list):
-        result.extend(str(x) for x in value)
-    value = inputs.get("hotel_constraints_for_traffic")
-    if isinstance(value, list):
-        result.extend(str(x) for x in value)
-    return result
+
 
 
 def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -369,16 +331,16 @@ def _traffic_selection_prompt(
     travel_task: dict[str, Any],
     daily_plan: dict[str, Any],
     hotel_plan: dict[str, Any],
-    constraints_for_traffic: list[str],
+    upstream_results: dict[str, Any],
     route_results: list[dict[str, Any]],
 ) -> str:
     payload = {
         "travel_task": travel_task,
+        "upstream_results": upstream_results,
         "daily_plan": daily_plan,
         "hotel_plan": hotel_plan,
-        "constraints_for_traffic": constraints_for_traffic,
         "route_candidates": route_results,
-        "selection_rule": "根据用户偏好选择。低预算/公共交通优先时优先 walk/subway/bus；最快优先时比较 duration_minutes；减少步行时比较 walk_minutes。",
+        "selection_rule": "请仔细参考上下文中 upstream_results 内的前置依赖节点给出的结果，并据此作出合理调整。根据用户偏好选择。低预算/公共交通优先时优先 walk/subway/bus；最快优先时比较 duration_minutes；减少步行时比较 walk_minutes。",
         "output_schema": {
             "traffic_plan": {
                 "day1": [
