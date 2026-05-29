@@ -63,7 +63,15 @@ class LLMClient:
         max_tokens: int | None = None,
         temperature: float | None = None,
         timeout_seconds: float | None = None,
+        stream: bool = True,
     ) -> str:
+        if not stream:
+            return self._chat_messages_non_stream(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                timeout_seconds=timeout_seconds,
+            )
         return "".join(
             self.stream_chat_messages(
                 messages,
@@ -82,13 +90,50 @@ class LLMClient:
         timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         """Call the model and parse the first JSON object from its response."""
-        response = self.chat(
-            prompt,
+        response = self.chat_messages(
+            [{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
             temperature=temperature,
             timeout_seconds=timeout_seconds,
+            stream=False,
         )
         return _extract_json_object(response)
+
+    def _chat_messages_non_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        _validate_messages(messages)
+        if not self.api_key:
+            raise LLMClientError("MODELSCOPE_API_KEY is required")
+
+        client = OpenAI(base_url=self.base_url, api_key=self.api_key, max_retries=0)
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "timeout": timeout_seconds or self.timeout_seconds,
+        }
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            request_kwargs["temperature"] = temperature
+
+        try:
+            response = client.chat.completions.create(**request_kwargs)
+            choices = getattr(response, "choices", None) or []
+            if not choices:
+                return ""
+            message = getattr(choices[0], "message", None)
+            if isinstance(message, dict):
+                return str(message.get("content") or "").strip()
+            return str(getattr(message, "content", None) or "").strip()
+        except Exception as e:
+            raise LLMClientError(f"OpenAI API error: {str(e)}") from e
 
     def stream_chat(self, prompt: str) -> Iterator[str]:
         yield from self.stream_chat_messages([{"role": "user", "content": prompt}])
@@ -168,19 +213,20 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
+
+    decoder = json.JSONDecoder()
     try:
-        value = json.loads(cleaned)
+        value, _ = decoder.raw_decode(cleaned)
         if isinstance(value, dict):
             return value
     except json.JSONDecodeError:
         pass
 
     start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    if start == -1:
         raise LLMClientError(f"LLM response is not JSON: {text[:200]}")
     try:
-        value = json.loads(cleaned[start : end + 1])
+        value, _ = decoder.raw_decode(cleaned[start:])
     except json.JSONDecodeError as exc:
         raise LLMClientError(f"failed to parse JSON from LLM response: {exc}") from exc
     if not isinstance(value, dict):

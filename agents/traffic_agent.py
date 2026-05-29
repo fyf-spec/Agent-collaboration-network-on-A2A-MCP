@@ -40,33 +40,66 @@ class TrafficAgent(BaseAgent):
             hotel_plan = _extract_hotel_plan(context)
             constraints_for_traffic = _extract_constraints_for_traffic(context)
             city = str(travel_task.get("destination_city") or travel_task.get("city") or self.build_mcp_params(task_payload).get("city") or "北京")
-            preference = str(travel_task.get("transport_preference") or "public_transport")
+            traffic_constraints = _constraint_section(travel_task, "traffic")
+            general_constraints = _constraint_section(travel_task, "general")
+            preference = str(traffic_constraints.get("preference") or travel_task.get("transport_preference") or "public_transport")
             intercity_transport = self.call_intercity_transport_mcp(task_id, travel_task=travel_task)
 
             route_segments = _build_route_segments(daily_plan, hotel_plan)
-            route_results = [
-                self.call_route_mcp(task_id, city=city, segment=segment, preference=preference)
-                for segment in route_segments
-            ]
+            route_results = self.call_routes_mcp(task_id, city=city, segments=route_segments, preference=preference)
+            segments_for_llm = _build_segments_for_llm(route_results)
+            llm_selected_route_ids: dict[str, str] = {}
+            selected_route_ids: dict[str, str] = {}
+            quality_source = "traffic_agent_rule_fallback"
 
             try:
                 llm_json = llm.chat_json(
-                    _traffic_selection_prompt(travel_task, daily_plan, hotel_plan, constraints_for_traffic, route_results),
-                    max_tokens=1100,
-                    temperature=0.0,
-                    timeout_seconds=18.0,
+                    _traffic_route_selector_prompt(
+                        city=city,
+                        days=int(travel_task.get("days") or max(1, len(daily_plan) or 1)),
+                        general_constraints=general_constraints,
+                        traffic_constraints=traffic_constraints,
+                        segments=segments_for_llm,
+                    ),
+                    max_tokens=300,
+                    temperature=0.2,
+                    timeout_seconds=45.0,
                 )
-                structured_result = _normalize_traffic_plan(
-                    llm_json,
-                    route_results=route_results,
+                raw_selected = llm_json.get("selected_route_ids")
+                if not isinstance(raw_selected, dict):
+                    raise ValueError("selected_route_ids must be a JSON object")
+                llm_selected_route_ids = {str(key): str(value) for key, value in raw_selected.items()}
+                selected_route_ids, fallback_errors = _normalize_selected_route_ids(
+                    llm_selected_route_ids,
+                    segments=segments_for_llm,
                     travel_task=travel_task,
                 )
-                structured_result["intercity_transport"] = intercity_transport
+                traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
+                structured_result = {
+                    "traffic_plan": traffic_plan,
+                    "traffic_summary": _estimate_traffic_summary(traffic_plan),
+                    "intercity_transport": intercity_transport,
+                    "selected_route_ids": selected_route_ids,
+                    "llm_selected_route_ids": llm_selected_route_ids,
+                }
                 llm_used = True
+                if fallback_errors:
+                    llm_error = "; ".join(fallback_errors)
+                    quality_source = "traffic_agent_llm_route_selector_with_partial_fallback"
+                else:
+                    quality_source = "traffic_agent_llm_route_selector"
             except Exception as exc:
                 llm_error = str(exc)
-                structured_result = _fallback_traffic_plan(route_results, travel_task)
-                structured_result["intercity_transport"] = intercity_transport
+                selected_route_ids = _fallback_selected_route_ids(segments_for_llm, travel_task)
+                traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
+                structured_result = {
+                    "traffic_plan": traffic_plan,
+                    "traffic_summary": _estimate_traffic_summary(traffic_plan),
+                    "intercity_transport": intercity_transport,
+                    "selected_route_ids": selected_route_ids,
+                    "llm_selected_route_ids": llm_selected_route_ids,
+                }
+                quality_source = "traffic_agent_rule_fallback"
 
             elapsed_ms = (time.perf_counter() - started) * 1000
             result_payload = build_result_payload(
@@ -79,12 +112,18 @@ class TrafficAgent(BaseAgent):
                     "agent": self.agent_name,
                     "capability": self.capability,
                     "mcp_server": MCP_SERVERS[self.mcp_server_key]["name"],
-                    "mcp_method": "get_route",
+                    "mcp_method": "get_routes",
                     "mcp_result": {"intercity_transport": intercity_transport, "route_queries": route_results},
                     "travel_task": travel_task,
+                    "traffic_constraints": traffic_constraints,
+                    "general_constraints": general_constraints,
                     "daily_plan_skeleton": daily_plan,
                     "hotel_plan": hotel_plan,
                     "constraints_for_traffic": constraints_for_traffic,
+                    "route_queries": route_results,
+                    "segments_for_llm": segments_for_llm,
+                    "llm_selected_route_ids": llm_selected_route_ids,
+                    "selected_route_ids": selected_route_ids,
                     "structured_result": structured_result,
                     "intercity_transport": intercity_transport,
                     "traffic_plan": structured_result.get("traffic_plan", {}),
@@ -92,6 +131,7 @@ class TrafficAgent(BaseAgent):
                     "quality": {
                         "llm_used": llm_used,
                         "llm_error": llm_error,
+                        "source": quality_source,
                         "confidence": 0.88 if llm_error is None else 0.72,
                     },
                     "llm_error": llm_error,
@@ -178,11 +218,87 @@ class TrafficAgent(BaseAgent):
             raise RuntimeError("Traffic MCP result missing")
         return {"day": segment.get("day"), "index": segment.get("index"), **result}
 
+    def call_routes_mcp(self, task_id: str, *, city: str, segments: list[dict[str, Any]], preference: str) -> list[dict[str, Any]]:
+        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
+        network_target = str(MCP_GATEWAY["name"])
+        rpc_payload = {
+            "jsonrpc": "2.0",
+            "id": f"{task_id}:routes",
+            "method": "get_routes",
+            "params": {
+                "city": city,
+                "preference": preference,
+                "segments": [
+                    {
+                        "origin": segment.get("origin"),
+                        "destination": segment.get("destination"),
+                    }
+                    for segment in segments
+                ],
+            },
+        }
+        log_network_event(
+            event="agent_call_mcp",
+            direction="outbound",
+            source=self.agent_name,
+            target=network_target,
+            method="POST",
+            url=url,
+            task_id=task_id,
+            payload=rpc_payload,
+        )
+        try:
+            response = post_json(url, rpc_payload, timeout=MCP_HTTP_TIMEOUT_SECONDS)
+        except HttpJsonClientError as exc:
+            log_network_event(
+                event="agent_mcp_failed",
+                direction="inbound",
+                source=network_target,
+                target=self.agent_name,
+                method="POST",
+                url=exc.url,
+                task_id=task_id,
+                error=str(exc),
+                elapsed_ms=exc.elapsed_ms,
+                error_type=type(exc).__name__,
+            )
+            raise
+        log_network_event(
+            event="agent_mcp_response",
+            direction="inbound",
+            source=network_target,
+            target=self.agent_name,
+            method="POST",
+            url=url,
+            task_id=task_id,
+            status_code=response.status_code,
+            elapsed_ms=response.elapsed_ms,
+            payload=response.data,
+        )
+        if not response.ok or not isinstance(response.data, dict):
+            raise RuntimeError(f"Traffic MCP get_routes returned invalid response: {response.status_code} {response.raw_body}")
+        if response.data.get("error"):
+            raise RuntimeError(f"Traffic MCP get_routes error: {response.data['error']}")
+        result = response.data.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Traffic MCP get_routes result missing")
+        routes = result.get("routes")
+        if not isinstance(routes, list):
+            raise RuntimeError("Traffic MCP get_routes result missing routes")
+
+        route_results: list[dict[str, Any]] = []
+        for index, segment in enumerate(segments):
+            route = routes[index] if index < len(routes) and isinstance(routes[index], dict) else {}
+            route_results.append({"day": segment.get("day"), "index": segment.get("index"), **route})
+        return route_results
+
     def call_intercity_transport_mcp(self, task_id: str, *, travel_task: dict[str, Any]) -> dict[str, Any]:
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
         origin_city = str(travel_task.get("origin_city") or "上海")
         destination_city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
+        traffic_constraints = _constraint_section(travel_task, "traffic")
+        general_constraints = _constraint_section(travel_task, "general")
         rpc_payload = {
             "jsonrpc": "2.0",
             "id": f"{task_id}:intercity",
@@ -190,8 +306,8 @@ class TrafficAgent(BaseAgent):
             "params": {
                 "origin_city": origin_city,
                 "destination_city": destination_city,
-                "budget_level": travel_task.get("budget_level", "normal"),
-                "transport_preference": travel_task.get("transport_preference", "public_transport"),
+                "budget_level": general_constraints.get("budget_level", travel_task.get("budget_level", "normal")),
+                "transport_preference": traffic_constraints.get("preference", travel_task.get("transport_preference", "public_transport")),
             },
         }
         log_network_event(
@@ -365,6 +481,222 @@ def _hotel_origin_name(hotel_plan: dict[str, Any] | None) -> str:
     return f"住宿地（{area}）" if area else ""
 
 
+def _build_segments_for_llm(route_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    route_counter = 1
+    for route in route_results:
+        if not isinstance(route, dict):
+            continue
+        day = str(route.get("day") or "day1")
+        index = _safe_int(route.get("index"), default=len(segments) + 1)
+        segment_id = f"{day}_seg{index}"
+        same_area = bool(route.get("same_area"))
+        options = []
+        candidates = route.get("candidates", [])
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                option = {
+                    "route_id": f"r{route_counter}",
+                    "mode": candidate.get("mode"),
+                    "route": candidate.get("route"),
+                    "duration_minutes": candidate.get("duration_minutes"),
+                    "cost_yuan": candidate.get("cost_yuan"),
+                    "walk_minutes": candidate.get("walk_minutes"),
+                    "transfers": candidate.get("transfers"),
+                    "same_area": same_area,
+                }
+                route_counter += 1
+                options.append(option)
+        segments.append(
+            {
+                "segment_id": segment_id,
+                "day": day,
+                "from": route.get("origin"),
+                "to": route.get("destination"),
+                "same_area": same_area,
+                "options": options,
+            }
+        )
+    return segments
+
+
+def _traffic_route_selector_prompt(
+    *,
+    city: str,
+    days: int,
+    general_constraints: dict[str, Any],
+    traffic_constraints: dict[str, Any],
+    segments: list[dict[str, Any]],
+) -> str:
+    payload = {
+        "city": city,
+        "days": days,
+        "general_constraints": general_constraints,
+        "traffic_constraints": traffic_constraints,
+        "segments": segments,
+        "output_schema": {
+            "selected_route_ids": {
+                "day1_seg1": "r1",
+                "day1_seg2": "r3",
+            },
+            "reason": "不超过20个中文字符",
+        },
+    }
+    return "\n".join(
+        [
+            "你是路线选择器。每个 segment 必须从 options 中选择一个已有 route_id。",
+            "只能选择已有 route_id；不要编造路线；不要改写路线内容；不要输出完整 traffic_plan。",
+            "不要输出 route、duration、cost 等字段；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
+            "根据用户预算、交通偏好、费用、耗时、换乘次数、步行时间、是否同区域自行判断。",
+            "低预算通常优先低费用；公共交通偏好通常优先 subway/bus/walk；同一区域可考虑 walk；taxi 只有明显更合理时才选。",
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+        ]
+    )
+
+
+def _normalize_selected_route_ids(
+    value: dict[str, str],
+    *,
+    segments: list[dict[str, Any]],
+    travel_task: dict[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    selected: dict[str, str] = {}
+    fallback_errors: list[str] = []
+    for segment in segments:
+        segment_id = str(segment.get("segment_id") or "")
+        valid_route_ids = {
+            str(option.get("route_id"))
+            for option in segment.get("options", [])
+            if isinstance(option, dict) and option.get("route_id")
+        }
+        route_id = str(value.get(segment_id) or "").strip()
+        if route_id in valid_route_ids:
+            selected[segment_id] = route_id
+            continue
+        selected[segment_id] = _fallback_route_id(segment, travel_task)
+        fallback_errors.append(f"{segment_id}: invalid_or_missing_route_id")
+    return selected, fallback_errors
+
+
+def _fallback_selected_route_ids(
+    segments: list[dict[str, Any]],
+    travel_task: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        str(segment.get("segment_id")): _fallback_route_id(segment, travel_task)
+        for segment in segments
+        if segment.get("segment_id")
+    }
+
+
+def _fallback_route_id(segment: dict[str, Any], travel_task: dict[str, Any]) -> str:
+    options = [option for option in segment.get("options", []) if isinstance(option, dict)]
+    if not options:
+        return ""
+    if segment.get("same_area"):
+        walk_options = [option for option in options if option.get("mode") == "walk"]
+        if walk_options:
+            return str(walk_options[0].get("route_id") or "")
+
+    general_constraints = _constraint_section(travel_task, "general")
+    traffic_constraints = _constraint_section(travel_task, "traffic")
+    budget_level = str(general_constraints.get("budget_level") or travel_task.get("budget_level") or "")
+    preference = str(traffic_constraints.get("preference") or travel_task.get("transport_preference") or "")
+    if budget_level == "low":
+        return str(min(options, key=lambda option: _safe_int(option.get("cost_yuan"), default=9999)).get("route_id") or "")
+    if preference == "public_transport":
+        public_options = [option for option in options if option.get("mode") in {"subway", "bus", "walk"}]
+        if public_options:
+            return str(
+                min(
+                    public_options,
+                    key=lambda option: (
+                        _safe_int(option.get("cost_yuan"), default=9999),
+                        _safe_int(option.get("duration_minutes"), default=9999),
+                    ),
+                ).get("route_id")
+                or ""
+            )
+    return str(options[0].get("route_id") or "")
+
+
+def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, Any]:
+    constraints = travel_task.get("constraints")
+    if isinstance(constraints, dict) and isinstance(constraints.get(section), dict):
+        return dict(constraints[section])
+    if section == "traffic":
+        return {
+            "preference": travel_task.get("transport_preference", "public_transport"),
+            "avoid": [],
+            "max_transfer": None,
+            "walking_tolerance": "normal",
+        }
+    if section == "general":
+        return {
+            "budget_level": travel_task.get("budget_level", "normal"),
+            "travel_style": "budget" if travel_task.get("budget_level") == "low" else "balanced",
+            "special_needs": [],
+        }
+    return {}
+
+
+def _expand_traffic_plan(
+    selected_route_ids: dict[str, str],
+    segments: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    traffic_plan: dict[str, list[dict[str, Any]]] = {}
+    for segment in segments:
+        segment_id = str(segment.get("segment_id") or "")
+        route_id = selected_route_ids.get(segment_id)
+        option = _find_option(segment, route_id)
+        if option is None:
+            continue
+        day = str(segment.get("day") or "day1")
+        traffic_plan.setdefault(day, []).append(
+            {
+                "from": segment.get("from"),
+                "to": segment.get("to"),
+                "selected_mode": option.get("mode"),
+                "route": option.get("route"),
+                "reason": _display_route_reason(option, same_area=bool(segment.get("same_area"))),
+                "estimated_cost_yuan": option.get("cost_yuan"),
+                "estimated_duration_minutes": option.get("duration_minutes"),
+            }
+        )
+    return traffic_plan
+
+
+def _find_option(segment: dict[str, Any], route_id: str | None) -> dict[str, Any] | None:
+    for option in segment.get("options", []):
+        if isinstance(option, dict) and option.get("route_id") == route_id:
+            return option
+    return None
+
+
+def _display_route_reason(option: dict[str, Any], *, same_area: bool) -> str:
+    mode = str(option.get("mode") or "")
+    if mode == "walk" and same_area:
+        return "同一区域，选择步行"
+    if mode == "walk":
+        return "选择步行路线"
+    if mode == "subway":
+        return "选择地铁路线"
+    if mode == "bus":
+        return "选择公交路线"
+    if mode == "taxi":
+        return "选择打车路线"
+    return "根据候选路线选择"
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _traffic_selection_prompt(
     travel_task: dict[str, Any],
     daily_plan: dict[str, Any],
@@ -437,7 +769,7 @@ def _fallback_traffic_plan(route_results: list[dict[str, Any]], travel_task: dic
                 "to": route.get("destination"),
                 "selected_mode": selected.get("mode"),
                 "route": selected.get("route"),
-                "reason": selected.get("note") or "根据用户约束选择",
+                "reason": _display_route_reason(selected, same_area=bool(route.get("same_area"))),
                 "estimated_cost_yuan": selected.get("cost_yuan"),
                 "estimated_duration_minutes": selected.get("duration_minutes"),
             }

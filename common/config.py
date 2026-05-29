@@ -53,7 +53,7 @@ MCP_SERVERS = {
         "port": 8002,
         "path": "/",
         "method": "get_route",
-        "extra_methods": ["get_intercity_transport"],
+        "extra_methods": ["get_routes", "get_intercity_transport"],
     },
     "attraction": {
         "name": "attraction_mcp_server",
