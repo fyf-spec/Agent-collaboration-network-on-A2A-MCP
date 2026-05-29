@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import socket
 import time
 from typing import Any
 from urllib import error, request
@@ -63,13 +64,16 @@ def post_json(url: str, payload: dict[str, Any], *, timeout: float) -> HttpJsonR
             raw_body=raw_body,
             elapsed_ms=elapsed_ms,
         )
-    except TimeoutError as exc:
+    except (TimeoutError, socket.timeout) as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
         raise HttpJsonClientError(f"request timed out after {timeout}s", url=url, elapsed_ms=elapsed_ms) from exc
     except error.URLError as exc:
         elapsed_ms = (time.perf_counter() - started) * 1000
         reason = getattr(exc, "reason", exc)
         raise HttpJsonClientError(f"request failed: {reason}", url=url, elapsed_ms=elapsed_ms) from exc
+    except OSError as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        raise HttpJsonClientError(f"request failed: {exc}", url=url, elapsed_ms=elapsed_ms) from exc
 
 
 def _decode_json(raw_body: str) -> Any:

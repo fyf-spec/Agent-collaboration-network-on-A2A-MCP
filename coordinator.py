@@ -303,7 +303,8 @@ class CoordinatorState:
             self._condition.notify_all()
 
     def wait_for_target(self, task_id: str, target: str, timeout_seconds: float) -> dict[str, Any]:
-        deadline = time.monotonic() + max(0.1, timeout_seconds)
+        wait_seconds = max(0.1, timeout_seconds)
+        deadline = time.monotonic() + wait_seconds
         with self._condition:
             record = self._tasks[task_id]
             record.status = TASK_WAITING
@@ -311,28 +312,33 @@ class CoordinatorState:
             while target not in record.results and target not in record.dispatch_errors:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    # Do not permanently mark an Agent as failed just because a local
-                    # wait window elapsed. Slow LLM calls may still return later;
-                    # downstream dependency order is controlled by stage-specific
-                    # waits in _handle_submit_task.
-                    record.status = TASK_WAITING
-                    record.updated_at = utc_now_iso()
+                    record.dispatch_errors[target] = (
+                        f"{target} timed out after {wait_seconds:.1f}s waiting for result callback"
+                    )
+                    record.results.pop(target, None)
+                    record.refresh_status()
                     self._condition.notify_all()
                     break
                 self._condition.wait(timeout=remaining)
             return record.snapshot()
 
     def wait_for_task(self, task_id: str, timeout_seconds: float) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout_seconds
+        wait_seconds = max(0.1, timeout_seconds)
+        deadline = time.monotonic() + wait_seconds
         with self._condition:
             record = self._tasks[task_id]
             record.status = TASK_WAITING
             while record.terminal_count() < record.expected_count():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    for target in record.pending_targets():
+                        record.dispatch_errors[target] = (
+                            f"{target} timed out after {wait_seconds:.1f}s waiting for workflow completion"
+                        )
                     break
                 self._condition.wait(timeout=remaining)
             record.finalize_after_wait()
+            self._condition.notify_all()
             return record.snapshot()
 
     def set_final_answer(self, task_id: str, final_answer: str) -> dict[str, Any]:
@@ -486,6 +492,7 @@ class CoordinatorA2ATCPRequestHandler(BaseRequestHandler):
     server: CoordinatorA2ATCPServer
 
     def handle(self) -> None:
+        self.request.settimeout(A2A_TCP_TIMEOUT_SECONDS)
         frame_data: dict[str, Any] | None = None
         task_id = "unknown"
         source = "unknown"
@@ -2006,19 +2013,16 @@ def _normalize_timeout(value: Any) -> float:
 
 
 def _remaining_seconds(deadline: float) -> float:
-    return max(0.1, deadline - time.monotonic())
+    return max(0.0, deadline - time.monotonic())
 
 
 def _stage_wait_seconds(deadline: float, minimum_seconds: float = 45.0) -> float:
-    """Wait long enough for one downstream Agent even if earlier LLM calls were slow.
+    """Return a stage wait bounded by the user-facing workflow timeout.
 
-    The user-facing timeout controls the overall request preference, but in this
-    demo each Agent may make a short structured LLM call. If we always use the
-    remaining global deadline, a slow Weather/Attraction LLM can leave Hotel only
-    a few seconds and cause Traffic to start without hotel_plan. This helper
-    keeps dependency order correct for the demo.
+    The minimum_seconds parameter is kept for backward-compatible call sites,
+    but fault-tolerance runs must never extend beyond the submit_task timeout.
     """
-    return min(MAX_TASK_TIMEOUT_SECONDS, max(minimum_seconds, _remaining_seconds(deadline)))
+    return max(0.1, min(MAX_TASK_TIMEOUT_SECONDS, _remaining_seconds(deadline)))
 
 
 def _looks_like_result_payload(value: Any) -> bool:

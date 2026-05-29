@@ -27,8 +27,8 @@ import logging
 from common.logger import log_network_event
 from common.schemas import (
     PayloadValidationError,
-    RESULT_ERROR,
     RESULT_SUCCESS,
+    build_error_result_payload,
     build_result_payload,
     error_response,
     success_response,
@@ -191,6 +191,7 @@ class AgentA2ATCPRequestHandler(BaseRequestHandler):
     server: AgentA2ATCPServer
 
     def handle(self) -> None:
+        self.request.settimeout(A2A_TCP_TIMEOUT_SECONDS)
         frame_data: dict[str, Any] | None = None
         task_id = "unknown"
         source = "unknown"
@@ -385,13 +386,13 @@ class BaseAgent:
             )
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - started) * 1000
-            result_payload = build_result_payload(
+            result_payload = build_error_result_payload(
                 source=self.agent_name,
                 target=COORDINATOR_NAME,
                 task_id=task_id,
-                status=RESULT_ERROR,
-                result=None,
-                error=str(exc),
+                message=str(exc),
+                error_code="agent_execution_failed",
+                http_status=500,
                 metadata={
                     "agent": self.agent_name,
                     "capability": self.capability,

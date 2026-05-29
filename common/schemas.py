@@ -14,6 +14,8 @@ from uuid import uuid4
 
 RESULT_SUCCESS = "success"
 RESULT_ERROR = "error"
+DEFAULT_ERROR_CODE = "internal_error"
+DEFAULT_ERROR_HTTP_STATUS = 500
 
 TASK_PENDING = "pending"
 TASK_WAITING = "waiting"
@@ -86,6 +88,40 @@ def build_result_payload(
         "error": error,
         "metadata": metadata or {},
     }
+
+
+def build_error_result_payload(
+    *,
+    source: str,
+    target: str,
+    task_id: str,
+    message: str,
+    error_code: str = DEFAULT_ERROR_CODE,
+    http_status: int = DEFAULT_ERROR_HTTP_STATUS,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the standard Agent -> Coordinator error result packet.
+
+    The wire status remains protocol-neutral ("error"), while metadata carries
+    an HTTP-like status code for demos, logs, and grading scripts.
+    """
+    normalized_metadata = dict(metadata or {})
+    normalized_metadata["error_report"] = {
+        "code": error_code,
+        "http_status": http_status,
+        "message": message,
+    }
+    normalized_metadata.setdefault("error_code", error_code)
+    normalized_metadata.setdefault("http_status", http_status)
+    return build_result_payload(
+        source=source,
+        target=target,
+        task_id=task_id,
+        status=RESULT_ERROR,
+        result=None,
+        error=message,
+        metadata=normalized_metadata,
+    )
 
 
 def validate_task_result(payload: dict[str, Any]) -> None:

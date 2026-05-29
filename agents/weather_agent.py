@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from common.config import AGENTS, COORDINATOR_NAME, MCP_SERVERS
-from common.schemas import RESULT_ERROR, RESULT_SUCCESS, build_result_payload
+from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
 
 
 class WeatherAgent(BaseAgent):
@@ -74,13 +74,13 @@ class WeatherAgent(BaseAgent):
             )
         except Exception as exc:
             elapsed_ms = (time.perf_counter() - started) * 1000
-            result_payload = build_result_payload(
+            result_payload = build_error_result_payload(
                 source=self.agent_name,
                 target=COORDINATOR_NAME,
                 task_id=task_id,
-                status=RESULT_ERROR,
-                result=None,
-                error=str(exc),
+                message=str(exc),
+                error_code="agent_execution_failed",
+                http_status=500,
                 metadata={
                     "agent": self.agent_name,
                     "capability": self.capability,
