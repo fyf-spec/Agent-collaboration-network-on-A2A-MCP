@@ -41,7 +41,7 @@ def main() -> None:
             }
 
             try:
-                response = post_json(url, payload, timeout=45.0)
+                response = post_json(url, payload, timeout=600.0)
                 print(f"====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
                 print(f"HTTP Status Code: {response.status_code}")
                 

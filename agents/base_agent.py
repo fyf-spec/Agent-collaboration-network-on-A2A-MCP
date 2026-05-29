@@ -291,6 +291,9 @@ class BaseAgent:
         config = AGENTS.get(self.agent_name, {})
         protocol = config.get("protocol", "tcp")
         self._register_with_registry()
+        
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        
         if protocol == "http":
             self._run_http()
         else:
@@ -317,6 +320,24 @@ class BaseAgent:
             logger.info(f"\n{self.agent_name} shutting down.")
         finally:
             server.server_close()
+
+    def _heartbeat_loop(self) -> None:
+        registry_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/heartbeat"
+        payload = json.dumps({"agent_name": self.agent_name}, ensure_ascii=False).encode("utf-8")
+        
+        while True:
+            try:
+                req = request.Request(
+                    registry_url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with request.urlopen(req, timeout=1.0) as response:
+                    pass
+            except Exception as exc:
+                logger.debug(f"{self.agent_name} failed to send heartbeat: {exc}")
+            time.sleep(2.0)
 
     def _register_with_registry(self) -> None:
         try:
