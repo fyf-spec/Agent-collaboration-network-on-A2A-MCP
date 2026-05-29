@@ -33,8 +33,8 @@ from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.schemas import (
     PayloadValidationError,
-    RESULT_ERROR,
     RESULT_SUCCESS,
+    build_error_result_payload,
     build_result_payload,
     validate_task_payload,
 )
@@ -281,13 +281,13 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             metadata=metadata,
         )
     except Exception as exc:
-        result_payload = build_result_payload(
+        result_payload = build_error_result_payload(
             source=AGENT_NAME,
             target=COORDINATOR_NAME,
             task_id=task_id,
-            status=RESULT_ERROR,
-            result=None,
-            error=str(exc),
+            message=str(exc),
+            error_code="agent_execution_failed",
+            http_status=500,
             metadata={
                 "agent": AGENT_NAME,
                 "capability": CAPABILITY,

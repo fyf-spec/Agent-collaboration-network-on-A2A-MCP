@@ -7,6 +7,7 @@ from socketserver import BaseRequestHandler, ThreadingTCPServer
 import struct
 import sys
 import threading
+import time
 import unittest
 from typing import Any
 
@@ -20,6 +21,7 @@ import agents.base_agent as base_agent_module
 import coordinator as coordinator_module
 from agents.base_agent import BaseAgent
 from common.schemas import (
+    RESULT_ERROR,
     RESULT_SUCCESS,
     build_result_payload,
     build_task_payload,
@@ -221,6 +223,53 @@ class CoordinatorTcpCallbackTests(unittest.TestCase):
         self.assertEqual({}, snapshot["results"])
 
 
+class CoordinatorTimeoutTests(unittest.TestCase):
+    def test_wait_for_target_marks_callback_timeout_as_dispatch_error(self) -> None:
+        state = CoordinatorState(
+            host="127.0.0.1",
+            port=0,
+            tcp_host="127.0.0.1",
+            tcp_port=0,
+        )
+        record = state.create_task(
+            question="query weather",
+            targets=["weather_agent", "traffic_agent"],
+            timeout_seconds=1.0,
+        )
+
+        snapshot = state.wait_for_target(record.task_id, "weather_agent", 0.01)
+
+        self.assertIn("weather_agent", snapshot["dispatch_errors"])
+        self.assertIn("timed out", snapshot["dispatch_errors"]["weather_agent"])
+        self.assertEqual(["traffic_agent"], snapshot["pending_targets"])
+
+    def test_wait_for_task_marks_remaining_targets_on_timeout(self) -> None:
+        state = CoordinatorState(
+            host="127.0.0.1",
+            port=0,
+            tcp_host="127.0.0.1",
+            tcp_port=0,
+        )
+        record = state.create_task(
+            question="query weather and traffic",
+            targets=["weather_agent", "traffic_agent"],
+            timeout_seconds=1.0,
+        )
+
+        snapshot = state.wait_for_task(record.task_id, 0.01)
+
+        self.assertEqual("failed", snapshot["status"])
+        self.assertEqual([], snapshot["pending_targets"])
+        self.assertEqual({"weather_agent", "traffic_agent"}, set(snapshot["dispatch_errors"]))
+
+    def test_stage_wait_does_not_extend_beyond_workflow_deadline(self) -> None:
+        deadline = time.monotonic() + 0.2
+
+        wait_seconds = coordinator_module._stage_wait_seconds(deadline, minimum_seconds=75.0)
+
+        self.assertLessEqual(wait_seconds, 0.25)
+
+
 class RateLimitTcpHandler(BaseRequestHandler):
     def handle(self) -> None:
         request = recv_frame(self.request)
@@ -342,6 +391,47 @@ class A2ARateLimitTests(unittest.TestCase):
         self.assertEqual(RESULT_SUCCESS, result["status"])
         self.assertIn("fallback after rate limit", result["result"])
         self.assertIn("429 rate limit", result["metadata"]["llm_error"])
+
+    def test_agent_execution_failure_returns_standard_error_result(self) -> None:
+        class FailingAgent(BaseAgent):
+            agent_name = "failing_agent"
+            capability = "dummy"
+            mcp_server_key = "weather"
+
+            def __init__(self) -> None:
+                super().__init__(host="127.0.0.1", port=0)
+                self.sent_result: dict[str, Any] | None = None
+
+            def call_mcp_server(self, task_payload: dict[str, Any]) -> dict[str, Any]:
+                raise RuntimeError("simulated MCP outage")
+
+            def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+                return "unreachable"
+
+            def send_result_to_coordinator(
+                self,
+                task_payload: dict[str, Any],
+                result_payload: dict[str, Any],
+            ) -> None:
+                self.sent_result = result_payload
+
+        agent = FailingAgent()
+        task_payload = build_task_payload(
+            source="coordinator",
+            target="failing_agent",
+            task_id="task-error-packet",
+            instruction="query",
+            reply_to="tcp://127.0.0.1:9001",
+        )
+
+        agent.process_task(task_payload)
+
+        self.assertIsNotNone(agent.sent_result)
+        result = agent.sent_result or {}
+        self.assertEqual(RESULT_ERROR, result["status"])
+        self.assertIn("simulated MCP outage", result["error"])
+        self.assertEqual(500, result["metadata"]["error_report"]["http_status"])
+        self.assertEqual("agent_execution_failed", result["metadata"]["error_report"]["code"])
 
 
 if __name__ == "__main__":
