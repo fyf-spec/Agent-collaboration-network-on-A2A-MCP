@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import time
@@ -131,9 +132,14 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
 
 
 def run() -> None:
-    server_address = (REGISTRY_HOST, REGISTRY_PORT)
+    parser = argparse.ArgumentParser(description="Registry Center")
+    parser.add_argument("--host", default=REGISTRY_HOST, help="Host to bind to")
+    parser.add_argument("--port", type=int, default=REGISTRY_PORT, help="Port to bind to")
+    args = parser.parse_args()
+
+    server_address = (args.host, args.port)
     httpd = ThreadingHTTPServer(server_address, RegistryRequestHandler)
-    logger.info(f"Registry Center listening on http://{REGISTRY_HOST}:{REGISTRY_PORT}")
+    logger.info(f"Registry Center listening on http://{args.host}:{args.port}")
     logger.info(f"Endpoints: POST /register, POST /heartbeat, GET /discover, GET /lookup, GET /agents, GET /health")
     try:
         httpd.serve_forever()

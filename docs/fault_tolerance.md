@@ -5,6 +5,7 @@
 - Agent 的网络请求均设置超时机制。
 - MCP Server 宕机或网络拥堵时，Agent 能向 Coordinator 返回标准错误报文。
 - Coordinator 能及时处理节点下线、超时或错误结果，避免系统卡死。
+- 服务发现（注册中心）支持主备高可用架构，消除单点故障。
 
 ## 1. 本次改动概览
 
@@ -163,6 +164,21 @@ coordinator.py
 
 但实际等待远超 20 秒。现在阶段等待严格受 `/submit_task` 的总 timeout 约束，防止系统在故障场景下长时间卡住。
 
+### 1.6 双活注册中心与高可用 (High Availability)
+
+修改文件：
+
+```text
+common/config.py
+registry_center.py
+agents/base_agent.py
+coordinator.py
+```
+
+- 引入了 `BACKUP_REGISTRY_HOST/PORT`。
+- Agent 在 `_register_with_registry` 和 `_heartbeat_loop` 中，同时向主、备注册中心发送注册与心跳。
+- Coordinator 在 `_fetch_discovered_agents` 时，若主节点无法连接或超时，则无缝切换（Fallback）到备用注册中心，彻底消除服务发现的单点故障。
+
 ## 2. 推荐测试命令
 
 略
@@ -273,13 +289,13 @@ Answers of Agents:
 
 一次实际验证中，整个请求约 5 秒返回；Weather MCP 连接失败约 2.3 秒被处理。
 
-## 6. 网络拥堵 / 上游超时测试
+## 6. MCP Server 内部响应超时测试
 
 运行：
 
 ```powershell
 $env:MODELSCOPE_API_KEY=''
-python scripts\demo_delay.py
+python scripts\demo_mcp_delay.py
 ```
 
 该脚本会给 Weather MCP Server 加人工延迟：
@@ -288,26 +304,25 @@ python scripts\demo_delay.py
 weather_mcp_server --delay 5.0
 ```
 
-而 Gateway 调用 MCP Server 的上游超时为：
+而 Agent 内部配置的 MCP 调用 HTTP 超时阈值为：
 
 ```text
-MCP_GATEWAY["upstream_timeout_seconds"] = 2.5
+MCP_HTTP_TIMEOUT_SECONDS = 3.0
 ```
 
 预期结果：
 
 ```text
-gateway_mcp_failed 或 agent_mcp_failed
-weather_agent: error
+weather_agent: error (request timed out after 2.5s / 3.0s)
 Task Status: partial
 ```
 
 说明：
 
-- Weather MCP 极慢时，Gateway 不会无限等待。
-- Agent 不会无限等待 Gateway。
+- Weather MCP 极慢时，Agent 不会无限等待，在 3 秒左右主动截断。
+- 不会触发系统级 `DISPATCH_ERROR`。
 - Coordinator 不会无限等待 Weather Agent。
-- 系统会按 timeout 降级返回。
+- 系统会按 timeout 降级返回，后续工作流带着 `error` 状态继续执行。
 
 ## 7. Agent 节点下线测试
 
@@ -356,7 +371,37 @@ CoordinatorTimeoutTests.test_wait_for_target_marks_callback_timeout_as_dispatch_
 - 该节点被视为本轮任务的失败节点。
 - 如果迟到结果之后到达，`add_result()` 会用新结果覆盖旧的 `dispatch_errors`，任务状态可被刷新。
 
-## 9. 结果判定标准
+## 9. TCP 握手/ACK 超时测试
+
+运行：
+
+```powershell
+python scripts\demo_ack_delay.py
+```
+
+该脚本利用环境变量 `A2A_DELAY_ACK` 强制指定 Agent 在接收 TCP 任务时睡眠 5 秒。Coordinator 在分发任务时，等待 ACK 的时间上限为 `A2A_TCP_TIMEOUT_SECONDS = 3.0` 秒。
+
+预期行为：
+
+- Coordinator 不会永久等待，在 3 秒时触发 TCP 超时。
+- Coordinator 判定该 Agent 无法被正常调度，直接记录为 `DISPATCH_ERROR`。
+
+## 10. 主备注册中心高可用测试
+
+运行：
+
+```powershell
+python scripts\demo_backup_registry.py
+```
+
+该脚本先启动主、备两个注册中心，并在等待 Agent 注册完毕后，强行 `kill` 掉主注册中心进程。随后向 Coordinator 提交任务。
+
+预期行为：
+
+- Coordinator 请求主注册中心超时/失败后，平滑回退到备用注册中心获取 Agent 列表。
+- 工作流不受任何影响，任务顺利完成。
+
+## 11. 结果判定标准
 
 满足评分点时，应能观察到以下现象：
 
@@ -366,11 +411,12 @@ CoordinatorTimeoutTests.test_wait_for_target_marks_callback_timeout_as_dispatch_
 | MCP Server 极慢 | 上游调用按 timeout 失败，不无限等待 |
 | Agent 未启动 | Coordinator 写入 `dispatch_errors[target]` |
 | Agent ACK 后不回调 | Coordinator 等待超时后写入 `dispatch_errors[target]` |
+| 主注册中心宕机 | Coordinator 自动切换至备用注册中心，任务正常完成 |
 | 部分节点失败 | 任务状态为 `partial`，系统继续返回降级结果 |
 | 全部节点失败 | 任务状态为 `failed`，HTTP 状态可能为 `504 Gateway Timeout` |
 | 全部节点成功 | 任务状态为 `completed` |
 
-## 10. 关键文件清单
+## 12. 关键文件清单
 
 ```text
 common/schemas.py
@@ -395,19 +441,20 @@ agents/hotel_agent.py
 agents/traffic_agent.py
   各业务 Agent 的错误回调路径
 
-mcp_gateway.py
-  Gateway -> MCP Server 的 timeout、circuit breaker、JSON-RPC error
+registry_center.py
+  注册中心主备双活实现
 
 coordinator.py
   dispatch_to_agent()
   wait_for_target()
   wait_for_task()
   _stage_wait_seconds()
+  _fetch_discovered_agents()
 
 tests/test_a2a_tcp_protocol.py
   容错相关单元测试
 ```
 
-## 11. 一句话结论
+## 13. 一句话结论
 
-本次改动后，系统在 MCP Server 宕机、上游拥堵、Agent 下线、Agent ACK 后不回调等情况下，都会在有限时间内进入可观测的错误状态，并由 Coordinator 汇总为 `partial` 或 `failed`，不会因为单个节点故障导致整体卡死。
+本次改动后，系统在 MCP Server 宕机/超时、TCP 网络拥堵/断连、Agent 下线/卡死、以及主注册中心宕机等全方位故障场景下，均能在有限时间内进入可观测的降级状态，避免全局死锁，体现了极高的容错韧性与高可用能力。

@@ -38,6 +38,8 @@ from common.config import (
     COORDINATOR_A2A_TCP_PORT,
     REGISTRY_HOST,
     REGISTRY_PORT,
+    BACKUP_REGISTRY_HOST,
+    BACKUP_REGISTRY_PORT,
     COORDINATOR_HOST,
     COORDINATOR_NAME,
     COORDINATOR_PORT,
@@ -103,9 +105,15 @@ class TaskRecord:
     updated_at: str = field(default_factory=utc_now_iso)
 
     def expected_count(self) -> int:
+        '''
+        这个task计划使用的agent数量
+        '''
         return len(self.targets)
 
     def terminal_count(self) -> int:
+        '''
+        所有成功返回结果的agent数量 + 所有调度失败的agent数量
+        '''
         return len(self.results) + len(self.dispatch_errors)
 
     def success_count(self) -> int:
@@ -129,6 +137,9 @@ class TaskRecord:
         self.updated_at = utc_now_iso()
 
     def finalize_after_wait(self) -> None:
+        '''
+        更新整个record的status，是success、partial还是failed
+        '''
         if self.terminal_count() >= self.expected_count():
             self.refresh_status()
         elif self.success_count() > 0:
@@ -222,6 +233,9 @@ class CoordinatorState:
             return record
 
     def mark_dispatch_error(self, task_id: str, target: str, message: str) -> None:
+        '''
+        如果某个target的agent无法被调度，比如调度时agent不在线，或者TCP请求失败，将其在record的dispatch_errors里记录错误信息
+        '''
         with self._condition:
             record = self._tasks.get(task_id)
             if record is None:
@@ -232,6 +246,10 @@ class CoordinatorState:
             self._condition.notify_all()
 
     def wait_for_any_target(self, task_id: str, targets: set[str], timeout_seconds: float) -> dict[str, Any]:
+        '''
+        心跳，检查当前被调度出去的target agents返回了结果或者调度失败了
+        如果有，立即返回snapshot，如果没有，等待timeout_seconds后返回
+        '''
         deadline = time.monotonic() + max(0.1, timeout_seconds)
         with self._condition:
             record = self._tasks[task_id]
@@ -245,6 +263,10 @@ class CoordinatorState:
             return record.snapshot()
 
     def wait_for_task(self, task_id: str, timeout_seconds: float) -> dict[str, Any]:
+        '''
+        检查这个task的所有target agents是否都返回了结果或者调度失败了
+        如果都返回了，立即返回snapshot，如果没有，等待timeout_seconds后强制返回
+        '''
         wait_seconds = max(0.1, timeout_seconds)
         deadline = time.monotonic() + wait_seconds
         with self._condition:
@@ -288,6 +310,11 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
         context: dict[str, Any] | None = None,
         event: str = "dispatch_task",
     ) -> None:
+        '''
+        负责同agent取得联系，把task payload发出；
+        如果agent挂掉了（不在注册中心），或者回复的ack超过A2A_TCP_TIMEOUT_SECONDS，或者TCP报文不对，就返回dispatch_error；
+        只关注分发那一刻，与agent内部处理任务和返回结果的时长无关
+        '''
         agent_config = _fetch_discovered_agents().get(target)
         if not agent_config:
             self.state.mark_dispatch_error(record.task_id, target, f"target agent not found: {target}")
@@ -614,15 +641,16 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                         )
                         dispatched_nodes.add(node_id)
 
-                # 如果没有agent在运行了，结束
+                
                 pending_nodes = dispatched_nodes - completed_nodes
+                # 如果没有agent在运行了，结束
                 if not pending_nodes:
                     break
                     
                 pending_agents = {node["agent"] for node in workflow_dag if node["node_id"] in pending_nodes}
                 self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=2.0)
 
-                # 这一轮并行结束，检查agent结果，更新completed_nodes
+                # 心跳完后，更新completed_nodes
                 snapshot = self.server.state.get_task(record.task_id).snapshot()
                 results = snapshot.get("results", {})
                 errors = snapshot.get("dispatch_errors", {})
@@ -646,8 +674,10 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                                 },
                             )
 
-            # while出来，所有agent都结束
-            snapshot = self.server.state.wait_for_task(record.task_id, _stage_wait_seconds(workflow_deadline, minimum_seconds=timeout_seconds))
+            # while出来，要么所有agent都结束，要么超过整个workflow_deadline
+            # 最多给多2秒供agent同步，传回结果
+            remaining_for_final = max(2.0, workflow_deadline - time.monotonic())
+            snapshot = self.server.state.wait_for_task(record.task_id, remaining_for_final)
             final_answer = build_final_answer(question, snapshot)
             snapshot = self.server.state.set_final_answer(record.task_id, final_answer)
             log_network_event(
@@ -773,21 +803,36 @@ def _refresh_final_answer_async(state: CoordinatorState, task_id: str) -> None:
 
 
 def _fetch_discovered_agents() -> dict[str, Any]:
-    """向注册中心查找所有健康的agents，如果没有注册中心，返回默认
+    """向注册中心查找所有健康的agents，主节点失败则尝试备用节点，都没有则返回默认
     """
+    # 尝试主注册中心
     try:
-        url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover"
-        req = request.Request(url, method="GET")
-        with request.urlopen(req, timeout=3.0) as response:
+        primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover"
+        req = request.Request(primary_url, method="GET")
+        with request.urlopen(req, timeout=1.5) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode("utf-8"))
                 discovered = data.get("agents", {})
                 if isinstance(discovered, dict):
                     return discovered
     except Exception as e:
-        logger.error(f"Coordinator failed to discover agents from registry: {e}, fall back to local config")
-        return dict(AGENTS)
-    return {}
+        logger.warning(f"Coordinator failed to discover agents from primary registry: {e}")
+
+    # 尝试备用注册中心
+    try:
+        backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/discover"
+        req = request.Request(backup_url, method="GET")
+        with request.urlopen(req, timeout=1.5) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                discovered = data.get("agents", {})
+                if isinstance(discovered, dict):
+                    logger.info("Successfully discovered agents from backup registry")
+                    return discovered
+    except Exception as e:
+        logger.error(f"Coordinator failed to discover agents from backup registry: {e}, fall back to local config")
+        
+    return dict(AGENTS)
 
 
 def _infer_error_type(exc: Exception) -> str:
@@ -873,10 +918,11 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
     """
     fallback = _extract_travel_task_by_rules(question)
     default_dag = [
-        {"node_id": "weather", "agent": "weather_agent", "depends_on": []},
-        {"node_id": "attraction", "agent": "attraction_agent", "depends_on": ["weather"]},
-        {"node_id": "hotel", "agent": "hotel_agent", "depends_on": ["weather", "attraction"]},
-        {"node_id": "traffic", "agent": "traffic_agent", "depends_on": ["weather", "attraction", "hotel"]},
+        {"node_id": "weather_agent", "agent": "weather_agent", "depends_on": []},
+        {"node_id": "packing_agent", "agent": "packing_agent", "depends_on": ["weather_agent"]},
+        {"node_id": "attraction_agent", "agent": "attraction_agent", "depends_on": ["weather_agent"]},
+        {"node_id": "hotel_agent", "agent": "hotel_agent", "depends_on": ["weather_agent", "attraction_agent"]},
+        {"node_id": "traffic_agent", "agent": "traffic_agent", "depends_on": ["weather_agent", "attraction_agent", "hotel_agent"]},
     ]
     try:
         logger.info("正在请求大模型生成总体规划和动态 DAG 工作流，请耐心等待...")
@@ -964,8 +1010,8 @@ def _task_analysis_prompt(question: str, fallback: dict[str, Any], available_age
         "你是 Coordinator 的任务解析器，只把用户自然语言解析成 travel_task JSON 和 workflow_dag。",
         "请参考 payload 中的 available_agents_from_registry 字段，那里列出了当前存活可用的 Agent 及其 capabilities（能力）。",
         "你需要根据用户的实际提问和当前存活的 Agent，动态规划需要调用的 agent 及其依赖关系。",
-        "例如：如果用户询问景点，那需要先调用天气 Agent 获取天气信息，再调用景点 Agent 推荐景点，也就是景点的 Agent depends on 天气的 Agent, 同理，交通 Agent 可能还需要 depends on 酒店 Agent和景点 Agent的结果。另外，行李准备 Agent (packing_agent) 只需要天气信息即可，因此它可以只 depends on 天气 Agent，和景点、酒店等完全并行执行！",
-        "例如：如果用户只问天气和交通，那就只返回对应能力的 agent，并且 depends_on 都为 [] (并行执行)。",
+        "例如：如果用户询问景点，那需要先调用天气 Agent 获取天气信息，再调用景点 Agent 推荐景点，也就是景点的 Agent depends on 天气的 Agent。同理，交通 Agent 可能还需要 depends on 酒店 Agent 和景点 Agent 的结果。另外，行李准备 Agent (packing_agent) 只需要天气信息即可，因此它可以只 depends on 天气 Agent，和景点、酒店等完全并行执行！",
+        # "例如：如果用户只问天气和交通，那就只返回对应能力的 agent，并且 depends_on 都为 [] (并行执行)。",
         "不要安排天气、景点或交通方案；不要输出 Markdown；只输出 JSON。",
         json.dumps(payload, ensure_ascii=False, default=str),
     ])
