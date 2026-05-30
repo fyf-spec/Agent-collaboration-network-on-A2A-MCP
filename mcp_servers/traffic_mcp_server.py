@@ -134,7 +134,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run Traffic MCP Server.")
     parser.add_argument("--host", default=config["host"])
     parser.add_argument("--port", type=int, default=config["port"])
-    parser.add_argument("--delay", type=float, default=0.0, help="Artificial delay in seconds")
+    parser.add_argument("--delay", type=float, default=0.0)
     args = parser.parse_args()
 
     run_mcp_server(
