@@ -1,5 +1,8 @@
+import argparse
 import json
 import logging
+import time
+from urllib.parse import urlparse, parse_qs
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -13,13 +16,47 @@ logger = logging.getLogger("registry")
 class Registry:
     def __init__(self) -> None:
         self.agents: dict[str, dict[str, Any]] = {}
+        self.AGENT_TTL = 6.0
 
     def register(self, agent_name: str, payload: dict[str, Any]) -> None:
+        payload["last_heartbeat"] = time.time()
+        payload["status"] = "healthy"
         self.agents[agent_name] = payload
         protocol = payload.get("protocol", "unknown")
         logger.info(f"Agent registered: {agent_name} at {protocol}://{payload.get('host')}:{payload.get('port')}")
 
+    def heartbeat(self, agent_name: str) -> bool:
+        if agent_name in self.agents:
+            self.agents[agent_name]["last_heartbeat"] = time.time()
+            self.agents[agent_name]["status"] = "healthy"
+            return True
+        return False
+
+    # 查找所有健康的agents
     def discover(self) -> dict[str, dict[str, Any]]:
+        now = time.time()
+        healthy_agents = {}
+        for name, data in self.agents.items():
+            if now - data.get("last_heartbeat", 0) <= self.AGENT_TTL:
+                healthy_agents[name] = data
+            else:
+                data["status"] = "unhealthy"
+        return healthy_agents
+    
+    # 在健康的agent中根据能力查找agents
+    def lookup(self, capability: str) -> dict[str, dict[str, Any]]:
+        healthy_agents = self.discover()
+        return {
+            name: data for name, data in healthy_agents.items()
+            if capability in data.get("capabilities", [])
+        }
+
+    # 查找所有agents
+    def get_all_agents(self) -> dict[str, dict[str, Any]]:
+        now = time.time()
+        for name, data in self.agents.items():
+            if now - data.get("last_heartbeat", 0) > self.AGENT_TTL:
+                data["status"] = "unhealthy"
         return self.agents
 
 
@@ -28,10 +65,19 @@ _registry = Registry()
 
 class RegistryRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        if self.path == "/discover":
+        parsed_url = urlparse(self.path)
+        if parsed_url.path == "/discover":
             self._send_json(HTTPStatus.OK, success_response({"agents": _registry.discover()}))
             return
-        if self.path == "/health":
+        if parsed_url.path == "/agents":
+            self._send_json(HTTPStatus.OK, success_response({"agents": _registry.get_all_agents()}))
+            return
+        if parsed_url.path == "/lookup":
+            qs = parse_qs(parsed_url.query)
+            capability = qs.get("capability", [""])[0]
+            self._send_json(HTTPStatus.OK, success_response({"agents": _registry.lookup(capability)}))
+            return
+        if parsed_url.path == "/health":
             self._send_json(HTTPStatus.OK, success_response({"status": "ok"}))
             return
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
@@ -46,6 +92,20 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
                     return
                 _registry.register(agent_name, payload)
                 self._send_json(HTTPStatus.OK, success_response({"status": "registered"}))
+            except Exception as e:
+                self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(e)))
+            return
+        if self.path == "/heartbeat":
+            try:
+                payload = self._read_json()
+                agent_name = payload.get("agent_name")
+                if not agent_name:
+                    self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_request", "agent_name required"))
+                    return
+                if _registry.heartbeat(agent_name):
+                    self._send_json(HTTPStatus.OK, success_response({"status": "ok"}))
+                else:
+                    self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", "agent not registered"))
             except Exception as e:
                 self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(e)))
             return
@@ -72,10 +132,15 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
 
 
 def run() -> None:
-    server_address = (REGISTRY_HOST, REGISTRY_PORT)
+    parser = argparse.ArgumentParser(description="Registry Center")
+    parser.add_argument("--host", default=REGISTRY_HOST, help="Host to bind to")
+    parser.add_argument("--port", type=int, default=REGISTRY_PORT, help="Port to bind to")
+    args = parser.parse_args()
+
+    server_address = (args.host, args.port)
     httpd = ThreadingHTTPServer(server_address, RegistryRequestHandler)
-    logger.info(f"Registry Center listening on http://{REGISTRY_HOST}:{REGISTRY_PORT}")
-    logger.info(f"Endpoints: POST /register, GET /discover, GET /health")
+    logger.info(f"Registry Center listening on http://{args.host}:{args.port}")
+    logger.info(f"Endpoints: POST /register, POST /heartbeat, GET /discover, GET /lookup, GET /agents, GET /health")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -23,26 +24,51 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
 def main() -> None:
-    # Agent 调用 MCP 的超时时间默认是 3 秒，5秒触发超时错误
-    extra_args = {
-        "weather_mcp_server": ["--delay", "5.0"]
-    }
+    print("================================================================")
+    print("🚀 启动 [双注册中心高可用 Demo]")
+    print("目标: 验证主注册中心宕机时，系统是否能自动切换到备用注册中心并完成任务。")
+    print("================================================================\n")
+    
     old_demo_fast = os.environ.get("A2A_DEMO_FAST")
     os.environ["A2A_DEMO_FAST"] = "1"
 
     try:
-        with run_services(extra_args=extra_args):
-            time.sleep(1)  # 等待服务完全启动
+        # 拉起所有服务（包括 primary 和 backup 两个注册中心）
+        with run_services() as processes:
+            print("⏳ 等待 3 秒，让所有 Agent 向两个注册中心完成初始注册和心跳...")
+            time.sleep(3)
+            
+            # 1. 找到并杀掉主注册中心 (registry_center_primary)
+            primary_process = None
+            for name, proc in processes:
+                if name == "registry_center_primary":
+                    primary_process = proc
+                    break
+            
+            if primary_process:
+                print(f"\n💥 [模拟灾难] 正在强行终止主注册中心 (pid={primary_process.pid})...")
+                if os.name == "nt":
+                    primary_process.terminate()
+                else:
+                    primary_process.send_signal(signal.SIGTERM)
+                time.sleep(1) # 给点时间让它死透
+                print("💀 主注册中心已宕机！")
+            else:
+                print("❌ 找不到主注册中心进程！")
+                return
 
+            print("\n✈️  开始向 Coordinator 提交旅行任务...")
+            print("预期表现：Coordinator 请求主节点会超时/拒绝连接，然后自动 fallback 到备用节点，任务正常执行。")
+            
             url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/submit_task"
             payload = {
-                "question": "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
-                "timeout": 20.0,
+                "question": "请帮我规划从上海去北京的五天低预算旅行计划，尽量公共交通，故宫和天安门一定要去。",
+                "timeout": 600.0,
             }
 
             try:
-                response = post_json(url, payload, timeout=45.0)
-                print(f"====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
+                response = post_json(url, payload, timeout=660.0)
+                print(f"\n====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
                 print(f"HTTP Status Code: {response.status_code}")
                 
                 if response.ok and response.data:
@@ -67,12 +93,12 @@ def main() -> None:
                 print(f"HTTP Request Error: {exc}")
             except Exception as e:
                 print(f"Unknown Error: {str(e)}")
+                
     finally:
         if old_demo_fast is None:
             os.environ.pop("A2A_DEMO_FAST", None)
         else:
             os.environ["A2A_DEMO_FAST"] = old_demo_fast
-
 
 
 if __name__ == "__main__":

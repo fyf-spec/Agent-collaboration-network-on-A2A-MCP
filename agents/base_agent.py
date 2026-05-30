@@ -16,6 +16,8 @@ from common.config import (
     AGENTS,
     REGISTRY_HOST,
     REGISTRY_PORT,
+    BACKUP_REGISTRY_HOST,
+    BACKUP_REGISTRY_PORT,
     COORDINATOR_NAME,
     MCP_GATEWAY,
     MCP_HTTP_TIMEOUT_SECONDS,
@@ -238,6 +240,9 @@ class AgentA2ATCPRequestHandler(BaseRequestHandler):
             )
             worker.start()
 
+            if os.environ.get("A2A_DELAY_ACK") == self.server.agent.agent_name:
+                time.sleep(5.0)
+
             ack = build_envelope(
                 message_type=TYPE_TASK_ACK,
                 source=self.server.agent.agent_name,
@@ -291,6 +296,9 @@ class BaseAgent:
         config = AGENTS.get(self.agent_name, {})
         protocol = config.get("protocol", "tcp")
         self._register_with_registry()
+        
+        threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+        
         if protocol == "http":
             self._run_http()
         else:
@@ -318,23 +326,77 @@ class BaseAgent:
         finally:
             server.server_close()
 
+    def _heartbeat_loop(self) -> None:
+        primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/heartbeat"
+        backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/heartbeat"
+        payload = json.dumps({"agent_name": self.agent_name}, ensure_ascii=False).encode("utf-8")
+        
+        while True:
+            # 尝试向主注册中心发送心跳
+            try:
+                req = request.Request(
+                    primary_url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with request.urlopen(req, timeout=1.0) as response:
+                    pass
+            except Exception as exc:
+                logger.debug(f"{self.agent_name} failed to send heartbeat to primary registry: {exc}")
+        
+            # 尝试向备用注册中心发送心跳
+            try:
+                req = request.Request(
+                    backup_url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with request.urlopen(req, timeout=1.0) as response:
+                    pass
+            except Exception as exc:
+                logger.error(f"{self.agent_name} failed to send heartbeat to backup registry: {exc}")
+                
+            time.sleep(2.0)
+
     def _register_with_registry(self) -> None:
+        primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
+        backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/register"
+        payload = self.registration_payload()
+        payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        
+        # 尝试注册主节点
         try:
-            registry_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
-            payload = self.registration_payload()
             req = request.Request(
-                registry_url,
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                primary_url,
+                data=payload_bytes,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
             with request.urlopen(req, timeout=3.0) as response:
                 if response.status == 200:
-                    logger.info(f"{self.agent_name} successfully registered to {registry_url}")
+                    logger.info(f"{self.agent_name} successfully registered to {primary_url}")
                 else:
-                    logger.warning(f"{self.agent_name} registry warning: {response.status}")
+                    logger.warning(f"{self.agent_name} primary registry warning: {response.status}")
         except Exception as exc:
-            logger.error(f"{self.agent_name} failed to register: {exc}")
+            logger.warning(f"{self.agent_name} failed to register to primary: {exc}")
+            
+        # 尝试注册备用节点
+        try:
+            req = request.Request(
+                backup_url,
+                data=payload_bytes,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=3.0) as response:
+                if response.status == 200:
+                    logger.info(f"{self.agent_name} successfully registered to {backup_url}")
+                else:
+                    logger.warning(f"{self.agent_name} backup registry warning: {response.status}")
+        except Exception as exc:
+            logger.error(f"{self.agent_name} failed to register to backup: {exc}")
 
     def registration_payload(self) -> dict[str, Any]:
         config = AGENTS.get(self.agent_name, {})

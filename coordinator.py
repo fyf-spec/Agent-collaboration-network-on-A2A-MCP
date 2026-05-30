@@ -38,6 +38,8 @@ from common.config import (
     COORDINATOR_A2A_TCP_PORT,
     REGISTRY_HOST,
     REGISTRY_PORT,
+    BACKUP_REGISTRY_HOST,
+    BACKUP_REGISTRY_PORT,
     COORDINATOR_HOST,
     COORDINATOR_NAME,
     COORDINATOR_PORT,
@@ -83,80 +85,9 @@ from llm_client import LLMClientError, llm
 
 logger = logging.getLogger("coordinator")
 
-DEPENDENCY_CHAIN = ["weather_agent", "attraction_agent", "hotel_agent", "traffic_agent"]
 
-COORDINATOR_DISPATCH_FLOW = [
-    {
-        "step": 1,
-        "name": "user_submit",
-        "required_flow": "用户提问 -> Coordinator",
-        "network": "HTTP POST /submit_task",
-        "owner": "coordinator",
-    },
-    {
-        "step": 2,
-        "name": "dispatch_weather_agent",
-        "required_flow": "Coordinator -> Weather Agent",
-        "network": "TCP A2A TASK_REQUEST frame with 4-byte length prefix",
-        "owner": "coordinator sends; weather agent receives",
-    },
-    {
-        "step": 3,
-        "name": "weather_callback",
-        "required_flow": "Weather Agent -> Coordinator",
-        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
-        "owner": "weather agent sends; coordinator receives",
-    },
-    {
-        "step": 4,
-        "name": "dispatch_attraction_agent_after_weather",
-        "required_flow": "Coordinator 等待 Weather 结果后，再唤醒 Attraction Agent",
-        "network": "TCP A2A TASK_REQUEST frame with weather_result in context.inputs",
-        "owner": "coordinator sends; attraction agent receives",
-    },
-    {
-        "step": 5,
-        "name": "attraction_callback",
-        "required_flow": "Attraction Agent -> Coordinator",
-        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
-        "owner": "attraction agent sends; coordinator receives",
-    },
-    {
-        "step": 6,
-        "name": "dispatch_hotel_agent_after_attraction",
-        "required_flow": "Coordinator 等待 Attraction 结果后，再唤醒 Hotel Agent",
-        "network": "TCP A2A TASK_REQUEST frame with daily_plan_skeleton in context.inputs",
-        "owner": "coordinator sends; hotel agent receives",
-    },
-    {
-        "step": 7,
-        "name": "hotel_callback",
-        "required_flow": "Hotel Agent -> Coordinator",
-        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
-        "owner": "hotel agent sends; coordinator receives",
-    },
-    {
-        "step": 8,
-        "name": "dispatch_traffic_agent_after_hotel",
-        "required_flow": "Coordinator 等待 Hotel 结果后，再唤醒 Traffic Agent",
-        "network": "TCP A2A TASK_REQUEST frame with daily_plan_skeleton and hotel_plan in context.inputs",
-        "owner": "coordinator sends; traffic agent receives",
-    },
-    {
-        "step": 9,
-        "name": "traffic_callback",
-        "required_flow": "Traffic Agent -> Coordinator",
-        "network": "TCP A2A TASK_RESULT frame with 4-byte length prefix",
-        "owner": "traffic agent sends; coordinator receives",
-    },
-    {
-        "step": 10,
-        "name": "aggregate_final_plan",
-        "required_flow": "Coordinator 汇总天气、景点、住宿、交通结果，生成最终旅行方案",
-        "network": "HTTP response to /submit_task",
-        "owner": "coordinator",
-    },
-]
+
+
 
 
 @dataclass
@@ -174,9 +105,15 @@ class TaskRecord:
     updated_at: str = field(default_factory=utc_now_iso)
 
     def expected_count(self) -> int:
+        '''
+        这个task计划使用的agent数量
+        '''
         return len(self.targets)
 
     def terminal_count(self) -> int:
+        '''
+        所有成功返回结果的agent数量 + 所有调度失败的agent数量
+        '''
         return len(self.results) + len(self.dispatch_errors)
 
     def success_count(self) -> int:
@@ -200,6 +137,9 @@ class TaskRecord:
         self.updated_at = utc_now_iso()
 
     def finalize_after_wait(self) -> None:
+        '''
+        更新整个record的status，是success、partial还是failed
+        '''
         if self.terminal_count() >= self.expected_count():
             self.refresh_status()
         elif self.success_count() > 0:
@@ -293,6 +233,9 @@ class CoordinatorState:
             return record
 
     def mark_dispatch_error(self, task_id: str, target: str, message: str) -> None:
+        '''
+        如果某个target的agent无法被调度，比如调度时agent不在线，或者TCP请求失败，将其在record的dispatch_errors里记录错误信息
+        '''
         with self._condition:
             record = self._tasks.get(task_id)
             if record is None:
@@ -302,27 +245,28 @@ class CoordinatorState:
             record.refresh_status()
             self._condition.notify_all()
 
-    def wait_for_target(self, task_id: str, target: str, timeout_seconds: float) -> dict[str, Any]:
-        wait_seconds = max(0.1, timeout_seconds)
-        deadline = time.monotonic() + wait_seconds
+    def wait_for_any_target(self, task_id: str, targets: set[str], timeout_seconds: float) -> dict[str, Any]:
+        '''
+        心跳，检查当前被调度出去的target agents返回了结果或者调度失败了
+        如果有，立即返回snapshot，如果没有，等待timeout_seconds后返回
+        '''
+        deadline = time.monotonic() + max(0.1, timeout_seconds)
         with self._condition:
             record = self._tasks[task_id]
             record.status = TASK_WAITING
             record.updated_at = utc_now_iso()
-            while target not in record.results and target not in record.dispatch_errors:
+            while not any(t in record.results or t in record.dispatch_errors for t in targets):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    record.dispatch_errors[target] = (
-                        f"{target} timed out after {wait_seconds:.1f}s waiting for result callback"
-                    )
-                    record.results.pop(target, None)
-                    record.refresh_status()
-                    self._condition.notify_all()
                     break
                 self._condition.wait(timeout=remaining)
             return record.snapshot()
 
     def wait_for_task(self, task_id: str, timeout_seconds: float) -> dict[str, Any]:
+        '''
+        检查这个task的所有target agents是否都返回了结果或者调度失败了
+        如果都返回了，立即返回snapshot，如果没有，等待timeout_seconds后强制返回
+        '''
         wait_seconds = max(0.1, timeout_seconds)
         deadline = time.monotonic() + wait_seconds
         with self._condition:
@@ -331,10 +275,6 @@ class CoordinatorState:
             while record.terminal_count() < record.expected_count():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    for target in record.pending_targets():
-                        record.dispatch_errors[target] = (
-                            f"{target} timed out after {wait_seconds:.1f}s waiting for workflow completion"
-                        )
                     break
                 self._condition.wait(timeout=remaining)
             record.finalize_after_wait()
@@ -370,6 +310,11 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
         context: dict[str, Any] | None = None,
         event: str = "dispatch_task",
     ) -> None:
+        '''
+        负责同agent取得联系，把task payload发出；
+        如果agent挂掉了（不在注册中心），或者回复的ack超过A2A_TCP_TIMEOUT_SECONDS，或者TCP报文不对，就返回dispatch_error；
+        只关注分发那一刻，与agent内部处理任务和返回结果的时长无关
+        '''
         agent_config = _fetch_discovered_agents().get(target)
         if not agent_config:
             self.state.mark_dispatch_error(record.task_id, target, f"target agent not found: {target}")
@@ -575,7 +520,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                         "base_url": self.server.state.base_url,
                         "a2a_tcp_url": self.server.state.reply_to,
                         "workflow": "travel_dependency",
-                        "dependency_chain": DEPENDENCY_CHAIN,
+                        "dependency_chain": "Dynamic DAG",
                         "agents": _enabled_agents_view(),
                         "mcp_servers": _mcp_servers_view(),
                         "llm": llm.info(),
@@ -589,7 +534,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 success_response(
                     {
-                        "flow": COORDINATOR_DISPATCH_FLOW,
+                        "flow": "Dynamic LLM-based DAG scheduler" ,
                         "interfaces": build_collaboration_contracts(self.server.state),
                     }
                 ),
@@ -629,9 +574,12 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(exc)))
             return
 
-        targets = list(DEPENDENCY_CHAIN)
-        travel_task = extract_travel_task(question)
-        plan = build_dependency_plan(question, targets, travel_task)
+        available_agents = _fetch_discovered_agents()
+        travel_task, workflow_dag = extract_travel_task(question, available_agents)
+        # 所有要用到的agent列表
+        targets = [node["agent"] for node in workflow_dag]
+        # 整合成一个规范化的plan
+        plan = build_dependency_plan(question, targets, travel_task, workflow_dag)
         record = self.server.state.create_task(question, targets, timeout_seconds, plan)
         workflow_deadline = time.monotonic() + timeout_seconds
 
@@ -647,214 +595,109 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             payload_size=payload_size,
         )
 
-        # 1. Coordinator -> Weather Agent
-        weather_context = build_node_context(
-            record=record,
-            node_id="weather",
-            stage="weather_analysis",
-            dependencies=[],
-            travel_task=travel_task,
-            inputs={},
-            target="weather_agent",
-        )
-        log_network_event(
-            event="dependency_dispatch_weather",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="weather_agent",
-            task_id=record.task_id,
-            payload={"reason": "first node in dependency chain", "node_id": "weather"},
-        )
-        self.server.dispatch_to_agent(
-            record,
-            "weather_agent",
-            context=weather_context,
-            event="dispatch_weather_task",
-        )
-        self.server.state.wait_for_target(record.task_id, "weather_agent", _stage_wait_seconds(workflow_deadline, minimum_seconds=75.0))
-        snapshot = self.server.state.get_task(record.task_id).snapshot()
-        weather_result = snapshot["results"].get("weather_agent")
-        weather_constraints = build_weather_constraints(weather_result, travel_task)
-        log_network_event(
-            event="dependency_satisfied_weather_to_attraction",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="attraction_agent",
-            task_id=record.task_id,
-            payload={
-                "dependency": "weather_agent",
-                "next": "attraction_agent",
-                "weather_status": weather_result.get("status") if weather_result else None,
-                "weather_constraints": weather_constraints,
-                "dispatch_errors": snapshot.get("dispatch_errors", {}),
-            },
-        )
+        def run_dag() -> None:
+            completed_nodes = set()
+            dispatched_nodes = set()
 
-        # 2. Coordinator -> Attraction Agent after Weather result
-        attraction_context = build_node_context(
-            record=record,
-            node_id="attraction",
-            stage="attraction_planning",
-            dependencies=["weather"],
-            travel_task=travel_task,
-            inputs={
-                "travel_task": travel_task,
-                "weather_result": weather_result,
-                "weather_constraints": weather_constraints,
-            },
-            target="attraction_agent",
-        )
-        log_network_event(
-            event="dependency_dispatch_attraction",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="attraction_agent",
-            task_id=record.task_id,
-            payload={"reason": "weather result received; now trigger attraction planning", "node_id": "attraction"},
-        )
-        self.server.dispatch_to_agent(
-            record,
-            "attraction_agent",
-            context=attraction_context,
-            event="dispatch_attraction_task",
-        )
-        self.server.state.wait_for_target(record.task_id, "attraction_agent", _stage_wait_seconds(workflow_deadline, minimum_seconds=100.0))
-        snapshot = self.server.state.get_task(record.task_id).snapshot()
-        attraction_result = snapshot["results"].get("attraction_agent")
-        daily_plan_skeleton = extract_daily_plan_skeleton(attraction_result)
-        constraints_for_traffic = extract_constraints_for_traffic(attraction_result)
-        log_network_event(
-            event="dependency_satisfied_attraction_to_hotel",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="hotel_agent",
-            task_id=record.task_id,
-            payload={
-                "dependency": "attraction_agent",
-                "next": "hotel_agent",
-                "attraction_status": attraction_result.get("status") if attraction_result else None,
-                "daily_plan_days": list(daily_plan_skeleton.keys()) if isinstance(daily_plan_skeleton, dict) else [],
-                "dispatch_errors": snapshot.get("dispatch_errors", {}),
-            },
-        )
+            # Dynamic DAG Execution Loop
+            while len(completed_nodes) < len(workflow_dag) and time.monotonic() < workflow_deadline:
+                # 调度满足要求的agent
+                for node in workflow_dag:
+                    node_id = node["node_id"]
+                    agent_name = node["agent"]
+                    deps = set(node.get("depends_on", []))
 
-        # 3. Coordinator -> Hotel Agent after Attraction result
-        hotel_context = build_node_context(
-            record=record,
-            node_id="hotel",
-            stage="hotel_selection",
-            dependencies=["weather", "attraction"],
-            travel_task=travel_task,
-            inputs={
-                "travel_task": travel_task,
-                "weather_result": weather_result,
-                "weather_constraints": weather_constraints,
-                "attraction_result": attraction_result,
-                "daily_plan_skeleton": daily_plan_skeleton,
-                "constraints_for_hotel": [
-                    "根据每日景点区域选择交通便利的住宿区域",
-                    "低预算下优先经济型酒店或青旅",
-                    "住宿位置需要服务后续交通规划",
-                ],
-            },
-            target="hotel_agent",
-        )
-        log_network_event(
-            event="dependency_dispatch_hotel",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="hotel_agent",
-            task_id=record.task_id,
-            payload={"reason": "attraction plan received; now trigger hotel selection", "node_id": "hotel"},
-        )
-        self.server.dispatch_to_agent(
-            record,
-            "hotel_agent",
-            context=hotel_context,
-            event="dispatch_hotel_task",
-        )
-        self.server.state.wait_for_target(record.task_id, "hotel_agent", _stage_wait_seconds(workflow_deadline, minimum_seconds=150.0))
-        snapshot = self.server.state.get_task(record.task_id).snapshot()
-        hotel_result = snapshot["results"].get("hotel_agent")
-        if hotel_result is None:
-            # Hotel is a hard dependency of Traffic. Do not start Traffic with an
-            # empty hotel_plan; otherwise final_answer will claim lodging/traffic
-            # is incomplete. Give slow LLM callbacks one more generous window.
-            logger.warning("hotel_agent not ready after first wait; waiting again before traffic dispatch")
-            self.server.state.wait_for_target(record.task_id, "hotel_agent", 120.0)
+                    if node_id not in dispatched_nodes and deps.issubset(completed_nodes):
+                        # 满足dependency的要求，可以调度
+                        # snapshot当前任务的状态
+                        snapshot = self.server.state.get_task(record.task_id).snapshot()
+                        # 提取出已完成的agent node的结果，加到下一个agent的输入
+                        inputs = build_dynamic_inputs(travel_task, snapshot.get("results", {}), deps, workflow_dag)
+
+                        context = build_node_context(
+                            record=record,
+                            node_id=node_id,
+                            stage=f"{node_id}_processing",
+                            dependencies=list(deps),
+                            travel_task=travel_task,
+                            inputs=inputs,
+                            target=agent_name,
+                        )
+                        
+                        log_network_event(
+                            event=f"dependency_dispatch_{node_id}",
+                            direction="internal",
+                            source=COORDINATOR_NAME,
+                            target=agent_name,
+                            task_id=record.task_id,
+                            payload={"reason": f"dependencies {list(deps)} satisfied" if deps else "no dependencies", "node_id": node_id},
+                        )
+
+                        self.server.dispatch_to_agent(
+                            record,
+                            agent_name,
+                            context=context,
+                            event=f"dispatch_{node_id}_task",
+                        )
+                        dispatched_nodes.add(node_id)
+
+                
+                pending_nodes = dispatched_nodes - completed_nodes
+                # 如果没有agent在运行了，结束
+                if not pending_nodes:
+                    break
+                    
+                pending_agents = {node["agent"] for node in workflow_dag if node["node_id"] in pending_nodes}
+                self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=2.0)
+
+                # 心跳完后，更新completed_nodes
+                snapshot = self.server.state.get_task(record.task_id).snapshot()
+                results = snapshot.get("results", {})
+                errors = snapshot.get("dispatch_errors", {})
+                
+                for node in workflow_dag:
+                    node_id = node["node_id"]
+                    agent_name = node["agent"]
+                    if node_id in pending_nodes:
+                        if agent_name in results or agent_name in errors:
+                            completed_nodes.add(node_id)
+                            log_network_event(
+                                event=f"node_completed_{node_id}",
+                                direction="internal",
+                                source=COORDINATOR_NAME,
+                                target="coordinator",
+                                task_id=record.task_id,
+                                payload={
+                                    "node_id": node_id,
+                                    "agent": agent_name,
+                                    "status": results.get(agent_name, {}).get("status") if agent_name in results else "dispatch_error"
+                                },
+                            )
+
+            # while出来，要么所有agent都结束，要么超过整个workflow_deadline
+            # 最多给多2秒供agent同步，传回结果
+            remaining_for_final = max(2.0, workflow_deadline - time.monotonic())
+            snapshot = self.server.state.wait_for_task(record.task_id, remaining_for_final)
+            final_answer = build_final_answer(question, snapshot)
+            snapshot = self.server.state.set_final_answer(record.task_id, final_answer)
+            log_network_event(
+                event="dependency_workflow_finished",
+                direction="internal",
+                source=COORDINATOR_NAME,
+                target="user",
+                task_id=record.task_id,
+                payload=snapshot,
+            )
+
+        is_async = bool(payload.get("async", False))
+        if is_async:
+            threading.Thread(target=run_dag, name=f"dag-worker-{record.task_id}", daemon=True).start()
+            self._send_json(HTTPStatus.ACCEPTED, success_response({"task": record.snapshot()}))
+        else:
+            run_dag()
             snapshot = self.server.state.get_task(record.task_id).snapshot()
-            hotel_result = snapshot["results"].get("hotel_agent")
-        hotel_plan = extract_hotel_plan(hotel_result)
-        hotel_constraints_for_traffic = extract_hotel_constraints_for_traffic(hotel_result)
-
-        log_network_event(
-            event="dependency_satisfied_hotel_to_traffic",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="traffic_agent",
-            task_id=record.task_id,
-            payload={
-                "dependency": "hotel_agent",
-                "next": "traffic_agent",
-                "hotel_status": hotel_result.get("status") if hotel_result else None,
-                "recommended_area": hotel_plan.get("recommended_area") if isinstance(hotel_plan, dict) else None,
-                "dispatch_errors": snapshot.get("dispatch_errors", {}),
-            },
-        )
-
-        # 4. Coordinator -> Traffic Agent after Hotel result
-        traffic_context = build_node_context(
-            record=record,
-            node_id="traffic",
-            stage="traffic_planning",
-            dependencies=["weather", "attraction", "hotel"],
-            travel_task=travel_task,
-            inputs={
-                "travel_task": travel_task,
-                "weather_result": weather_result,
-                "weather_constraints": weather_constraints,
-                "attraction_result": attraction_result,
-                "daily_plan_skeleton": daily_plan_skeleton,
-                "constraints_for_traffic": constraints_for_traffic,
-                "hotel_result": hotel_result,
-                "hotel_plan": hotel_plan,
-                "hotel_constraints_for_traffic": hotel_constraints_for_traffic,
-            },
-            target="traffic_agent",
-        )
-        log_network_event(
-            event="dependency_dispatch_traffic",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="traffic_agent",
-            task_id=record.task_id,
-            payload={"reason": "hotel selected; now trigger traffic planning", "node_id": "traffic"},
-        )
-        self.server.dispatch_to_agent(
-            record,
-            "traffic_agent",
-            context=traffic_context,
-            event="dispatch_traffic_task",
-        )
-        self.server.state.wait_for_target(record.task_id, "traffic_agent", _stage_wait_seconds(workflow_deadline, minimum_seconds=150.0))
-        snapshot = self.server.state.get_task(record.task_id).snapshot()
-        if "traffic_agent" not in (snapshot.get("results") or {}):
-            logger.warning("traffic_agent not ready after first wait; waiting again before final answer")
-            self.server.state.wait_for_target(record.task_id, "traffic_agent", 120.0)
-
-        snapshot = self.server.state.wait_for_task(record.task_id, _stage_wait_seconds(workflow_deadline, minimum_seconds=60.0))
-        final_answer = build_final_answer(question, snapshot)
-        snapshot = self.server.state.set_final_answer(record.task_id, final_answer)
-        log_network_event(
-            event="dependency_workflow_finished",
-            direction="internal",
-            source=COORDINATOR_NAME,
-            target="user",
-            task_id=record.task_id,
-            payload=snapshot,
-        )
-        http_status = HTTPStatus.OK if snapshot["status"] != TASK_FAILED else HTTPStatus.GATEWAY_TIMEOUT
-        self._send_json(http_status, success_response({"task": snapshot}))
+            http_status = HTTPStatus.OK if snapshot["status"] != TASK_FAILED else HTTPStatus.GATEWAY_TIMEOUT
+            self._send_json(http_status, success_response({"task": snapshot}))
 
     def _handle_task_result(self) -> None:
         try:
@@ -960,25 +803,36 @@ def _refresh_final_answer_async(state: CoordinatorState, task_id: str) -> None:
 
 
 def _fetch_discovered_agents() -> dict[str, Any]:
-    """Return registry-discovered agents merged with local config.
-
-    Local config is kept as a fallback so manually added agents, especially
-    attraction_agent, remain reachable even if they do not register themselves.
-    Registry entries override local config for agents that do register.
+    """向注册中心查找所有健康的agents，主节点失败则尝试备用节点，都没有则返回默认
     """
-    agents = dict(AGENTS)
+    # 尝试主注册中心
     try:
-        url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover"
-        req = request.Request(url, method="GET")
-        with request.urlopen(req, timeout=3.0) as response:
+        primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover"
+        req = request.Request(primary_url, method="GET")
+        with request.urlopen(req, timeout=1.5) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode("utf-8"))
                 discovered = data.get("agents", {})
                 if isinstance(discovered, dict):
-                    agents.update(discovered)
+                    return discovered
     except Exception as e:
-        logger.error(f"Coordinator failed to discover agents from registry: {e}, fall back to local config")
-    return agents
+        logger.warning(f"Coordinator failed to discover agents from primary registry: {e}")
+
+    # 尝试备用注册中心
+    try:
+        backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/discover"
+        req = request.Request(backup_url, method="GET")
+        with request.urlopen(req, timeout=1.5) as response:
+            if response.status == 200:
+                data = json.loads(response.read().decode("utf-8"))
+                discovered = data.get("agents", {})
+                if isinstance(discovered, dict):
+                    logger.info("Successfully discovered agents from backup registry")
+                    return discovered
+    except Exception as e:
+        logger.error(f"Coordinator failed to discover agents from backup registry: {e}, fall back to local config")
+        
+    return dict(AGENTS)
 
 
 def _infer_error_type(exc: Exception) -> str:
@@ -991,23 +845,45 @@ def _infer_error_type(exc: Exception) -> str:
     return type(cause).__name__
 
 
-def build_dependency_plan(question: str, targets: list[str], travel_task: dict[str, Any]) -> dict[str, Any]:
+def build_dependency_plan(question: str, targets: list[str], travel_task: dict[str, Any], workflow_dag: list[dict[str, Any]]) -> dict[str, Any]:
+    '''
+    整合成一个规范化的plan，包括task，要用到的agent和工作流
+    '''
     return {
         "selected_by": travel_task.get("_parser", "fixed_travel_dependency_chain"),
         "workflow": "travel_dependency",
         "selected_targets": targets,
-        "dependency_chain": [
-            {"node_id": "weather", "agent": "weather_agent", "depends_on": []},
-            {"node_id": "attraction", "agent": "attraction_agent", "depends_on": ["weather"]},
-            {"node_id": "hotel", "agent": "hotel_agent", "depends_on": ["weather", "attraction"]},
-            {"node_id": "traffic", "agent": "traffic_agent", "depends_on": ["weather", "attraction", "hotel"]},
-        ],
+        "dependency_chain": workflow_dag,
         "travel_task": travel_task,
-        "dispatch_flow": COORDINATOR_DISPATCH_FLOW,
         "available_agents": _enabled_agents_view(),
-        "routing_policy": "fixed DAG in latest version: Weather -> Attraction -> Hotel -> Traffic",
+        "routing_policy": "dynamic LLM-based DAG scheduler",
         "llm": llm.info(),
     }
+
+
+def build_dynamic_inputs(travel_task: dict[str, Any], results: dict[str, Any], deps: set[str], workflow_dag: list[dict[str, Any]]) -> dict[str, Any]:
+    """基于已完成agent的结果，动态构建下一个agent的输入"""
+    inputs = {"travel_task": travel_task}
+    upstream_results = {}
+    
+    for dep_node_id in deps:
+        # 找到依赖的节点对应的 agent_name
+        agent_name = None
+        for node in workflow_dag:
+            if node["node_id"] == dep_node_id:
+                agent_name = node["agent"]
+                break
+                
+        if agent_name and agent_name in results:
+            res = results[agent_name]
+            if res.get("status") == "success":
+                upstream_results[agent_name] = {
+                    "result": res.get("result"),
+                    "structured": res.get("metadata", {}).get("structured_result", {})
+                }
+                
+    inputs["upstream_results"] = upstream_results
+    return inputs
 
 
 def build_node_context(
@@ -1033,32 +909,58 @@ def build_node_context(
     }
 
 
-def extract_travel_task(question: str) -> dict[str, Any]:
-    """Use LLM for natural-language task parsing, with rule fallback.
-
-    Coordinator only extracts task constraints and chooses workflow; it does not
-    perform weather, attraction, hotel, or traffic domain decisions.
+def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    输入：问题、可用agent
+    返回：提取的travel_task和workflow_dag
+    用LLM提取task和dag工作流，如果失败，返回基于规则的fallback task和默认dag（全并行）
+    dag是一个列表，每个元素是一个node，包含node_id（领域名）、agent（实际调用的agent）和depends_on（依赖的上游node_id列表）。
     """
     fallback = _extract_travel_task_by_rules(question)
+    default_dag = [
+        {"node_id": "weather_agent", "agent": "weather_agent", "depends_on": []},
+        {"node_id": "packing_agent", "agent": "packing_agent", "depends_on": ["weather_agent"]},
+        {"node_id": "attraction_agent", "agent": "attraction_agent", "depends_on": ["weather_agent"]},
+        {"node_id": "hotel_agent", "agent": "hotel_agent", "depends_on": ["weather_agent", "attraction_agent"]},
+        {"node_id": "traffic_agent", "agent": "traffic_agent", "depends_on": ["weather_agent", "attraction_agent", "hotel_agent"]},
+    ]
     try:
+        logger.info("正在请求大模型生成总体规划和动态 DAG 工作流，请耐心等待...")
         llm_json = llm.chat_json(
-            _task_analysis_prompt(question, fallback),
-            max_tokens=450,
+            _task_analysis_prompt(question, fallback, available_agents),
+            max_tokens=600,
             temperature=0.0,
-            timeout_seconds=12.0,
+            timeout_seconds=60.0,
         )
         travel_task = llm_json.get("travel_task") if isinstance(llm_json.get("travel_task"), dict) else llm_json
-        return _normalize_travel_task(travel_task, fallback, parser="coordinator_llm_task_parser")
+        workflow_dag = llm_json.get("workflow_dag", default_dag)
+        logger.info(f"【大模型提取工作流】：{workflow_dag}")
+        if not isinstance(workflow_dag, list):
+            workflow_dag = default_dag
+            
+        return _normalize_travel_task(travel_task, fallback, parser="coordinator_llm_task_parser"), workflow_dag
     except Exception as exc:
+        logger.warning(f"【大模型提取工作流失败】，回退到规则提取: {type(exc).__name__}: {exc}")
+        import traceback
+        traceback.print_exc()
         fallback["_parser"] = "rule_fallback"
         fallback["_parser_error"] = str(exc)
-        return fallback
+        return fallback, default_dag
 
 
-def _task_analysis_prompt(question: str, fallback: dict[str, Any]) -> str:
+def _task_analysis_prompt(question: str, fallback: dict[str, Any], available_agents: dict[str, Any]) -> str:
+    '''
+    构造给llm的提示词，给出期望的输出格式（travel_task和workflow_dag）
+    '''
     payload = {
         "question": question,
         "rule_fallback": fallback,
+        "available_agents_from_registry": {
+            name: {
+                "capabilities": agent.get("capabilities", []),
+            }
+            for name, agent in available_agents.items()
+        },
         "output_schema": {
             "travel_task": {
                 "origin_city": "city or null",
@@ -1094,17 +996,32 @@ def _task_analysis_prompt(question: str, fallback: dict[str, Any]) -> str:
                         "special_needs": [],
                     },
                 },
-            }
+            },
+            "workflow_dag": [
+                {
+                    "node_id": "agent_domain_name",
+                    "agent": "actual_agent_name",
+                    "depends_on": ["upstream_node_id"]
+                }
+            ]
         },
     }
     return "\n".join([
-        "你是 Coordinator 的任务解析器，只把用户自然语言解析成 travel_task JSON。",
+        "你是 Coordinator 的任务解析器，只把用户自然语言解析成 travel_task JSON 和 workflow_dag。",
+        "请参考 payload 中的 available_agents_from_registry 字段，那里列出了当前存活可用的 Agent 及其 capabilities（能力）。",
+        "你需要根据用户的实际提问和当前存活的 Agent，动态规划需要调用的 agent 及其依赖关系。",
+        "例如：如果用户询问景点，那需要先调用天气 Agent 获取天气信息，再调用景点 Agent 推荐景点，也就是景点的 Agent depends on 天气的 Agent。同理，交通 Agent 可能还需要 depends on 酒店 Agent 和景点 Agent 的结果。另外，行李准备 Agent (packing_agent) 只需要天气信息即可，因此它可以只 depends on 天气 Agent，和景点、酒店等完全并行执行！",
+        # "例如：如果用户只问天气和交通，那就只返回对应能力的 agent，并且 depends_on 都为 [] (并行执行)。",
         "不要安排天气、景点或交通方案；不要输出 Markdown；只输出 JSON。",
         json.dumps(payload, ensure_ascii=False, default=str),
     ])
 
 
 def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str) -> dict[str, Any]:
+    '''
+    对llm输出的task做规范化
+    返回规范化后的task
+    '''
     if not isinstance(value, dict):
         result = dict(fallback)
         result["_parser"] = "rule_fallback_invalid_llm"
@@ -1120,6 +1037,7 @@ def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str)
     for key in ["must_visit", "preferences", "avoid"]:
         if isinstance(value.get(key), list):
             result[key] = [str(item).strip() for item in value[key] if str(item).strip()]
+    # 新增
     result["constraints"] = _normalize_task_constraints(value.get("constraints"), result)
     _sync_legacy_fields_from_constraints(result)
     result.setdefault("avoid", [])
@@ -1128,6 +1046,9 @@ def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str)
 
 
 def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
+    '''
+    作为fallback: 输入问题，根据规则返回task
+    '''
     origin_city = _extract_origin_city(question)
     destination_city = _extract_destination_city(question, origin_city)
     days = _extract_days(question)
@@ -1166,6 +1087,9 @@ def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
 
 
 def _normalize_task_constraints(value: Any, flat_task: dict[str, Any]) -> dict[str, Any]:
+    '''
+    对llm输出的task.constraints做规范化
+    '''
     fallback = _build_task_constraints(
         must_visit=_as_clean_list(flat_task.get("must_visit")),
         preferences=_as_clean_list(flat_task.get("preferences")),
@@ -1201,6 +1125,9 @@ def _build_task_constraints(
     transport_preference: str,
     question: str,
 ) -> dict[str, Any]:
+    '''
+    fallback的task constraints
+    '''
     preferred_types = [item for item in preferences if item not in {"低预算", "公共交通方便"}]
     if any(word in question for word in ["自然", "风景", "山水", "湖"]):
         preferred_types.append("自然风景")
@@ -1244,6 +1171,9 @@ def _build_task_constraints(
 
 
 def _sync_legacy_fields_from_constraints(task: dict[str, Any]) -> None:
+    '''
+    从constraints同步一些老版本的字段，保持兼容性
+    '''
     constraints = task.get("constraints")
     if not isinstance(constraints, dict):
         return
@@ -1300,115 +1230,7 @@ def _extract_must_visit(text: str) -> list[str]:
     return [spot for spot in known_spots if spot in text]
 
 
-def build_weather_constraints(weather_result: dict[str, Any] | None, travel_task: dict[str, Any]) -> dict[str, Any]:
-    days = int(travel_task.get("days") or 3)
-    all_days = [f"day{i}" for i in range(1, days + 1)]
-    constraints = {
-        "outdoor_good_days": all_days,
-        "outdoor_suitable_days": all_days,
-        "indoor_preferred_days": [],
-        "rainy_days": [],
-        "weather_by_day": [
-            {
-                "day": day,
-                "outdoor_suitable": True,
-                "indoor_preferred": False,
-            }
-            for day in all_days
-        ],
-        "source": "coordinator_from_weather_mcp_result",
-    }
-    if not isinstance(weather_result, dict):
-        constraints["source"] = "coordinator_default_no_weather_result"
-        return constraints
 
-    metadata = weather_result.get("metadata") or {}
-    if isinstance(metadata, dict):
-        structured = metadata.get("structured_result")
-        if isinstance(structured, dict) and isinstance(structured.get("weather_constraints"), dict):
-            return structured["weather_constraints"]
-        if isinstance(metadata.get("weather_constraints"), dict):
-            return metadata["weather_constraints"]
-
-    mcp_result = metadata.get("mcp_result") if isinstance(metadata, dict) else None
-    if isinstance(mcp_result, dict):
-        condition = str(mcp_result.get("condition", ""))
-        if any(word in condition for word in ["雨", "雪", "大风", "雷"]):
-            constraints["rainy_days"] = ["day1"]
-            constraints["indoor_preferred_days"] = ["day1"]
-            constraints["outdoor_good_days"] = [day for day in all_days if day != "day1"]
-            constraints["outdoor_suitable_days"] = constraints["outdoor_good_days"]
-            constraints["weather_by_day"] = [
-                {
-                    "day": day,
-                    "condition": condition,
-                    "outdoor_suitable": day != "day1",
-                    "indoor_preferred": day == "day1",
-                }
-                for day in all_days
-            ]
-        constraints["raw_condition"] = condition
-        constraints["city"] = mcp_result.get("city")
-        constraints["date"] = mcp_result.get("date")
-    return constraints
-
-
-def extract_daily_plan_skeleton(attraction_result: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(attraction_result, dict):
-        return {}
-    metadata = attraction_result.get("metadata") or {}
-    if isinstance(metadata, dict):
-        structured = metadata.get("structured_result")
-        if isinstance(structured, dict):
-            value = structured.get("daily_plan") or structured.get("daily_plan_skeleton")
-            if isinstance(value, dict):
-                return value
-        value = metadata.get("daily_plan_skeleton") or metadata.get("daily_plan")
-        if isinstance(value, dict):
-            return value
-    return {}
-
-
-def extract_constraints_for_traffic(attraction_result: dict[str, Any] | None) -> list[Any]:
-    if not isinstance(attraction_result, dict):
-        return []
-    metadata = attraction_result.get("metadata") or {}
-    if isinstance(metadata, dict):
-        structured = metadata.get("structured_result")
-        if isinstance(structured, dict) and isinstance(structured.get("constraints_for_traffic"), list):
-            return structured["constraints_for_traffic"]
-        value = metadata.get("constraints_for_traffic")
-        if isinstance(value, list):
-            return value
-    return []
-
-
-def extract_hotel_plan(hotel_result: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(hotel_result, dict):
-        return {}
-    metadata = hotel_result.get("metadata") or {}
-    if isinstance(metadata, dict):
-        structured = metadata.get("structured_result")
-        if isinstance(structured, dict) and isinstance(structured.get("hotel_plan"), dict):
-            return structured["hotel_plan"]
-        value = metadata.get("hotel_plan")
-        if isinstance(value, dict):
-            return value
-    return {}
-
-
-def extract_hotel_constraints_for_traffic(hotel_result: dict[str, Any] | None) -> list[Any]:
-    if not isinstance(hotel_result, dict):
-        return []
-    metadata = hotel_result.get("metadata") or {}
-    if isinstance(metadata, dict):
-        structured = metadata.get("structured_result")
-        if isinstance(structured, dict) and isinstance(structured.get("constraints_for_traffic"), list):
-            return structured["constraints_for_traffic"]
-        value = metadata.get("constraints_for_traffic")
-        if isinstance(value, list):
-            return value
-    return []
 
 
 def build_collaboration_contracts(state: CoordinatorState) -> dict[str, Any]:
@@ -1427,7 +1249,7 @@ def build_collaboration_contracts(state: CoordinatorState) -> dict[str, Any]:
                 "task": {
                     "task_id": "<generated>",
                     "status": "completed|partial|failed|waiting",
-                    "targets": DEPENDENCY_CHAIN,
+                    "targets": ["<dynamic_targets>"],
                     "results": {},
                     "dispatch_errors": {},
                     "final_answer": "<coordinator generated travel plan>",
@@ -1440,7 +1262,7 @@ def build_collaboration_contracts(state: CoordinatorState) -> dict[str, Any]:
             "required_handler": "/execute_task",
             "shared_validator": "common.schemas.validate_task_payload",
             "urls": {name: view["url"] for name, view in _enabled_agents_view().items()},
-            "dependency_order": DEPENDENCY_CHAIN,
+            "dependency_order": "<dynamic_dag>",
             "payload_example": {
                 "source": COORDINATOR_NAME,
                 "target": "attraction_agent",
@@ -1519,7 +1341,7 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         and not pending_targets
         and all(
             isinstance(results.get(agent), dict) and results[agent].get("status") == RESULT_SUCCESS
-            for agent in DEPENDENCY_CHAIN
+            for agent in snapshot.get("targets", [])
         )
     )
     if all_success:
@@ -1578,7 +1400,7 @@ def _final_answer_conflicts_with_snapshot(answer: str, snapshot: dict[str, Any])
         and not pending_targets
         and all(
             isinstance(results.get(agent), dict) and results[agent].get("status") == RESULT_SUCCESS
-            for agent in DEPENDENCY_CHAIN
+            for agent in snapshot.get("targets", [])
         )
     )
 
@@ -1637,19 +1459,27 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     lines.append(f"下面是从{origin}到{dest}的{days}天{budget_text}旅行方案，整体按{transport_text}安排。")
 
     weather_constraints = weather.get("weather_constraints", {}) or {}
-    if weather_constraints:
-        raw_condition = weather_constraints.get("raw_condition") or ""
-        indoor_days = weather_constraints.get("indoor_preferred_days") or []
-        outdoor_days = weather_constraints.get("outdoor_suitable_days") or weather_constraints.get("outdoor_good_days") or []
-        schedule = (
-            f"{'、'.join(str(day) for day in indoor_days)}优先安排室内或 mixed 景点"
-            if indoor_days
-            else f"{'、'.join(str(day) for day in outdoor_days) or '多数日期'}适合安排户外景点"
-        )
-        date = weather_constraints.get("date") or ""
+    packing_list = facts.get("packing_list", [])
+    
+    if weather_constraints or packing_list:
         lines.append("\n一、天气与出行约束")
-        weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
-        lines.append(weather_line)
+        if weather_constraints:
+            raw_condition = weather_constraints.get("raw_condition") or ""
+            schedule = weather_constraints.get("schedule_advice") or "适合正常出行"
+            clothing = weather_constraints.get("clothing_advice")
+            date = weather_constraints.get("date") or ""
+            weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
+            if clothing:
+                weather_line += f"{_format_advice_text(clothing)}。"
+            lines.append(weather_line)
+        
+        if packing_list:
+            lines.append("- 行李准备建议：")
+            for item in packing_list:
+                cat = item.get("category", "")
+                items = "、".join(item.get("items", []))
+                reason = item.get("reason", "")
+                lines.append(f"  * {cat}：{items}（{reason}）")
 
     ticket_total = _extract_ticket_total(estimated_cost, daily_plan)
     hotel_total = _extract_hotel_total(hotel_plan)
@@ -1946,7 +1776,6 @@ def run(
     server = CoordinatorHTTPServer((host, port), CoordinatorRequestHandler, state)
     logger.info(f"Coordinator user API listening on http://{host}:{port}")
     logger.info(f"Coordinator A2A TCP listening on {tcp_url(tcp_host, tcp_port)}")
-    logger.info("Latest workflow: Weather Agent -> Attraction Agent -> Hotel Agent -> Traffic Agent")
     logger.info("Endpoints: POST /submit_task, POST /task_result, GET /health, GET /tasks, GET /contracts")
     try:
         server.serve_forever()
@@ -1977,6 +1806,9 @@ def _agent_tcp_url(agent: dict[str, Any]) -> str:
 
 
 def _enabled_agents_view() -> dict[str, Any]:
+    '''
+    向注册中心查询健康的agent，并放回他们的详细信息
+    '''
     discovered_agents = _fetch_discovered_agents()
     return {
         name: {
@@ -2013,16 +1845,19 @@ def _normalize_timeout(value: Any) -> float:
 
 
 def _remaining_seconds(deadline: float) -> float:
-    return max(0.0, deadline - time.monotonic())
+    return max(0.1, deadline - time.monotonic())
 
 
 def _stage_wait_seconds(deadline: float, minimum_seconds: float = 45.0) -> float:
-    """Return a stage wait bounded by the user-facing workflow timeout.
+    """Wait long enough for one downstream Agent even if earlier LLM calls were slow.
 
-    The minimum_seconds parameter is kept for backward-compatible call sites,
-    but fault-tolerance runs must never extend beyond the submit_task timeout.
+    The user-facing timeout controls the overall request preference, but in this
+    demo each Agent may make a short structured LLM call. If we always use the
+    remaining global deadline, a slow Weather/Attraction LLM can leave Hotel only
+    a few seconds and cause Traffic to start without hotel_plan. This helper
+    keeps dependency order correct for the demo.
     """
-    return max(0.1, min(MAX_TASK_TIMEOUT_SECONDS, _remaining_seconds(deadline)))
+    return min(MAX_TASK_TIMEOUT_SECONDS, max(minimum_seconds, _remaining_seconds(deadline)))
 
 
 def _looks_like_result_payload(value: Any) -> bool:
@@ -2062,11 +1897,12 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
     attraction = results.get("attraction_agent", {}) if isinstance(results.get("attraction_agent"), dict) else {}
     hotel = results.get("hotel_agent", {}) if isinstance(results.get("hotel_agent"), dict) else {}
     traffic = results.get("traffic_agent", {}) if isinstance(results.get("traffic_agent"), dict) else {}
+    packing = results.get("packing_agent", {}) if isinstance(results.get("packing_agent"), dict) else {}
 
     weather_meta = weather.get("metadata", {}) if isinstance(weather, dict) else {}
     weather_constraints = (
         weather_meta.get("weather_constraints")
-        or (weather_meta.get("structured_result", {}) or {}).get("weather_constraints")
+        or (weather_meta.get("structured_result", {}) or {}).get("weather_constraints") # 走这里
         or {}
     )
     raw_weather = weather_meta.get("mcp_result") or {}
@@ -2075,16 +1911,16 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
     attraction_structured = attraction_meta.get("structured_result", {}) if isinstance(attraction_meta, dict) else {}
     daily_plan = (
         attraction_structured.get("daily_plan")
-        or attraction_structured.get("daily_plan_skeleton")
+        or attraction_structured.get("daily_plan_skeleton") # 走这里
         or attraction_meta.get("daily_plan_skeleton")
         or {}
     )
-    estimated_cost = attraction_structured.get("estimated_cost") or attraction_meta.get("estimated_cost") or {}
+    estimated_cost = attraction_structured.get("estimated_cost") or attraction_meta.get("estimated_cost") or {} # 走第一个
     rejected_spots = attraction_structured.get("rejected_spots") or []
 
     hotel_meta = hotel.get("metadata", {}) if isinstance(hotel, dict) else {}
     hotel_structured = hotel_meta.get("structured_result", {}) if isinstance(hotel_meta, dict) else {}
-    hotel_plan = hotel_structured.get("hotel_plan") or hotel_meta.get("hotel_plan") or {}
+    hotel_plan = hotel_structured.get("hotel_plan") or hotel_meta.get("hotel_plan") or {} # 走第一个
 
     traffic_meta = traffic.get("metadata", {}) if isinstance(traffic, dict) else {}
     traffic_structured = traffic_meta.get("structured_result", {}) if isinstance(traffic_meta, dict) else {}
@@ -2096,7 +1932,10 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
         or {}
     )
 
-    results = snapshot.get("results", {}) or {}
+    packing_meta = packing.get("metadata", {}) if isinstance(packing, dict) else {}
+    packing_structured = packing_meta.get("structured_result", {}) if isinstance(packing_meta, dict) else {}
+    packing_list = packing_structured.get("packing_list", [])
+
     dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
     pending_targets = snapshot.get("pending_targets", []) or []
     all_success = (
@@ -2104,7 +1943,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
         and not pending_targets
         and all(
             isinstance(results.get(agent), dict) and results[agent].get("status") == RESULT_SUCCESS
-            for agent in DEPENDENCY_CHAIN
+            for agent in snapshot.get("targets", [])
         )
     )
 
@@ -2140,6 +1979,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
             "traffic_plan": traffic_plan,
             "traffic_summary": traffic_summary,
         },
+        "packing_list": packing_list,
         "user_visible_warnings": warnings,
     }
 
@@ -2158,8 +1998,9 @@ def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
             "如果 traffic.traffic_plan 非空，必须根据其中内容写具体交通方案，不得说交通方案缺失或暂缺。",
             "如果 daily_plan 非空，必须根据其中内容写每日景点安排，不得说景点信息缺失。",
             "如果 weather.weather_constraints 非空，必须根据其中内容写天气与出行建议。",
+            "如果 packing_list 非空，必须根据其中内容写行李准备清单（可与天气建议合并或单独列出），注意不要啰嗦，挑重点建议即可。",
             "不要编造给定 JSON 之外的班次、价格、天气或景点。",
-            "输出中文，结构清楚，包含：天气建议、每日景点、住宿建议、交通方案、费用/预约提醒。",
+            "输出中文，结构清楚，包含：天气与行李准备建议、每日景点、住宿建议、交通方案、费用/预约提醒。",
             json.dumps(clean_payload, ensure_ascii=False, default=str),
         ]
     )
@@ -2174,10 +2015,9 @@ def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response
             "请确认 Weather、Attraction、Hotel、Traffic Agent 及对应 MCP Server 已启动，并查看 dispatch_errors。"
         )
 
-    lines = [f"最终旅行方案：用户问题为「{question}」。"]
-    lines.append("本次任务按照 Weather Agent -> Attraction Agent -> Hotel Agent -> Traffic Agent 的网络依赖顺序执行。")
+    lines = [f"用户问题为：{question}。"]
 
-    for source in DEPENDENCY_CHAIN:
+    for source in snapshot.get("targets", []):
         payload = results.get(source)
         if not payload:
             continue
@@ -2190,9 +2030,10 @@ def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response
 
     attraction = results.get("attraction_agent", {})
     attraction_meta = attraction.get("metadata", {}) if isinstance(attraction, dict) else {}
-    daily_plan = attraction_meta.get("daily_plan_skeleton") if isinstance(attraction_meta, dict) else None
+    attraction_structured = attraction_meta.get("structured_result", {})
+    daily_plan = attraction_structured.get("daily_plan_skeleton", None)
     if isinstance(daily_plan, dict) and daily_plan:
-        lines.append("景点行程骨架：")
+        lines.append("其中，景点行程骨架：")
         for day, plan in daily_plan.items():
             if isinstance(plan, dict):
                 spots = "、".join(plan.get("spots", [])) if isinstance(plan.get("spots"), list) else "待定"

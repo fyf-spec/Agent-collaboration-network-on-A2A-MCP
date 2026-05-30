@@ -23,12 +23,12 @@ def main() -> None:
         
         url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/submit_task"
         payload = {
-            "question": "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
-            "timeout": 60.0
+            "question": "请帮我规划从上海去北京的五天低预算旅行计划，尽量公共交通，故宫和天安门一定要去。",
+            "timeout": 600.0
         }
 
         try:
-            response = post_json(url, payload, timeout=120.0)
+            response = post_json(url, payload, timeout=660.0)
             print(f"====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
             print(f"HTTP Status Code: {response.status_code}")
             if response.ok and response.data:

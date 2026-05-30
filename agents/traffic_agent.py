@@ -18,7 +18,7 @@ from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOU
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
-from llm_client import llm
+from llm_client import llm_small as llm
 
 
 class TrafficAgent(BaseAgent):
@@ -36,9 +36,10 @@ class TrafficAgent(BaseAgent):
         try:
             context = task_payload.get("context") or {}
             travel_task = _extract_travel_task(context)
-            daily_plan = _extract_daily_plan(context)
-            hotel_plan = _extract_hotel_plan(context)
-            constraints_for_traffic = _extract_constraints_for_traffic(context)
+            inputs = context.get("inputs") or {}
+            upstream_results = inputs.get("upstream_results", {})
+            daily_plan = _extract_daily_plan(inputs)
+            hotel_plan = _extract_hotel_plan(inputs)
             city = str(travel_task.get("destination_city") or travel_task.get("city") or self.build_mcp_params(task_payload).get("city") or "北京")
             traffic_constraints = _constraint_section(travel_task, "traffic")
             general_constraints = _constraint_section(travel_task, "general")
@@ -60,6 +61,7 @@ class TrafficAgent(BaseAgent):
                         general_constraints=general_constraints,
                         traffic_constraints=traffic_constraints,
                         segments=segments_for_llm,
+                        upstream_results=upstream_results,
                     ),
                     max_tokens=300,
                     temperature=0.2,
@@ -115,11 +117,11 @@ class TrafficAgent(BaseAgent):
                     "mcp_method": "get_routes",
                     "mcp_result": {"intercity_transport": intercity_transport, "route_queries": route_results},
                     "travel_task": travel_task,
+                    "upstream_results": upstream_results,
                     "traffic_constraints": traffic_constraints,
                     "general_constraints": general_constraints,
                     "daily_plan_skeleton": daily_plan,
                     "hotel_plan": hotel_plan,
-                    "constraints_for_traffic": constraints_for_traffic,
                     "route_queries": route_results,
                     "segments_for_llm": segments_for_llm,
                     "llm_selected_route_ids": llm_selected_route_ids,
@@ -156,67 +158,6 @@ class TrafficAgent(BaseAgent):
 
         self.send_result_to_coordinator(task_payload, result_payload)
 
-    def call_route_mcp(self, task_id: str, *, city: str, segment: dict[str, Any], preference: str) -> dict[str, Any]:
-        server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
-        network_target = str(MCP_GATEWAY["name"])
-        rpc_payload = {
-            "jsonrpc": "2.0",
-            "id": f"{task_id}:{segment.get('day')}:{segment.get('index')}",
-            "method": "get_route",
-            "params": {
-                "city": city,
-                "origin": segment.get("origin"),
-                "destination": segment.get("destination"),
-                "preference": preference,
-            },
-        }
-        log_network_event(
-            event="agent_call_mcp",
-            direction="outbound",
-            source=self.agent_name,
-            target=network_target,
-            method="POST",
-            url=url,
-            task_id=task_id,
-            payload=rpc_payload,
-        )
-        try:
-            response = post_json(url, rpc_payload, timeout=MCP_HTTP_TIMEOUT_SECONDS)
-        except HttpJsonClientError as exc:
-            log_network_event(
-                event="agent_mcp_failed",
-                direction="inbound",
-                source=network_target,
-                target=self.agent_name,
-                method="POST",
-                url=exc.url,
-                task_id=task_id,
-                error=str(exc),
-                elapsed_ms=exc.elapsed_ms,
-                error_type=type(exc).__name__,
-            )
-            raise
-        log_network_event(
-            event="agent_mcp_response",
-            direction="inbound",
-            source=network_target,
-            target=self.agent_name,
-            method="POST",
-            url=url,
-            task_id=task_id,
-            status_code=response.status_code,
-            elapsed_ms=response.elapsed_ms,
-            payload=response.data,
-        )
-        if not response.ok or not isinstance(response.data, dict):
-            raise RuntimeError(f"Traffic MCP returned invalid response: {response.status_code} {response.raw_body}")
-        if response.data.get("error"):
-            raise RuntimeError(f"Traffic MCP error: {response.data['error']}")
-        result = response.data.get("result")
-        if not isinstance(result, dict):
-            raise RuntimeError("Traffic MCP result missing")
-        return {"day": segment.get("day"), "index": segment.get("index"), **result}
 
     def call_routes_mcp(self, task_id: str, *, city: str, segments: list[dict[str, Any]], preference: str) -> list[dict[str, Any]]:
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
@@ -373,54 +314,20 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _extract_daily_plan(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    value = inputs.get("daily_plan_skeleton") or inputs.get("daily_plan")
-    if isinstance(value, dict):
-        return value
-    attraction_result = inputs.get("attraction_result")
-    if isinstance(attraction_result, dict):
-        metadata = attraction_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict):
-                value = structured.get("daily_plan") or structured.get("daily_plan_skeleton")
-                if isinstance(value, dict):
-                    return value
-            value = metadata.get("daily_plan_skeleton")
-            if isinstance(value, dict):
-                return value
-    return {}
+def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
+
+    upstream = inputs.get("upstream_results", {})
+    attr_res = upstream.get("attraction_agent", {}).get("structured", {})
+    return attr_res.get("daily_plan") or attr_res.get("daily_plan_skeleton") or {}
 
 
-def _extract_hotel_plan(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    value = inputs.get("hotel_plan")
-    if isinstance(value, dict):
-        return value
-    hotel_result = inputs.get("hotel_result")
-    if isinstance(hotel_result, dict):
-        metadata = hotel_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict) and isinstance(structured.get("hotel_plan"), dict):
-                return structured["hotel_plan"]
-            value = metadata.get("hotel_plan")
-            if isinstance(value, dict):
-                return value
-    return {}
+def _extract_hotel_plan(inputs: dict[str, Any]) -> dict[str, Any]:
+    upstream = inputs.get("upstream_results", {})
+    hotel_res = upstream.get("hotel_agent", {}).get("structured", {})
+    return hotel_res.get("hotel_plan") or {}
 
 
-def _extract_constraints_for_traffic(context: dict[str, Any]) -> list[str]:
-    inputs = context.get("inputs") or {}
-    result: list[str] = []
-    value = inputs.get("constraints_for_traffic")
-    if isinstance(value, list):
-        result.extend(str(x) for x in value)
-    value = inputs.get("hotel_constraints_for_traffic")
-    if isinstance(value, list):
-        result.extend(str(x) for x in value)
-    return result
+
 
 
 def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -528,6 +435,7 @@ def _traffic_route_selector_prompt(
     days: int,
     general_constraints: dict[str, Any],
     traffic_constraints: dict[str, Any],
+    upstream_results: dict[str, Any],
     segments: list[dict[str, Any]],
 ) -> str:
     payload = {
@@ -535,6 +443,7 @@ def _traffic_route_selector_prompt(
         "days": days,
         "general_constraints": general_constraints,
         "traffic_constraints": traffic_constraints,
+        "upstream_results": upstream_results,
         "segments": segments,
         "output_schema": {
             "selected_route_ids": {
@@ -547,10 +456,11 @@ def _traffic_route_selector_prompt(
     return "\n".join(
         [
             "你是路线选择器。每个 segment 必须从 options 中选择一个已有 route_id。",
-            "只能选择已有 route_id；不要编造路线；不要改写路线内容；不要输出完整 traffic_plan。",
-            "不要输出 route、duration、cost 等字段；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
+            "请仔细参考 upstream_results 内的前置依赖 agents 给出的结果，并据此作出合理调整。",
             "根据用户预算、交通偏好、费用、耗时、换乘次数、步行时间、是否同区域自行判断。",
             "低预算通常优先低费用；公共交通偏好通常优先 subway/bus/walk；同一区域可考虑 walk；taxi 只有明显更合理时才选。",
+            "只能选择已有 route_id；不要编造路线；不要改写路线内容；不要输出完整 traffic_plan。",
+            "不要输出 route、duration、cost 等字段；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
             json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
         ]
     )
@@ -697,60 +607,6 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
-def _traffic_selection_prompt(
-    travel_task: dict[str, Any],
-    daily_plan: dict[str, Any],
-    hotel_plan: dict[str, Any],
-    constraints_for_traffic: list[str],
-    route_results: list[dict[str, Any]],
-) -> str:
-    payload = {
-        "travel_task": travel_task,
-        "daily_plan": daily_plan,
-        "hotel_plan": hotel_plan,
-        "constraints_for_traffic": constraints_for_traffic,
-        "route_candidates": route_results,
-        "selection_rule": "根据用户偏好选择。低预算/公共交通优先时优先 walk/subway/bus；最快优先时比较 duration_minutes；减少步行时比较 walk_minutes。",
-        "output_schema": {
-            "traffic_plan": {
-                "day1": [
-                    {
-                        "from": "景点A",
-                        "to": "景点B",
-                        "selected_mode": "walk|subway|bus|taxi",
-                        "route": "路线名",
-                        "reason": "不超过30字",
-                        "estimated_cost_yuan": 0,
-                        "estimated_duration_minutes": 10,
-                    }
-                ]
-            },
-            "traffic_summary": {
-                "main_strategy": "不超过30字",
-                "total_estimated_local_transport_cost": "如 40-60元",
-            },
-        },
-    }
-    return "\n".join(
-        [
-            "你是 Traffic Agent，只做候选交通方式选择。",
-            "根据 travel_task、daily_plan、hotel_plan 和 route_candidates 输出严格 JSON。",
-            "不要 Markdown，不要解释，不要编造候选中不存在的路线、费用或耗时。",
-            json.dumps(payload, ensure_ascii=False, default=str),
-        ]
-    )
-
-
-def _normalize_traffic_plan(value: Any, *, route_results: list[dict[str, Any]], travel_task: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return _fallback_traffic_plan(route_results, travel_task)
-    traffic_plan = value.get("traffic_plan")
-    traffic_summary = value.get("traffic_summary")
-    if not isinstance(traffic_plan, dict):
-        return _fallback_traffic_plan(route_results, travel_task)
-    if not isinstance(traffic_summary, dict):
-        traffic_summary = _estimate_traffic_summary(traffic_plan)
-    return {"traffic_plan": traffic_plan, "traffic_summary": traffic_summary}
 
 
 def _fallback_traffic_plan(route_results: list[dict[str, Any]], travel_task: dict[str, Any]) -> dict[str, Any]:

@@ -19,16 +19,19 @@ import common.logger
 logger = logging.getLogger("start_all")
 
 SERVICES = [
-    ("registry_center", "registry_center.py"),
+    ("registry_center_primary", "registry_center.py"),
+    ("registry_center_backup", "registry_center.py"),
     ("weather_mcp_server", "mcp_servers/weather_mcp_server.py"),
     ("traffic_mcp_server", "mcp_servers/traffic_mcp_server.py"),
     ("attraction_mcp_server", "mcp_servers/attraction_mcp_server.py"),
     ("hotel_mcp_server", "mcp_servers/hotel_mcp_server.py"),
+    ("packing_mcp_server", "mcp_servers/packing_mcp_server.py"),
     ("mcp_gateway", "mcp_gateway.py"),
     ("weather_agent", "agents/weather_agent.py"),
     ("attraction_agent", "agents/attraction_agent.py"),
     ("hotel_agent", "agents/hotel_agent.py"),
     ("traffic_agent", "agents/traffic_agent.py"),
+    ("packing_agent", "agents/packing_agent.py"),
     ("coordinator", "coordinator.py"),
 ]
 
@@ -44,6 +47,10 @@ def run_services(
 
     exclude_set = set(exclude or [])
     extra_args_dict = extra_args or {}
+    
+    # 为备用注册中心注入启动参数
+    if "registry_center_backup" not in extra_args_dict:
+        extra_args_dict["registry_center_backup"] = ["--port", "7001"]
 
     try:
         for name, relative_script in SERVICES:

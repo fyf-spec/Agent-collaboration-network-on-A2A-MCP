@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 import time
@@ -15,6 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.base_agent import BaseAgent
 from common.config import AGENTS, COORDINATOR_NAME, MCP_SERVERS
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
+from llm_client import LLMClientError
+from llm_client import llm_small as llm
 
 
 class WeatherAgent(BaseAgent):
@@ -108,6 +111,7 @@ class WeatherAgent(BaseAgent):
 
 
 def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
+    '''返回payload里面的task'''
     context = task_payload.get("context") or {}
     if isinstance(context.get("travel_task"), dict):
         return dict(context["travel_task"])

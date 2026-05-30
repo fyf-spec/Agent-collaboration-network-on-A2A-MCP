@@ -235,3 +235,4 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 llm = LLMClient()
+llm_small = LLMClient()

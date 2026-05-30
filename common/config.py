@@ -16,11 +16,17 @@ COORDINATOR_A2A_TCP_PORT = 9001
 REGISTRY_HOST = "127.0.0.1"
 REGISTRY_PORT = 7000
 
-DEFAULT_TASK_TIMEOUT_SECONDS = 120.0
-MAX_TASK_TIMEOUT_SECONDS = 180.0
-DISPATCH_HTTP_TIMEOUT_SECONDS = 5.0
-A2A_TCP_TIMEOUT_SECONDS = 3.0
-MCP_HTTP_TIMEOUT_SECONDS = 3.0
+# 备用注册中心
+BACKUP_REGISTRY_HOST = "127.0.0.1"
+BACKUP_REGISTRY_PORT = 7001
+
+import os
+
+DEFAULT_TASK_TIMEOUT_SECONDS = float(os.environ.get("DEFAULT_TASK_TIMEOUT_SECONDS", 120.0))
+MAX_TASK_TIMEOUT_SECONDS = float(os.environ.get("MAX_TASK_TIMEOUT_SECONDS", 900.0))
+DISPATCH_HTTP_TIMEOUT_SECONDS = float(os.environ.get("DISPATCH_HTTP_TIMEOUT_SECONDS", 5.0))
+A2A_TCP_TIMEOUT_SECONDS = float(os.environ.get("A2A_TCP_TIMEOUT_SECONDS", 3.0))
+MCP_HTTP_TIMEOUT_SECONDS = float(os.environ.get("MCP_HTTP_TIMEOUT_SECONDS", 3.0))
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
 
@@ -69,6 +75,13 @@ MCP_SERVERS = {
         "path": "/",
         "method": "search_hotels",
     },
+    "packing": {
+        "name": "packing_mcp_server",
+        "host": "127.0.0.1",
+        "port": 8005,
+        "path": "/",
+        "method": "get_packing_list",
+    },
 }
 
 AGENTS = {
@@ -78,7 +91,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["weather"],
+        "capabilities": ["weather.query", "weather.forecast"],
         "keywords": [
             "weather",
             "temperature",
@@ -105,7 +118,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["attraction", "attraction.plan"],
+        "capabilities": ["attraction.query", "attraction.plan"],
         "keywords": [
             "attraction",
             "spot",
@@ -127,7 +140,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["hotel", "accommodation", "hotel.selection"],
+        "capabilities": ["hotel.query", "accommodation", "hotel.selection"],
         "keywords": [
             "hotel",
             "accommodation",
@@ -147,7 +160,7 @@ AGENTS = {
         "protocol": "tcp",
         "execute_path": "/execute_task",
         "enabled": True,
-        "capabilities": ["traffic", "transport", "route.selection", "intercity.transport"],
+        "capabilities": ["traffic.query", "route.selection", "intercity.transport"],
         "keywords": [
             "traffic",
             "transport",
@@ -170,6 +183,24 @@ AGENTS = {
             "机票",
             "开车",
             "打车",
+        ],
+    },
+    "packing_agent": {
+        "host": "127.0.0.1",
+        "port": 9060,
+        "protocol": "tcp",
+        "execute_path": "/execute_task",
+        "enabled": True,
+        "capabilities": ["packing.list", "preparation"],
+        "keywords": [
+            "packing",
+            "luggage",
+            "preparation",
+            "行李",
+            "准备",
+            "带什么",
+            "清单",
+            "衣物",
         ],
     },
 }

@@ -38,7 +38,8 @@ from common.schemas import (
     build_result_payload,
     validate_task_payload,
 )
-from llm_client import llm
+from llm_client import LLMClientError
+from llm_client import llm_small as llm
 
 
 AGENT_NAME = "attraction_agent"
@@ -167,7 +168,10 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
 
     try:
         travel_task = _extract_travel_task(instruction, context)
-        weather_constraints = _extract_weather_constraints(context)
+        # TODO. 整个代码还是强依赖weather_constraints，先不改动
+        inputs = context.get("inputs", {})
+        weather_constraints = _extract_weather_constraints(inputs)
+        upstream_results = inputs.get("upstream_results", {})
         mcp_result = call_attraction_mcp(task_id, travel_task)
         spots = mcp_result.get("spots", [])
         days = int(travel_task.get("days") or mcp_result.get("days") or 3)
@@ -233,15 +237,13 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
                 weather_constraints=weather_constraints,
             )
 
-        constraints_for_traffic = _normalize_constraints_for_traffic(None, weather_constraints=weather_constraints)
+
         rejected_spots = []
 
         ticket_total = estimate_ticket_total(daily_plan_skeleton)
-        summary = build_summary(travel_task, weather_constraints, daily_plan_skeleton)
+        summary = build_summary(travel_task, daily_plan_skeleton)
         structured_result = {
-            "daily_plan": daily_plan_skeleton,
             "daily_plan_skeleton": daily_plan_skeleton,
-            "constraints_for_traffic": constraints_for_traffic,
             "estimated_cost": {"ticket_total": ticket_total},
             "rejected_spots": rejected_spots,
         }
@@ -252,6 +254,7 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             "mcp_method": MCP_SERVERS[MCP_SERVER_KEY]["method"],
             "mcp_result": mcp_result,
             "travel_task": travel_task,
+            "upstream_results": upstream_results,
             "attraction_constraints": _constraint_section(travel_task, "attractions"),
             "general_constraints": _constraint_section(travel_task, "general"),
             "weather_constraints": weather_constraints,
@@ -260,7 +263,6 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             "spot_relations": spot_relations,
             "llm_daily_spot_ids": llm_daily_spot_ids,
             "daily_plan_skeleton": daily_plan_skeleton,
-            "constraints_for_traffic": constraints_for_traffic,
             "estimated_cost": {"ticket_total": ticket_total},
             "structured_result": structured_result,
             "quality": {
@@ -441,6 +443,9 @@ def _attraction_selection_prompt(
 
 
 def build_compact_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    '''
+    总之就是把spots再压缩一下
+    '''
     compact: list[dict[str, Any]] = []
     for index, spot in enumerate(spots, start=1):
         if not isinstance(spot, dict):
@@ -524,6 +529,9 @@ def _weather_summary(weather_constraints: dict[str, Any]) -> str:
 
 
 def _as_short_list(value: Any) -> list[str]:
+    '''
+    把列表规范化一下，去掉空白的项
+    '''
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
@@ -550,6 +558,9 @@ def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, 
 
 
 def _attraction_must_visit(travel_task: dict[str, Any]) -> list[str]:
+    '''
+    从task中提取must_visit
+    '''
     attractions = _constraint_section(travel_task, "attractions")
     must_visit = attractions.get("must_visit")
     if isinstance(must_visit, list):
@@ -784,50 +795,6 @@ def _dominant_area(areas: list[str]) -> str:
     return max(counts.items(), key=lambda item: item[1])[0]
 
 
-def _normalize_daily_plan(value: Any, *, spots: list[dict[str, Any]], days: int, weather_constraints: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return build_daily_plan_skeleton(spots=spots, days=days, weather_constraints=weather_constraints)
-    daily_plan: dict[str, Any] = {}
-    known_names = {str(spot.get("name")): spot for spot in spots if spot.get("name")}
-    fallback = build_daily_plan_skeleton(spots=spots, days=days, weather_constraints=weather_constraints)
-    for i in range(1, max(1, days) + 1):
-        key = f"day{i}"
-        raw = value.get(key)
-        if not isinstance(raw, dict):
-            daily_plan[key] = fallback.get(key, {})
-            continue
-        spot_names = [str(x) for x in raw.get("spots", []) if str(x) in known_names]
-        if not spot_names:
-            spot_names = fallback.get(key, {}).get("spots", []) if isinstance(fallback.get(key), dict) else []
-        selected = [known_names[name] for name in spot_names if name in known_names]
-        reservation_required = raw.get("reservation_required")
-        if not isinstance(reservation_required, list):
-            reservation_required = [spot.get("name") for spot in selected if spot.get("reservation_required")]
-        daily_plan[key] = {
-            "theme": str(raw.get("theme") or fallback.get(key, {}).get("theme") or "景点集中游玩"),
-            "spots": spot_names,
-            "area": str(raw.get("area") or (selected[0].get("area") if selected else fallback.get(key, {}).get("area", "待定区域"))),
-            "reason": _truncate_text(raw.get("reason") or "区域集中兼顾预算", 20),
-            "estimated_visit_time": str(raw.get("estimated_visit_time") or estimate_visit_time(selected)),
-            "estimated_ticket_cost": str(raw.get("estimated_ticket_cost") or estimate_ticket_cost(selected)),
-            "reservation_required": [str(x) for x in reservation_required],
-            "notes": [str(x) for x in raw.get("notes", [])] if isinstance(raw.get("notes"), list) else [],
-        }
-    return daily_plan
-
-
-def _normalize_constraints_for_traffic(value: Any, *, weather_constraints: dict[str, Any]) -> list[str]:
-    constraints = ["每天景点尽量集中在同一区域", "优先选择地铁可达景点", "低预算下优先公共交通和步行"]
-    if isinstance(value, list):
-        for item in value:
-            text = str(item).strip()
-            if text and text not in constraints:
-                constraints.append(text)
-    if weather_constraints.get("rainy_days") and "雨天减少长距离步行和户外换乘" not in constraints:
-        constraints.append("雨天减少长距离步行和户外换乘")
-    return constraints
-
-
 def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str, Any]:
     travel_task = dict(context.get("travel_task") or {})
     inputs = context.get("inputs") or {}
@@ -856,23 +823,13 @@ def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str,
         travel_task["preferences"] = preferences
     return travel_task
 
-
-def _extract_weather_constraints(context: dict[str, Any]) -> dict[str, Any]:
-    inputs = context.get("inputs") or {}
-    weather_result = inputs.get("weather_result") or context.get("weather_result") or {}
-    if isinstance(weather_result, dict):
-        metadata = weather_result.get("metadata") or {}
-        if isinstance(metadata, dict):
-            structured = metadata.get("structured_result")
-            if isinstance(structured, dict) and isinstance(structured.get("weather_constraints"), dict):
-                return structured["weather_constraints"]
-            if isinstance(metadata.get("weather_constraints"), dict):
-                return metadata["weather_constraints"]
-    if isinstance(inputs.get("weather_constraints"), dict):
-        return inputs["weather_constraints"]
-    if isinstance(context.get("weather_constraints"), dict):
-        return context["weather_constraints"]
-    return {}
+# TODO.确认天气约束的来源
+def _extract_weather_constraints(inputs: dict[str, Any]) -> dict[str, Any]:
+    upstream = inputs.get("upstream_results", {})
+    structured = upstream.get("weather_agent", {}).get("structured", {})
+    if isinstance(structured, dict) and isinstance(structured.get("weather_constraints"), dict):
+        return structured["weather_constraints"]
+    else: return {}
 
 
 def _extract_origin_city(text: str) -> str | None:
@@ -1009,14 +966,12 @@ def estimate_ticket_total(daily_plan_skeleton: dict[str, Any]) -> str:
     return "；".join(costs) if costs else "待确认"
 
 
-def build_summary(travel_task: dict[str, Any], weather_constraints: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
+def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
     city = travel_task.get("destination_city", "目的地")
     days = travel_task.get("days", len(daily_plan_skeleton))
     budget_level = travel_task.get("budget_level", "normal")
-    rainy_days = weather_constraints.get("rainy_days", [])
     budget_text = "低预算" if budget_level == "low" else "普通预算"
-    weather_text = f"其中 {', '.join(rainy_days)} 优先安排室内景点" if rainy_days else "整体按天气约束安排"
-    return f"已根据{budget_text}、用户偏好和天气约束，为{city}{days}天行程生成结构化景点计划；{weather_text}。"
+    return f"已根据{budget_text}，为{city}{days}天行程生成结构化景点计划"
 
 
 def _register_to_registry(host: str, port: int) -> None:
