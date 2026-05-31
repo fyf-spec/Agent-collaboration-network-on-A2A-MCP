@@ -170,10 +170,7 @@ class TrafficAgent(BaseAgent):
                 "city": city,
                 "preference": preference,
                 "segments": [
-                    {
-                        "origin": segment.get("origin"),
-                        "destination": segment.get("destination"),
-                    }
+                    _route_segment_payload(segment)
                     for segment in segments
                 ],
             },
@@ -339,41 +336,109 @@ def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any]
         if not isinstance(spots, list):
             continue
         clean_spots = [str(x) for x in spots if str(x).strip()]
-        hotel_name = _hotel_origin_name(hotel_plan)
+        spot_details = _spot_details_by_name(plan)
+        hotel_point = _hotel_origin_point(hotel_plan)
+        hotel_name = str(hotel_point.get("name") or "")
         next_index = 1
         if hotel_name and clean_spots:
+            destination_point = spot_details.get(clean_spots[0], {"name": clean_spots[0]})
             segments.append(
                 {
                     "day": str(day_key),
                     "index": next_index,
                     "origin": hotel_name,
                     "destination": clean_spots[0],
+                    **_endpoint_fields("origin", hotel_point),
+                    **_endpoint_fields("destination", destination_point),
                 }
             )
             next_index += 1
         for index in range(len(clean_spots) - 1):
+            origin_point = spot_details.get(clean_spots[index], {"name": clean_spots[index]})
+            destination_point = spot_details.get(clean_spots[index + 1], {"name": clean_spots[index + 1]})
             segments.append(
                 {
                     "day": str(day_key),
                     "index": next_index,
                     "origin": clean_spots[index],
                     "destination": clean_spots[index + 1],
+                    **_endpoint_fields("origin", origin_point),
+                    **_endpoint_fields("destination", destination_point),
                 }
             )
             next_index += 1
         if hotel_name and clean_spots:
+            origin_point = spot_details.get(clean_spots[-1], {"name": clean_spots[-1]})
             segments.append(
                 {
                     "day": str(day_key),
                     "index": next_index,
                     "origin": clean_spots[-1],
                     "destination": hotel_name,
+                    **_endpoint_fields("origin", origin_point),
+                    **_endpoint_fields("destination", hotel_point),
                 }
             )
     if not segments:
         # Keep demo usable even if attraction plan is empty.
         segments.append({"day": "day1", "index": 1, "origin": "住宿地", "destination": "核心景区"})
     return segments[:18]
+
+
+def _route_segment_payload(segment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "origin": segment.get("origin"),
+        "destination": segment.get("destination"),
+        "origin_name": segment.get("origin_name") or segment.get("origin"),
+        "origin_location": segment.get("origin_location"),
+        "destination_name": segment.get("destination_name") or segment.get("destination"),
+        "destination_location": segment.get("destination_location"),
+        "origin_id": segment.get("origin_id"),
+        "destination_id": segment.get("destination_id"),
+        "origin_address": segment.get("origin_address"),
+        "destination_address": segment.get("destination_address"),
+        "mode": segment.get("mode"),
+    }
+
+
+def _spot_details_by_name(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    details = plan.get("spot_details")
+    if not isinstance(details, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name:
+            result[name] = item
+    return result
+
+
+def _hotel_origin_point(hotel_plan: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(hotel_plan, dict):
+        return {}
+    selected = hotel_plan.get("selected_hotel")
+    if isinstance(selected, dict):
+        name = str(selected.get("name") or "").strip()
+        if name:
+            return {
+                "id": selected.get("hotel_id"),
+                "name": name,
+                "location": selected.get("location"),
+                "address": selected.get("address"),
+            }
+    area = str(hotel_plan.get("recommended_area") or "").strip()
+    return {"name": f"住宿地（{area}）" if area else ""}
+
+
+def _endpoint_fields(prefix: str, point: dict[str, Any]) -> dict[str, Any]:
+    return {
+        f"{prefix}_name": point.get("name"),
+        f"{prefix}_location": point.get("location"),
+        f"{prefix}_id": point.get("spot_id") or point.get("hotel_id") or point.get("id"),
+        f"{prefix}_address": point.get("address"),
+    }
 
 
 def _hotel_origin_name(hotel_plan: dict[str, Any] | None) -> str:

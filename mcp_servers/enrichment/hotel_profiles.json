@@ -1,0 +1,92 @@
+{
+  "hotels": {
+    "北京": [
+      {"name": "前门轻住酒店", "price_per_night": 360, "nearest_subway": "前门站", "pros": ["靠近天安门、前门和大栅栏", "地铁和步行接驳方便"], "cons": ["热门日期价格波动明显"], "rating": 4.5},
+      {"name": "王府井舒适酒店", "price_per_night": 520, "nearest_subway": "金鱼胡同站/王府井站", "pros": ["靠近故宫和王府井商圈", "适合舒适优先行程"], "cons": ["核心区房价偏高"], "rating": 4.6}
+    ],
+    "上海": [
+      {"name": "人民广场城市酒店", "price_per_night": 480, "nearest_subway": "人民广场站", "pros": ["多线地铁换乘方便", "靠近南京路和外滩"], "cons": ["周末和展会期间价格偏高"], "rating": 4.5},
+      {"name": "陆家嘴江景酒店", "price_per_night": 760, "nearest_subway": "陆家嘴站", "pros": ["适合舒适和夜景需求", "靠近滨江和商圈"], "cons": ["预算压力较高"], "rating": 4.7}
+    ],
+    "广州": [
+      {"name": "赛楠酒店(广州西华路陈家祠地铁站店)", "price_per_night": 260, "nearest_subway": "陈家祠站", "pros": ["靠近荔湾区核心景点", "适合西关和沙面行程", "地铁换乘方便"], "cons": ["旺季价格可能波动", "房型库存需出行前确认"], "rating": 4.5},
+      {"name": "珠江新城舒适酒店", "price_per_night": 520, "nearest_subway": "珠江新城站", "pros": ["靠近广州塔和花城广场", "商务区环境较好"], "cons": ["离老城景点通勤稍长"], "rating": 4.6}
+    ],
+    "深圳": [
+      {"name": "福田中心商务酒店", "price_per_night": 520, "nearest_subway": "会展中心站/岗厦站", "pros": ["地铁网络密集", "适合舒适型城市游"], "cons": ["到东部海滨耗时较长"], "rating": 4.6},
+      {"name": "南山科技园轻住酒店", "price_per_night": 420, "nearest_subway": "深大站/高新园站", "pros": ["靠近南山和深圳湾方向", "餐饮选择多"], "cons": ["热门工作日价格波动"], "rating": 4.4}
+    ],
+    "杭州": [
+      {"name": "杭州湖滨酒店", "price_per_night": 420, "nearest_subway": "龙翔桥站", "pros": ["靠近西湖湖滨商圈", "步行和地铁出行方便"], "cons": ["节假日价格波动明显"], "rating": 4.6},
+      {"name": "黄龙舒适酒店", "price_per_night": 480, "nearest_subway": "黄龙体育中心站", "pros": ["去西湖西线和灵隐方向较方便", "环境相对安静"], "cons": ["到湖滨夜景区需换乘"], "rating": 4.5}
+    ],
+    "南京": [
+      {"name": "新街口地铁酒店", "price_per_night": 360, "nearest_subway": "新街口站", "pros": ["市中心换乘方便", "覆盖夫子庙、总统府和南京博物院较均衡"], "cons": ["核心商圈可能较热闹"], "rating": 4.5},
+      {"name": "夫子庙秦淮酒店", "price_per_night": 420, "nearest_subway": "夫子庙站", "pros": ["适合夜游秦淮河", "周边餐饮丰富"], "cons": ["夜间人流较多"], "rating": 4.4}
+    ],
+    "成都": [
+      {"name": "春熙路舒适酒店", "price_per_night": 420, "nearest_subway": "春熙路站", "pros": ["餐饮和商圈集中", "地铁换乘方便"], "cons": ["热门商圈夜间较热闹"], "rating": 4.6},
+      {"name": "宽窄巷子轻住酒店", "price_per_night": 360, "nearest_subway": "宽窄巷子站", "pros": ["靠近宽窄巷子和人民公园", "适合citywalk"], "cons": ["老城区部分房型面积较小"], "rating": 4.4}
+    ],
+    "重庆": [
+      {"name": "解放碑江景酒店", "price_per_night": 460, "nearest_subway": "临江门站/小什字站", "pros": ["靠近洪崖洞和解放碑", "夜景体验好"], "cons": ["坡地步行和人流需要预留时间"], "rating": 4.5},
+      {"name": "观音桥舒适酒店", "price_per_night": 380, "nearest_subway": "观音桥站", "pros": ["商圈成熟", "餐饮选择多"], "cons": ["到渝中热门景点需换乘"], "rating": 4.4}
+    ],
+    "武汉": [
+      {"name": "江汉路地铁酒店", "price_per_night": 340, "nearest_subway": "江汉路站", "pros": ["靠近步行街和江滩", "地铁换乘方便"], "cons": ["周末夜间较热闹"], "rating": 4.4},
+      {"name": "楚河汉街舒适酒店", "price_per_night": 420, "nearest_subway": "楚河汉街站", "pros": ["去东湖和省博方向较方便", "商圈配套成熟"], "cons": ["到汉口部分景点通勤稍长"], "rating": 4.5}
+    ],
+    "西安": [
+      {"name": "钟楼地铁酒店", "price_per_night": 360, "nearest_subway": "钟楼站", "pros": ["靠近回民街和城墙", "地铁换乘方便"], "cons": ["核心区停车不便"], "rating": 4.5},
+      {"name": "大雁塔舒适酒店", "price_per_night": 430, "nearest_subway": "大雁塔站", "pros": ["靠近大雁塔和大唐不夜城", "适合夜游"], "cons": ["节假日人流较大"], "rating": 4.5}
+    ],
+    "苏州": [
+      {"name": "观前街轻住酒店", "price_per_night": 320, "nearest_subway": "察院场站/乐桥站", "pros": ["靠近平江路、拙政园和苏博", "餐饮选择多"], "cons": ["热门时段周边较拥挤"], "rating": 4.4},
+      {"name": "金鸡湖舒适酒店", "price_per_night": 520, "nearest_subway": "东方之门站", "pros": ["湖景和商圈体验好", "适合舒适型行程"], "cons": ["到古城园林区需换乘"], "rating": 4.6}
+    ],
+    "天津": [
+      {"name": "小白楼舒适酒店", "price_per_night": 360, "nearest_subway": "小白楼站", "pros": ["靠近五大道和海河", "适合citywalk"], "cons": ["热门周末价格波动"], "rating": 4.5},
+      {"name": "天津站轻住酒店", "price_per_night": 300, "nearest_subway": "天津站", "pros": ["交通枢纽方便", "去意式风情区和海河便捷"], "cons": ["车站周边环境相对嘈杂"], "rating": 4.3}
+    ],
+    "_area_defaults": {
+      "北京": [
+        {"area": "前门-王府井区域", "price_per_night": 420, "nearest_subway": "前门站/王府井站", "pros": ["靠近故宫、天安门和前门", "适合第一次来北京"], "cons": ["核心区房价波动明显"], "rating": 4.5}
+      ],
+      "上海": [
+        {"area": "人民广场-南京路区域", "price_per_night": 480, "nearest_subway": "人民广场站/南京东路站", "pros": ["覆盖外滩、南京路和博物馆", "地铁换乘方便"], "cons": ["展会和周末价格偏高"], "rating": 4.5}
+      ],
+      "广州": [
+        {"area": "荔湾区", "price_per_night": 260, "nearest_subway": "陈家祠站/黄沙站", "pros": ["靠近沙面、永庆坊、陈家祠", "适合步行串联老城景点"], "cons": ["部分老城区酒店停车不便"], "rating": 4.4},
+        {"area": "越秀区", "price_per_night": 320, "nearest_subway": "公园前站/纪念堂站", "pros": ["市中心换乘方便", "覆盖越秀公园和北京路"], "cons": ["热门商圈价格可能偏高"], "rating": 4.5}
+      ],
+      "深圳": [
+        {"area": "福田中心区", "price_per_night": 520, "nearest_subway": "会展中心站/岗厦站", "pros": ["地铁网络密集", "适合舒适型城市游"], "cons": ["去东部海滨耗时较长"], "rating": 4.6}
+      ],
+      "杭州": [
+        {"area": "西湖湖滨区域", "price_per_night": 420, "nearest_subway": "龙翔桥站/凤起路站", "pros": ["靠近西湖湖滨商圈", "首次游览杭州很方便"], "cons": ["节假日价格波动明显"], "rating": 4.6},
+        {"area": "黄龙-西湖北线区域", "price_per_night": 380, "nearest_subway": "黄龙体育中心站", "pros": ["去灵隐和西湖北线较顺", "环境相对安静"], "cons": ["到湖滨夜景区需换乘"], "rating": 4.5}
+      ],
+      "南京": [
+        {"area": "新街口区域", "price_per_night": 360, "nearest_subway": "新街口站", "pros": ["市中心换乘方便", "覆盖核心景点较均衡"], "cons": ["商圈夜间较热闹"], "rating": 4.5}
+      ],
+      "成都": [
+        {"area": "春熙路-太古里区域", "price_per_night": 420, "nearest_subway": "春熙路站", "pros": ["餐饮和商圈集中", "地铁换乘方便"], "cons": ["热门商圈人流较多"], "rating": 4.6}
+      ],
+      "重庆": [
+        {"area": "解放碑-洪崖洞区域", "price_per_night": 460, "nearest_subway": "临江门站/小什字站", "pros": ["热门景点集中", "夜景体验好"], "cons": ["坡地步行较多"], "rating": 4.5}
+      ],
+      "武汉": [
+        {"area": "江汉路-汉口江滩区域", "price_per_night": 340, "nearest_subway": "江汉路站", "pros": ["适合夜游和citywalk", "交通方便"], "cons": ["夜间较热闹"], "rating": 4.4}
+      ],
+      "西安": [
+        {"area": "钟楼-城墙区域", "price_per_night": 360, "nearest_subway": "钟楼站/永宁门站", "pros": ["靠近回民街和城墙", "地铁换乘方便"], "cons": ["核心区停车不便"], "rating": 4.5}
+      ],
+      "苏州": [
+        {"area": "观前街-平江路区域", "price_per_night": 320, "nearest_subway": "察院场站/相门站", "pros": ["靠近古城核心景点", "适合步行游览"], "cons": ["节假日人流较大"], "rating": 4.4}
+      ],
+      "天津": [
+        {"area": "小白楼-五大道区域", "price_per_night": 360, "nearest_subway": "小白楼站", "pros": ["适合五大道和海河citywalk", "餐饮配套较好"], "cons": ["热门周末价格波动"], "rating": 4.5}
+      ]
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -20,13 +21,31 @@ REGISTRY_PORT = 7000
 BACKUP_REGISTRY_HOST = "127.0.0.1"
 BACKUP_REGISTRY_PORT = 7001
 
-import os
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 
 DEFAULT_TASK_TIMEOUT_SECONDS = float(os.environ.get("DEFAULT_TASK_TIMEOUT_SECONDS", 120.0))
 MAX_TASK_TIMEOUT_SECONDS = float(os.environ.get("MAX_TASK_TIMEOUT_SECONDS", 900.0))
 DISPATCH_HTTP_TIMEOUT_SECONDS = float(os.environ.get("DISPATCH_HTTP_TIMEOUT_SECONDS", 5.0))
 A2A_TCP_TIMEOUT_SECONDS = float(os.environ.get("A2A_TCP_TIMEOUT_SECONDS", 3.0))
 MCP_HTTP_TIMEOUT_SECONDS = float(os.environ.get("MCP_HTTP_TIMEOUT_SECONDS", 3.0))
+
+A2A_REALTIME_MCP_ENABLED = _env_bool("A2A_REALTIME_MCP_ENABLED", False)
+AMAP_WEB_KEY = os.environ.get("AMAP_WEB_KEY", "").strip()
+AMAP_API_BASE_URL = os.environ.get("AMAP_API_BASE_URL", "https://restapi.amap.com").strip().rstrip("/")
+OPEN_METEO_API_BASE_URL = os.environ.get("OPEN_METEO_API_BASE_URL", "https://api.open-meteo.com").strip().rstrip("/")
+OPEN_METEO_MAX_FORECAST_DAYS = int(os.environ.get("OPEN_METEO_MAX_FORECAST_DAYS", 16))
+MCP_REALTIME_TIMEOUT_SECONDS = float(os.environ.get("MCP_REALTIME_TIMEOUT_SECONDS", 5.0))
+MCP_REALTIME_FALLBACK_TO_MOCK = _env_bool("MCP_REALTIME_FALLBACK_TO_MOCK", True)
+MCP_TRAFFIC_REALTIME_ENABLED = _env_bool("MCP_TRAFFIC_REALTIME_ENABLED", True)
+MCP_TRAFFIC_MAX_WORKERS = int(os.environ.get("MCP_TRAFFIC_MAX_WORKERS", 4))
+MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS = float(os.environ.get("MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS", 1.5))
+MCP_TRAFFIC_MAX_SEGMENTS = int(os.environ.get("MCP_TRAFFIC_MAX_SEGMENTS", 8))
+MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 2.5))
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
 
@@ -40,7 +59,7 @@ MCP_GATEWAY = {
     "max_concurrent_per_method": 3,
     "rate_limit_wait_seconds": 0.2,
     "coalesce_wait_seconds": 5.0,
-    "upstream_timeout_seconds": 2.5,
+    "upstream_timeout_seconds": MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS,
     "circuit_failure_threshold": 3,
     "circuit_cooldown_seconds": 10.0,
 }

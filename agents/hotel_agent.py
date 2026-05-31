@@ -381,7 +381,8 @@ def _build_hotel_options_for_llm(hotel_candidates: dict[str, Any]) -> list[dict[
     '''
     options: list[dict[str, Any]] = []
     hotels = hotel_candidates.get("hotels", []) if isinstance(hotel_candidates, dict) else []
-    for index, hotel in enumerate([item for item in hotels if isinstance(item, dict)], start=1):
+    ranked_hotels = _rank_hotel_candidates([item for item in hotels if isinstance(item, dict)])
+    for index, hotel in enumerate(ranked_hotels, start=1):
         options.append(
             {
                 "hotel_id": f"h{index}",
@@ -391,9 +392,28 @@ def _build_hotel_options_for_llm(hotel_candidates: dict[str, Any]) -> list[dict[
                 "type": hotel.get("type"),
                 "nearest_subway": hotel.get("nearest_subway"),
                 "tags": hotel.get("tags") if isinstance(hotel.get("tags"), list) else [],
+                "provider_hotel_id": hotel.get("hotel_id") or hotel.get("id"),
+                "location": hotel.get("location"),
+                "address": hotel.get("address"),
             }
         )
     return options
+
+
+def _rank_hotel_candidates(hotels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(hotels, key=_hotel_quality_key)
+
+
+def _hotel_quality_key(hotel: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+    name = str(hotel.get("name") or "")
+    hotel_type = str(hotel.get("type") or "")
+    price = _safe_int(hotel.get("price_per_night"), default=9999)
+    has_price = 0 if hotel.get("price_per_night") not in (None, "", "待确认") else 1
+    has_subway = 0 if str(hotel.get("nearest_subway") or "").strip() not in {"", "待确认"} else 1
+    good_type = 0 if any(word in hotel_type for word in ["酒店", "宾馆", "经济型连锁酒店", "舒适型酒店"]) else 1
+    weak_type = 1 if "住宿服务相关" in hotel_type else 0
+    weak_name = 1 if any(word in name for word in ["家庭旅店", "招待所"]) else 0
+    return (has_price + has_subway + good_type + weak_type + weak_name, has_subway, has_price, good_type, price, name)
 
 
 def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, Any]:
@@ -417,9 +437,10 @@ def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, 
             "walking_tolerance": "normal",
         }
     if section == "general":
+        budget_level = travel_task.get("budget_level", "normal")
         return {
-            "budget_level": travel_task.get("budget_level", "normal"),
-            "travel_style": "budget" if travel_task.get("budget_level") == "low" else "balanced",
+            "budget_level": budget_level,
+            "travel_style": "budget" if budget_level == "low" else ("comfort" if budget_level in {"high", "luxury"} else "balanced"),
             "special_needs": [],
         }
     if section == "attractions":
@@ -519,21 +540,21 @@ def _expand_hotel_plan(
     area = _find_area_option(area_options, selection.get("recommended_area_id")) or (area_options[0] if area_options else {})
     hotel = _find_hotel_option(hotel_options, selection.get("selected_hotel_id")) or (hotel_options[0] if hotel_options else {})
     selected_hotel = {
+        "hotel_id": hotel.get("provider_hotel_id") or hotel.get("hotel_id"),
         "name": hotel.get("name") or "待确认住宿",
         "area": hotel.get("area") or area.get("area") or "市中心地铁沿线",
-        "price_per_night": hotel.get("price_per_night") or "待确认",
-        "nearest_subway": hotel.get("nearest_subway") or "待确认",
+        "price_per_night": hotel.get("price_per_night"),
+        "nearest_subway": hotel.get("nearest_subway"),
         "type": hotel.get("type") or "经济型酒店",
     }
     reason_prefix = f"LLM选择理由：{_truncate_text(llm_reason, 20)}；" if llm_reason else ""
+    selected_hotel["location"] = hotel.get("location")
+    selected_hotel["address"] = hotel.get("address")
     return {
         "recommended_area": area.get("area") or selected_hotel["area"],
         "area_reason": "该区域覆盖较多行程景点，适合减少通勤。",
         "selected_hotel": selected_hotel,
-        "hotel_reason": (
-            f"{reason_prefix}该酒店价格为{selected_hotel['price_per_night']}，"
-            f"附近地铁为{selected_hotel['nearest_subway']}。"
-        ),
+        "hotel_reason": f"{reason_prefix}{_hotel_reason_from_facts(selected_hotel)}",
         "estimated_total_hotel_cost": _estimate_total_cost(selected_hotel, travel_task),
     }
 
@@ -555,7 +576,8 @@ def _fallback_hotel_id(
         area_match = 0 if top_area and str(hotel.get("area") or "") == top_area else 1
         if budget_level == "low":
             return price, has_subway, area_match
-        return area_match, has_subway, price
+        quality = _hotel_quality_key(hotel)[0]
+        return quality, area_match, has_subway, price
 
     selected = min(hotel_options, key=key)
     return str(selected.get("hotel_id") or "")
@@ -563,6 +585,37 @@ def _fallback_hotel_id(
 
 def _fallback_area_id(area_options: list[dict[str, Any]]) -> str:
     return str((area_options[0] if area_options else {}).get("area_id") or "")
+
+
+def _hotel_reason_from_facts(selected_hotel: dict[str, Any]) -> str:
+    parts: list[str] = []
+    price = selected_hotel.get("price_per_night")
+    subway = selected_hotel.get("nearest_subway")
+    hotel_type = str(selected_hotel.get("type") or "")
+    if price not in (None, "", "待确认"):
+        parts.append(f"参考价格约{price}元/晚")
+    if subway not in (None, "", "待确认"):
+        parts.append(f"靠近{subway}")
+    if any(word in hotel_type for word in ["酒店", "宾馆", "经济型连锁酒店", "舒适型酒店"]):
+        parts.append("住宿类型明确")
+    if not parts:
+        return "实时数据不足，优先作为区域住宿参考，具体房价和交通以订房平台及地图为准。"
+    return "，".join(parts) + "，适合作为本次住宿方案。"
+
+
+def _hotel_style_rule(travel_task: dict[str, Any]) -> str:
+    general = _constraint_section(travel_task, "general")
+    traffic = _constraint_section(travel_task, "traffic")
+    budget_level = str(general.get("budget_level") or travel_task.get("budget_level") or "normal")
+    travel_style = str(general.get("travel_style") or "")
+    preference = str(traffic.get("preference") or travel_task.get("transport_preference") or "")
+    if budget_level in {"high", "luxury"} or travel_style == "comfort":
+        return "舒适优先：优先高品质酒店、环境好、少换乘、少步行和通勤更均衡"
+    if budget_level == "low":
+        return "预算有限：优先价格可控、公共交通便利和通勤成本低"
+    if preference == "taxi":
+        return "交通偏好打车：优先靠近主要景点区域，减少跨城通勤"
+    return "普通预算：优先交通便利、体验均衡、性价比稳定"
 
 
 def _find_area_id_by_name(area_options: list[dict[str, Any]], area_name: str) -> str:

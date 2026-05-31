@@ -219,6 +219,7 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
             compact_spots=compact_spots,
             days=days,
             weather_constraints=weather_constraints,
+            travel_task=travel_task,
         )
         if not any(day.get("spots") for day in daily_plan_skeleton.values() if isinstance(day, dict)):
             llm_error = llm_error or "daily_plan_skeleton is empty after expansion"
@@ -235,6 +236,7 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
                 compact_spots=compact_spots,
                 days=days,
                 weather_constraints=weather_constraints,
+                travel_task=travel_task,
             )
 
 
@@ -447,7 +449,8 @@ def build_compact_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     总之就是把spots再压缩一下
     '''
     compact: list[dict[str, Any]] = []
-    for index, spot in enumerate(spots, start=1):
+    quality_spots = _quality_filter_spots(spots)
+    for index, spot in enumerate(quality_spots, start=1):
         if not isinstance(spot, dict):
             continue
         area = spot.get("area") or spot.get("area_cluster") or "未知区域"
@@ -461,9 +464,100 @@ def build_compact_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "indoor_or_outdoor": spot.get("indoor_or_outdoor"),
                 "reservation_required": bool(spot.get("reservation_required")),
                 "tags": spot.get("tags") if isinstance(spot.get("tags"), list) else [],
+                "spot_id": spot.get("spot_id") or spot.get("id"),
+                "location": spot.get("location"),
+                "address": spot.get("address"),
             }
         )
     return compact
+
+
+def _quality_filter_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = [spot for spot in spots if isinstance(spot, dict) and not _is_bad_attraction_poi(spot)]
+    candidates.sort(key=_attraction_quality_key)
+    selected: list[dict[str, Any]] = []
+    for spot in candidates:
+        name = str(spot.get("name") or "")
+        if not name:
+            continue
+        if any(_is_parent_child_duplicate(name, str(item.get("name") or "")) for item in selected):
+            continue
+        selected.append(spot)
+    return selected or [spot for spot in spots if isinstance(spot, dict)]
+
+
+def _is_bad_attraction_poi(spot: dict[str, Any]) -> bool:
+    name = str(spot.get("name") or "")
+    poi_type = str(spot.get("type") or "")
+    tags = " ".join(str(item) for item in spot.get("tags", []) if item) if isinstance(spot.get("tags"), list) else ""
+    text = f"{name} {poi_type} {tags}"
+    bad_words = [
+        "停车场",
+        "售票处",
+        "服务中心",
+        "游客中心",
+        "旅行社",
+        "观光巴士",
+        "商店",
+        "酒店",
+        "宾馆",
+        "公交站",
+        "地铁站",
+        "火车站",
+        "码头",
+        "出入口",
+        "入口",
+    ]
+    if any(word in text for word in bad_words):
+        return True
+    representative_words = [
+        "风景名胜",
+        "公园",
+        "博物馆",
+        "纪念馆",
+        "纪念堂",
+        "寺",
+        "塔",
+        "步行街",
+        "古迹",
+        "故宫",
+        "西湖",
+        "沙面",
+        "永庆坊",
+        "陈家祠",
+        "越秀",
+        "广州塔",
+        "北京路",
+    ]
+    has_local_facts = any(spot.get(field) not in (None, "", "待确认") for field in ["ticket", "duration", "nearest_subway"])
+    if not has_local_facts and not any(word in text for word in representative_words):
+        return True
+    return False
+
+
+def _attraction_quality_key(spot: dict[str, Any]) -> tuple[int, int, int, str]:
+    name = str(spot.get("name") or "")
+    tags = [str(item) for item in spot.get("tags", [])] if isinstance(spot.get("tags"), list) else []
+    penalty = 0
+    if any(word in name for word in ["-", "门", "广场内部点位", "站", "码头"]):
+        penalty += 3
+    if spot.get("ticket") is None:
+        penalty += 1
+    if spot.get("duration") is None:
+        penalty += 1
+    if "经典景点" in tags or "热门" in tags:
+        penalty -= 2
+    return (penalty, len(name), 0 if spot.get("location") else 1, name)
+
+
+def _is_parent_child_duplicate(left: str, right: str) -> bool:
+    if not left or not right or left == right:
+        return left == right
+    left_base = left.split("-")[0]
+    right_base = right.split("-")[0]
+    if left_base == right_base and (left_base in left or right_base in right):
+        return True
+    return left in right or right in left
 
 
 def build_grouped_spots(compact_spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -549,9 +643,10 @@ def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, 
             "pace": "normal",
         }
     if section == "general":
+        budget_level = travel_task.get("budget_level", "normal")
         return {
-            "budget_level": travel_task.get("budget_level", "normal"),
-            "travel_style": "budget" if travel_task.get("budget_level") == "low" else "balanced",
+            "budget_level": budget_level,
+            "travel_style": "budget" if budget_level == "low" else ("comfort" if budget_level in {"high", "luxury"} else "balanced"),
             "special_needs": [],
         }
     return {}
@@ -678,6 +773,7 @@ def expand_daily_plan_skeleton(
     compact_spots: list[dict[str, Any]],
     days: int,
     weather_constraints: dict[str, Any],
+    travel_task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     spots_by_id = {str(spot.get("id")): spot for spot in compact_spots if spot.get("id")}
     rainy_days = {str(day) for day in weather_constraints.get("rainy_days", [])}
@@ -691,24 +787,44 @@ def expand_daily_plan_skeleton(
             if spot_id in spots_by_id
         ][:3]
         prefer_indoor = day_key in rainy_days or day_key in indoor_days
-        daily_plan[day_key] = _format_compact_day_plan(selected, prefer_indoor)
+        daily_plan[day_key] = _format_compact_day_plan(selected, prefer_indoor, travel_task or {})
     return daily_plan
 
 
-def _format_compact_day_plan(selected: list[dict[str, Any]], prefer_indoor: bool) -> dict[str, Any]:
+def _format_compact_day_plan(selected: list[dict[str, Any]], prefer_indoor: bool, travel_task: dict[str, Any]) -> dict[str, Any]:
     names = [str(spot.get("name")) for spot in selected if spot.get("name")]
     areas = [str(spot.get("area")) for spot in selected if spot.get("area")]
     area = _dominant_area(areas)
     same_area = bool(area and areas and all(item == area for item in areas))
-    notes = ["低预算下优先公共交通和步行"]
+    general = _constraint_section(travel_task, "general")
+    budget_level = str(general.get("budget_level") or travel_task.get("budget_level") or "normal")
+    travel_style = str(general.get("travel_style") or "")
+    if budget_level == "low":
+        notes = ["低预算下优先公共交通和步行"]
+    elif budget_level in {"high", "luxury"} or travel_style == "comfort":
+        notes = ["舒适优先：节奏放缓，优先选择体验更完整、通勤更顺的安排"]
+    else:
+        notes = ["兼顾游玩体验和通勤效率"]
     if same_area and len(selected) > 1:
         notes.insert(0, "同一区域景点优先安排在同一天")
     if prefer_indoor:
         notes.append("雨天优先室内或室内外结合景点")
     reservation_required = [str(spot.get("name")) for spot in selected if spot.get("reservation_required") and spot.get("name")]
+    spot_details = [
+        {
+            "spot_id": spot.get("spot_id") or spot.get("id"),
+            "name": spot.get("name"),
+            "area": spot.get("area"),
+            "location": spot.get("location"),
+            "address": spot.get("address"),
+        }
+        for spot in selected
+        if spot.get("name")
+    ]
     return {
         "theme": "雨天室内安排" if prefer_indoor else f"{area or '景点'}集中游玩",
         "spots": names,
+        "spot_details": spot_details,
         "area": area or "待定区域",
         "estimated_visit_time": estimate_visit_time_parts(selected),
         "estimated_ticket_cost": estimate_ticket_cost(selected),
@@ -972,6 +1088,21 @@ def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, An
     budget_level = travel_task.get("budget_level", "normal")
     budget_text = "低预算" if budget_level == "low" else "普通预算"
     return f"已根据{budget_text}，为{city}{days}天行程生成结构化景点计划"
+
+
+def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
+    city = travel_task.get("destination_city", "目的地")
+    days = travel_task.get("days", len(daily_plan_skeleton))
+    budget_level = travel_task.get("budget_level", "normal")
+    general = _constraint_section(travel_task, "general")
+    travel_style = str(general.get("travel_style") or "")
+    if budget_level in {"high", "luxury"} or travel_style == "comfort":
+        budget_text = "舒适优先"
+    elif budget_level == "low":
+        budget_text = "低预算"
+    else:
+        budget_text = "普通预算"
+    return f"已根据{budget_text}，为{city}{days}天行程生成结构化景点规划"
 
 
 def _register_to_registry(host: str, port: int) -> None:
