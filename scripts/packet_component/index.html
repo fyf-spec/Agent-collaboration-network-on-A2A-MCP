@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      const root = document.getElementById("root");
+
+      function sendMessage(type, data = {}) {
+        window.parent.postMessage(
+          {
+            isStreamlitMessage: true,
+            type,
+            ...data,
+          },
+          "*"
+        );
+      }
+
+      function setFrameHeight() {
+        const height = Math.ceil(document.documentElement.scrollHeight || document.body.scrollHeight || 0);
+        sendMessage("streamlit:setFrameHeight", { height });
+      }
+
+      function setComponentValue(value) {
+        sendMessage("streamlit:setComponentValue", { value });
+      }
+
+      function render(args) {
+        root.innerHTML = args.html || "";
+        root.querySelectorAll("[data-packet-index]").forEach((row) => {
+          row.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            root.querySelectorAll(".selected").forEach((item) => item.classList.remove("selected"));
+            row.classList.add("selected");
+            setComponentValue({
+              index: row.getAttribute("data-packet-index"),
+              event_key: row.getAttribute("data-packet-key"),
+              nonce: Date.now(),
+            });
+          });
+        });
+        requestAnimationFrame(setFrameHeight);
+      }
+
+      window.addEventListener("message", (event) => {
+        if (event.data.type === "streamlit:render") {
+          render(event.data.args || {});
+        }
+      });
+
+      sendMessage("streamlit:componentReady", { apiVersion: 1 });
+      setFrameHeight();
+    </script>
+  </body>
+</html>
