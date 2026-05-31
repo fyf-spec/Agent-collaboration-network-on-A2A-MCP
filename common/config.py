@@ -5,8 +5,18 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# ── 自动加载 .env ──────────────────────────────────────────────
+# 所有 import common.config 的进程都会自动读取项目根目录的 .env 文件，
+# 无需在各处手动调用 load_dotenv()。
+_load_dotenv_path = PROJECT_ROOT / ".env"
+if _load_dotenv_path.exists():
+    load_dotenv(_load_dotenv_path)
+# ────────────────────────────────────────────────────────────────
 
 COORDINATOR_NAME = "coordinator"
 COORDINATOR_HOST = "127.0.0.1"

@@ -415,6 +415,7 @@ def _attraction_selection_prompt(
     grouped_spots: list[dict[str, Any]],
     spot_relations: list[dict[str, Any]],
 ) -> str:
+    must_visit_ids = _must_visit_spot_ids(grouped_spots, _attraction_must_visit(travel_task))
     payload = {
         "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
         "days": travel_task.get("days", 3),
@@ -423,6 +424,7 @@ def _attraction_selection_prompt(
         "weather_summary": _weather_summary(weather_constraints),
         "grouped_spots": grouped_spots,
         "spot_relations": spot_relations,
+        "must_visit_spot_ids": must_visit_ids,
         "output_schema": {
             "daily_spot_ids": {
                 "day1": ["s1", "s2"],
@@ -431,12 +433,16 @@ def _attraction_selection_prompt(
             "reason": "不超过20个中文字符",
         },
     }
+    must_line = ""
+    if must_visit_ids:
+        must_line = f"【硬性要求】must_visit_spot_ids={must_visit_ids} 这些景点必须全部出现在行程中，一个都不能少。"
     return "\n".join(
         [
             "你是景点选择器，只从给定 spot_id 中选择每天安排哪些景点。",
             "景点已按地理区域分组；spot_relations 已给出远近关系，不要根据地址自行猜测距离。",
             "优先把同一区域/very_close 景点放在同一天；不同区域除非必要不要强行同一天。",
-            "每天安排 1-3 个景点；attraction_constraints.must_visit 尽量必须出现；general_constraints 预算有限时优先免费或低价；雨天优先 indoor 或 mixed。",
+            "每天安排 1-3 个景点；general_constraints 预算有限时优先免费或低价；雨天优先 indoor 或 mixed。",
+            must_line,
             "不要编造新景点；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
             "输出格式只能是 {\"daily_spot_ids\":{\"day1\":[\"s1\"]},\"reason\":\"不超过20个中文字符\"}。",
             json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
@@ -650,6 +656,23 @@ def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, 
             "special_needs": [],
         }
     return {}
+
+
+def _must_visit_spot_ids(grouped_spots: list[dict[str, Any]], must_names: list[str]) -> list[str]:
+    """从 grouped_spots 中找到 must_visit 对应的 spot_id 列表"""
+    if not must_names:
+        return []
+    ids: list[str] = []
+    names_lower = [str(n).strip().lower() for n in must_names if str(n).strip()]
+    for spot in grouped_spots:
+        if not isinstance(spot, dict):
+            continue
+        spot_name = str(spot.get("name") or "").lower()
+        if any(mn in spot_name for mn in names_lower):
+            sid = str(spot.get("id") or "")
+            if sid:
+                ids.append(sid)
+    return ids
 
 
 def _attraction_must_visit(travel_task: dict[str, Any]) -> list[str]:

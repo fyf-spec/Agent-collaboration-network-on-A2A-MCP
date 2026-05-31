@@ -175,6 +175,53 @@ def _route_mode(preference: str) -> str:
     return "transit"
 
 
+def _build_intercity_table() -> dict[tuple[str, str], dict[str, object]]:
+    """构建主要城市之间的城际交通数据表。key=(出发,到达)按双向存储。"""
+    import itertools
+    # 城市间的大致高铁距离（km）→ 用于推算时长和票价
+    distances: dict[tuple[str, str], int] = {
+        ("北京","上海"):1318, ("北京","广州"):2298, ("北京","深圳"):2400,
+        ("北京","杭州"):1470, ("北京","南京"):1020, ("北京","成都"):1870,
+        ("北京","重庆"):1860, ("北京","武汉"):1230, ("北京","西安"):1130,
+        ("北京","苏州"):1220, ("北京","天津"):120,
+        ("上海","广州"):1780, ("上海","深圳"):1750, ("上海","杭州"):170,
+        ("上海","南京"):300, ("上海","成都"):2060, ("上海","重庆"):1900,
+        ("上海","武汉"):830, ("上海","西安"):1430, ("上海","苏州"):84,
+        ("上海","天津"):1230,
+        ("广州","深圳"):130, ("广州","杭州"):1450, ("广州","南京"):1560,
+        ("广州","成都"):1800, ("广州","重庆"):1650, ("广州","武汉"):1060,
+        ("广州","西安"):1750, ("广州","苏州"):1600, ("广州","天津"):2200,
+        ("杭州","南京"):260, ("杭州","成都"):1900, ("杭州","武汉"):750,
+        ("杭州","西安"):1400,
+        ("南京","成都"):1660, ("南京","武汉"):520, ("南京","西安"):1100,
+        ("成都","重庆"):310, ("成都","武汉"):1140, ("成都","西安"):740,
+        ("深圳","杭州"):1400, ("深圳","成都"):1900, ("武汉","西安"):740,
+    }
+    lookup: dict[tuple[str, str], int] = {}
+    for (a,b), d in distances.items():
+        lookup[(a,b)] = d
+        lookup[(b,a)] = d
+
+    table: dict[tuple[str, str], dict[str, object]] = {}
+    major_cities = ["北京","上海","广州","深圳","杭州","南京","成都","重庆","武汉","西安","苏州","天津"]
+    for o, d in itertools.permutations(major_cities, 2):
+        km = lookup.get((o,d))
+        if km is None:
+            continue
+        h, m = divmod(int(km / 280 * 60), 60)
+        dur = f"约{h}小时{m}分钟" if m else f"约{h}小时"
+        g_price = [max(100, int(km * 0.42)), max(150, int(km * 0.48))]
+        d_price = [max(80, int(km * 0.28)), max(120, int(km * 0.35))]
+        table[(o,d)] = {
+            "recommended": {"mode":"高铁二等座","duration":dur,"cost_yuan_range":g_price,"reason":"高铁时刻稳定、舒适度较高"},
+            "alternatives": [
+                {"mode":"动车/普速","duration":dur.replace("小时","-") + "小时" if "小时" in dur else dur,"cost_yuan_range":d_price,"reason":"更省钱但耗时略长"},
+                {"mode":"飞机经济舱","duration":f"约{max(1,km//800)}-{max(2,km//600)}小时飞行，不含机场通勤","cost_yuan_range":[max(300,int(km*0.55)),max(500,int(km*0.9))],"reason":"可能更快，但机场通勤增加总时长"},
+            ],
+        }
+    return table
+
+
 def get_intercity_transport(
     origin_city: str,
     destination_city: str,
@@ -183,99 +230,52 @@ def get_intercity_transport(
 ) -> dict[str, object]:
     origin = (origin_city or "上海").strip()
     destination = (destination_city or "北京").strip()
-    options_by_od: dict[tuple[str, str], dict[str, object]] = {
-        ("上海", "北京"): {
-            "recommended": {
-                "mode": "高铁二等座",
-                "duration": "约4.5-6小时",
-                "cost_yuan_range": [550, 650],
-                "reason": "时间稳定、舒适度较高，适合五天行程",
-            },
-            "alternatives": [
-                {
-                    "mode": "普速火车硬卧/硬座",
-                    "duration": "约12-15小时",
-                    "cost_yuan_range": [150, 350],
-                    "reason": "更省钱但耗时较长",
-                },
-                {
-                    "mode": "高铁二等座",
-                    "duration": "约4.5-6小时",
-                    "cost_yuan_range": [550, 650],
-                    "reason": "时间稳定、舒适度较高，适合五天行程",
-                },
-                {
-                    "mode": "飞机经济舱",
-                    "duration": "约2-2.5小时飞行时间，不含机场通勤",
-                    "cost_yuan_range": [500, 1000],
-                    "reason": "可能更快，但价格和机场通勤波动较大",
-                },
-            ],
-        },
-        ("上海", "杭州"): {
-            "recommended": {
-                "mode": "高铁二等座",
-                "duration": "约1小时",
-                "cost_yuan_range": [60, 100],
-                "reason": "班次密集、耗时短，适合低成本周边出行",
-            },
-            "alternatives": [
-                {
-                    "mode": "动车/城际二等座",
-                    "duration": "约1-1.5小时",
-                    "cost_yuan_range": [50, 90],
-                    "reason": "价格接近高铁，可按发车时间选择",
-                },
-                {
-                    "mode": "长途汽车",
-                    "duration": "约2.5-3小时",
-                    "cost_yuan_range": [70, 110],
-                    "reason": "可作为车票紧张时的备选",
-                },
-            ],
-        },
-        ("上海", "南京"): {
-            "recommended": {
-                "mode": "高铁二等座",
-                "duration": "约1-1.5小时",
-                "cost_yuan_range": [140, 180],
-                "reason": "沪宁高铁班次密集，时间稳定",
-            },
-            "alternatives": [
-                {
-                    "mode": "动车二等座",
-                    "duration": "约1.5-2.5小时",
-                    "cost_yuan_range": [95, 150],
-                    "reason": "更省钱但耗时略长",
-                },
-                {
-                    "mode": "长途汽车",
-                    "duration": "约4小时",
-                    "cost_yuan_range": [100, 140],
-                    "reason": "适合作为铁路票紧张时备选",
-                },
-            ],
-        },
-    }
+    options_by_od: dict[tuple[str, str], dict[str, object]] = _build_intercity_table()
     selected = options_by_od.get((origin, destination))
     fallback_used = selected is None
     if selected is None:
-        selected = {
-            "recommended": {
-                "mode": "高铁/动车二等座",
-                "duration": "约1-6小时，按实际城市距离确认",
-                "cost_yuan_range": [100, 600],
-                "reason": "未知城市组合使用通用铁路估算，出行前需确认实时班次",
-            },
-            "alternatives": [
-                {
-                    "mode": "普速火车或长途汽车",
-                    "duration": "按实际线路确认",
-                    "cost_yuan_range": [50, 400],
-                    "reason": "更省钱但耗时通常更长",
-                }
-            ],
-        }
+        # 用 AMap 驾车 API 获取真实跨城距离
+        real_distance_km: float | None = None
+        try:
+            from mcp_servers.realtime.amap_client import AMapClient
+            amap = AMapClient()
+            drive = amap.get_route(origin=origin, destination=destination, mode="driving")
+            paths = (drive.get("route") or {}).get("paths") if isinstance(drive, dict) else None
+            if isinstance(paths, list) and paths:
+                dist_m = _safe_int(paths[0].get("distance"), default=0)
+                if dist_m > 0:
+                    real_distance_km = dist_m / 1000.0
+        except Exception:
+            real_distance_km = None
+
+        if real_distance_km and real_distance_km > 10:
+            km = real_distance_km
+            h = int(km / 280)
+            m = int((km % 280) / 280 * 60)
+            dur = f"约{h}小时{m}分钟" if m else f"约{h}小时"
+            g_price = [max(100, int(km * 0.42)), max(150, int(km * 0.48))]
+            fly_dur = f"约{max(1,int(km/750))}-{max(2,int(km/600))}小时飞行"
+            fly_price = [max(300, int(km * 0.55)), max(500, int(km * 0.9))]
+            selected = {
+                "recommended": {"mode": "高铁二等座", "duration": dur, "cost_yuan_range": g_price,
+                    "reason": f"基于驾车距离{int(km)}km推算，实际以铁路时刻表为准"},
+                "alternatives": [
+                    {"mode": "动车/普速", "duration": f"约{h+1}-{h+3}小时", "cost_yuan_range": [max(80,int(km*0.28)), max(120,int(km*0.35))],
+                        "reason": "更省钱但耗时更长"},
+                    {"mode": "飞机经济舱", "duration": f"{fly_dur}，不含机场通勤", "cost_yuan_range": fly_price,
+                        "reason": "飞行时间短但机场通勤增加总时长"},
+                ],
+            }
+        else:
+            selected = {
+                "recommended": {
+                    "mode": "高铁/动车二等座",
+                    "duration": "按实际城市距离确认",
+                    "cost_yuan_range": [100, 800],
+                    "reason": "出发前请查询12306或航司确认实时班次和票价",
+                },
+                "alternatives": [],
+            }
     recommended = dict(selected["recommended"])
     alternatives = list(selected["alternatives"])
     if budget_level in {"high", "luxury"} or transport_preference == "taxi":

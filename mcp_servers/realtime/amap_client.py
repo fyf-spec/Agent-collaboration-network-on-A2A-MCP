@@ -60,14 +60,38 @@ class AMapClient:
         preferences: list[str] | None = None,
         limit: int = 30,
     ) -> dict[str, Any]:
+        """Search attractions via AMap POI text search.  Falls back to broad search when preferences yield no results."""
         keywords = " ".join(str(item) for item in preferences or [] if str(item).strip()) or "景点"
-        return self.search_pois(city=city, keywords=keywords, types="110000", limit=limit)
+        result = self.search_pois(city=city, keywords=keywords, types="110000", limit=limit)
+        # 如果偏好关键词没搜到结果，用宽泛关键词重试
+        if preferences and not result.get("pois"):
+            result = self.search_pois(city=city, keywords="景点", types="110000", limit=limit)
+        return result
 
-    def search_hotels(self, city: str, target_area: str | None = None, limit: int = 20) -> dict[str, Any]:
+    def search_hotels(
+        self, city: str, target_area: str | None = None, limit: int = 20,
+        center: str | None = None,
+    ) -> dict[str, Any]:
+        """Search hotels via AMap POI search.  Supports center-coordinate around-search."""
+        # 如果有坐标，用周边搜索
+        if center and _looks_number(center.split(",")[0] if "," in center else ""):
+            return self._get("/v3/place/around", {
+                "location": center,
+                "keywords": target_area or "酒店",
+                "types": "100000",
+                "offset": min(limit, 25),
+                "page": 1,
+                "extensions": "all",
+                "radius": 10000,
+            })
+
         keywords = "酒店"
         if target_area:
             keywords = f"{target_area} 酒店"
-        return self.search_pois(city=city, keywords=keywords, types="100000", limit=limit)
+        result = self.search_pois(city=city, keywords=keywords, types="100000", limit=limit)
+        if target_area and not result.get("pois"):
+            result = self.search_pois(city=city, keywords="酒店", types="100000", limit=limit)
+        return result
 
     def get_route(
         self,

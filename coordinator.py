@@ -675,7 +675,9 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                     break
                     
                 pending_agents = {node["agent"] for node in workflow_dag if node["node_id"] in pending_nodes}
-                self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=2.0)
+                # 轮询间隔不宜太短——Traffic Agent 等可能需要 2 次 MCP + LLM 调用，
+                # 总耗时可达 3-5 秒。用 A2A_TCP_TIMEOUT 作为单轮等待上限。
+                self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=A2A_TCP_TIMEOUT_SECONDS)
 
                 # 心跳完后，更新completed_nodes
                 snapshot = self.server.state.get_task(record.task_id).snapshot()
@@ -1041,7 +1043,16 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
 
 def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> str:
     '''
-    构造给llm的提示词，给出期望的输出格式（travel_task和workflow_dag）
+    构造给llm的提示词，给出期望的输出格式（travel_task和workflow_dag）。
+
+    关键设计：output_schema 中的枚举值仅为 LLM 提供参考范围，
+    但 raw_constraints 字段才是自由文本核心——LLM 把用户的真实意图、
+    偏好、约束用自己的语言总结出来，这个字段会被传给每个 Agent，
+    让 Agent 的 LLM 在自己的领域内自行解读。
+
+    例如"舒适为主、预算不限" → raw_constraints 应写：
+    "用户追求舒适体验，不在乎花费。应优先选择高质量、高评分的选项，
+    避免因省钱而牺牲体验。适合推荐高端或奢华类型。"
     '''
     payload = {
         "question": question,
@@ -1054,38 +1065,42 @@ def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> st
         },
         "output_schema": {
             "travel_task": {
-                "origin_city": "city or null",
-                "destination_city": "city",
+                "origin_city": "出发城市 or null",
+                "destination_city": "目的城市",
                 "days": 5,
-                "start_date": "YYYY-MM-DD if the user provides an absolute or relative date, otherwise null",
+                "start_date": "YYYY-MM-DD 必须把相对日期（明天/下周二/中秋节假期）换算成具体日期",
                 "end_date": "YYYY-MM-DD or null",
-                "date_text": "original user date phrase, for example 下下周 or 中秋节假期",
-                "budget_level": "low|normal|high|unknown",
-                "transport_preference": "public_transport|fastest|cheapest|taxi|normal",
-                "must_visit": ["legacy attraction names for compatibility"],
-                "preferences": ["legacy preference tags for compatibility"],
-                "avoid": ["legacy avoid tags for compatibility"],
+                "date_text": "用户原始日期表述，如 下周二、中秋节假期",
+                "budget_level": "high|normal|low|unknown",
+                "transport_preference": "fastest|comfort|public_transport|cheapest|taxi|normal",
+                "must_visit": ["用户点名必须去的景点"],
+                "preferences": ["用户偏好的标签"],
+                "avoid": ["用户明确拒绝的"],
+                "raw_constraints": "【重要】用 2-4 句自然语言总结用户的核心诉求和约束，不要压缩成枚举值。"
+                                  "例如：用户预算充裕追求舒适，希望高档酒店和专车出行，"
+                                  "行程节奏要轻松不赶，景点偏好历史文化类，对价格不敏感。"
+                                  "这个字段会被传递给下游 Agent 的 LLM 做决策。",
                 "constraints": {
                     "attractions": {
-                        "must_visit": ["attraction names user explicitly requires"],
-                        "preferred_types": ["nature", "museum", "history", "food street"],
+                        "must_visit": ["用户点名必去的景点"],
+                        "preferred_types": ["nature", "museum", "history", "food_street", "shopping", "entertainment"],
                         "avoid": [],
                         "pace": "relaxed|normal|packed|unknown",
                     },
                     "traffic": {
-                        "preference": "public_transport|fastest|cheapest|taxi|normal",
+                        "preference": "fastest|comfort|public_transport|cheapest|taxi|normal",
                         "avoid": [],
                         "max_transfer": None,
                         "walking_tolerance": "low|normal|high|unknown",
                     },
                     "hotel": {
-                        "preferred_features": ["quiet", "good environment", "near subway"],
-                        "preferred_area": None,
-                        "hotel_type": None,
+                        "preferred_features": ["quiet", "good_environment", "near_subway", "luxury", "spacious", "breakfast"],
+                        "preferred_area": "用户偏好的住宿区域 or null",
+                        "hotel_type": "luxury|high_end|comfort|economy|any —— 根据预算和舒适度要求推断，高预算+舒适→luxury/high_end",
                     },
                     "general": {
-                        "budget_level": "low|normal|high|unknown",
-                        "travel_style": "budget|comfort|balanced|unknown",
+                        "budget_level": "high|normal|low|unknown",
+                        "travel_style": "comfort|balanced|budget|unknown",
                         "special_needs": [],
                     },
                 },
@@ -1103,12 +1118,35 @@ def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> st
         "你是 Coordinator 的任务解析器，只把用户自然语言解析成 travel_task JSON 和 workflow_dag。",
         "请参考 payload 中的 available_agents_from_registry 字段，那里列出了当前存活可用的 Agent 及其 capabilities（能力）。",
         "你需要根据用户的实际提问和当前存活的 Agent，动态规划需要调用的 agent 及其依赖关系。",
-        "例如：如果用户询问景点，那需要先调用天气 Agent 获取天气信息，再调用景点 Agent 推荐景点，也就是景点的 Agent depends on 天气的 Agent。同理，交通 Agent 可能还需要 depends on 酒店 Agent 和景点 Agent 的结果。另外，行李准备 Agent (packing_agent) 只需要天气信息即可，因此它可以只 depends on 天气 Agent，和景点、酒店等完全并行执行！",
-        # "例如：如果用户只问天气和交通，那就只返回对应能力的 agent，并且 depends_on 都为 [] (并行执行)。",
-        "不要安排天气、景点或交通方案；不要输出 Markdown；只输出 JSON。",
-        "Date rule: use payload.current_date as today. Convert relative dates like 明天, 后天, 下周, 下下周, 下周末, 下下周末 into ISO YYYY-MM-DD. Do not output unspecified if a relative date phrase exists.",
-        "Weather MCP accepts only ISO dates in travel_task.start_date; never pass relative date words such as 下周 or 中秋节 to MCP fields.",
-        "Workflow rule: for a general travel-planning request, select every live travel agent unless the user explicitly says to skip hotel or traffic planning.",
+        "",
+        "【推理链规则】请根据用户描述推断合理的约束值，而非机械填枚举：",
+        "  - '预算不限、舒适为主' → budget_level=high, travel_style=comfort,",
+        "    hotel_type=luxury 或 high_end, transport_preference=taxi（舒适优先应少走路多打车）,",
+        "    pace=relaxed, walking_tolerance=low",
+        "  - '最顶级的服务、奢华' → budget_level=high, travel_style=comfort,",
+        "    hotel_type=luxury, transport_preference=taxi, pace=relaxed,",
+        "    walking_tolerance=low（全程打车、专车接送、不挤公交地铁）",
+        "  - '打车为主、不想挤地铁' → transport_preference=taxi, walking_tolerance=low",
+        "  - '优先地铁、公交为主' → transport_preference=public_transport, walking_tolerance=high",
+        "  - '穷游、省钱' → budget_level=low, travel_style=budget,",
+        "    hotel_type=economy, transport_preference=cheapest 或 public_transport",
+        "  - '性价比、适中' → budget_level=normal, travel_style=balanced,",
+        "    hotel_type=comfort, transport_preference=normal",
+        "",
+        "【raw_constraints 字段】这是最重要的字段。用自然语言总结用户的核心诉求，",
+        "不要压缩成枚举值。下游 Agent 的 LLM 会读取这个字段来做领域内决策。",
+        "写清楚：预算态度、舒适度要求、节奏偏好、交通偏好、住宿档次、特殊需求。",
+        "",
+        "【DAG 规则】例如：景点 Agent depends_on 天气 Agent；",
+        "交通 Agent depends_on 酒店 Agent + 景点 Agent；",
+        "行李 Agent depends_on 天气 Agent。",
+        "Workflow rule: 一般旅行规划请求应启用所有在线的旅行 Agent。",
+        "",
+        "Date rule: 使用 payload.current_date 作为今天。把 明天/后天/下周/下下周/下周二",
+        "等相对日期换算为 ISO YYYY-MM-DD。绝对不要对相对日期输出 unspecified 或 null。",
+        "Weather MCP 只接受 ISO 日期，不要把 下周、中秋节 等词传入 MCP 字段。",
+        "",
+        "不要输出 Markdown；只输出 JSON。",
         json.dumps(payload, ensure_ascii=False, default=str),
     ])
 
@@ -1866,9 +1904,6 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
             reservations = day.get("reservation_required") or []
             if reservations:
                 line += f"需提前预约：{'、'.join(str(x) for x in reservations)}。"
-            notes = day.get("notes") or []
-            if notes:
-                line += f"备注：{'；'.join(str(x) for x in notes)}。"
             lines.append(line)
         lines.append(f"景点门票小计：{_format_money_range(ticket_total)}。")
 
@@ -1877,7 +1912,6 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         selected = hotel_plan.get("selected_hotel", {}) if isinstance(hotel_plan.get("selected_hotel"), dict) else {}
         lines.append(
             f"- 建议住宿区域：{hotel_plan.get('recommended_area', '待确认')}。"
-            f"理由：{hotel_plan.get('area_reason', '方便连接每日景点')}。"
         )
         if selected:
             lines.append(
@@ -1885,7 +1919,6 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                 f"类型：{selected.get('type', '经济型住宿')}，"
                 f"最近地铁：{selected.get('nearest_subway', '待确认')}，"
                 f"参考价格：{selected.get('price_per_night', '待确认')}元/晚。"
-                f"选择理由：{hotel_plan.get('hotel_reason', '兼顾低预算和交通便利')}。"
             )
         lines.append(f"住宿费用小计：{_format_money_range(hotel_total)}。")
 
@@ -1920,12 +1953,10 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                     f"{_format_transport_mode(segment.get('selected_mode', ''))}，{segment.get('route', '')}，"
                     f"约{segment.get('estimated_duration_minutes', '未知')}分钟，"
                     f"费用约{segment.get('estimated_cost_yuan', '未知')}元。"
-                    f"选择理由：{segment.get('reason', '')}。"
                 )
         if isinstance(traffic_summary, dict) and traffic_summary:
             lines.append(
-                f"- 交通总体策略：{traffic_summary.get('main_strategy', '公共交通优先')}；"
-                f"预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost', '待确认')}。"
+                f"- 预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost', '待确认')}。"
             )
         lines.append(f"市内交通小计：{_format_money_range(traffic_total)}。")
 

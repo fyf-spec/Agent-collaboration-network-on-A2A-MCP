@@ -128,36 +128,6 @@ def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _rule_weather_constraints(days: int, mcp_result: dict[str, Any]) -> dict[str, Any]:
-    all_days = [f"day{i}" for i in range(1, max(1, days) + 1)]
-    condition = str(mcp_result.get("condition", ""))
-    wet_or_snowy = any(word in condition for word in ["雨", "雷", "雪"])
-    rainy_days = ["day1"] if wet_or_snowy else []
-    indoor_days = ["day1"] if wet_or_snowy else []
-    outdoor_days = [day for day in all_days if day not in indoor_days]
-    return {
-        "outdoor_good_days": outdoor_days or all_days,
-        "outdoor_suitable_days": outdoor_days or all_days,
-        "indoor_preferred_days": indoor_days,
-        "rainy_days": rainy_days,
-        "weather_by_day": [
-            {
-                "day": day,
-                "condition": condition,
-                "outdoor_suitable": day not in indoor_days,
-                "indoor_preferred": day in indoor_days,
-            }
-            for day in all_days
-        ],
-        "source": "weather_agent_rule_constraints",
-        "raw_condition": condition,
-        "city": mcp_result.get("city"),
-        "date": mcp_result.get("date"),
-        "temp": mcp_result.get("temp"),
-        "wind": mcp_result.get("wind"),
-    }
-
-
 def _fallback_clothing_advice(temp: str) -> str:
     if any(x in temp for x in ["24", "25", "26", "27", "28", "29", "30"]):
         return "轻薄衣物，备雨具或防晒"
@@ -260,15 +230,6 @@ def _safe_int(value: Any, *, default: int) -> int:
 
 
 def _normalize_date_label(value: str) -> str:
-    mapping = {
-        "today": "今天",
-        "tomorrow": "明天",
-        "the day after tomorrow": "后天",
-    }
-    return mapping.get(value.strip().lower(), value or "明天")
-
-
-def _normalize_date_label(value: str) -> str:
     return iso_date_or_empty(value)
 
 
@@ -280,20 +241,6 @@ def _short_weather_summary(mcp_result: dict[str, Any], constraints: dict[str, An
     indoor_days = constraints.get("indoor_preferred_days", [])
     outdoor_days = constraints.get("outdoor_suitable_days") or constraints.get("outdoor_good_days") or []
     return f"已生成天气活动适配：{city}{date}{condition}，气温{temp}，适合户外{outdoor_days}，优先室内{indoor_days}。"
-
-    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
-        city = mcp_result.get("city", "目标城市")
-        date = mcp_result.get("date", "目标日期")
-        temp = mcp_result.get("temp", "未知温度")
-        condition = mcp_result.get("condition", "未知天气")
-        wind = mcp_result.get("wind", "未知风力")
-
-        return (
-            f"天气概况：{city}{date}天气为{condition}，气温{temp}，风力{wind}。\n"
-            f"出行影响：请根据天气情况合理安排户外活动。\n"
-            f"穿衣建议：建议根据{temp}准备合适衣物。\n"
-            f"风险提醒：当前为演示快速模式，已跳过外部 LLM 调用。"
-        )
 
 
 def main() -> None:

@@ -460,9 +460,13 @@ def _hotel_selector_prompt(
     upstream_results: dict[str, Any],
     hotel_options: list[dict[str, Any]],
 ) -> str:
+    budget_style = _hotel_style_rule(travel_task)
+    raw_constraints = travel_task.get("raw_constraints") or ""
     payload = {
         "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
         "days": travel_task.get("days", 3),
+        "user_intent": raw_constraints,
+        "selection_rule": budget_style,
         "hotel_constraints": _constraint_section(travel_task, "hotel"),
         "traffic_constraints": _constraint_section(travel_task, "traffic"),
         "general_constraints": _constraint_section(travel_task, "general"),
@@ -476,13 +480,27 @@ def _hotel_selector_prompt(
             "reason": "不超过20个中文字符",
         },
     }
+    budget_guidance = {
+        "high": "预算充裕、追求舒适：优先选择价格高、评分高、环境好的酒店，"
+                "不要因价格低而选择经济型酒店。用户宁愿多花钱也要住得舒服。",
+        "normal": "预算适中、追求性价比：在价格和品质之间取得平衡。",
+        "low": "预算有限：优先选择价格低、交通便利的酒店。",
+    }.get(
+        str(_constraint_section(travel_task, "general").get("budget_level")
+            or travel_task.get("budget_level", "")).strip().lower(),
+        "预算水平未知：优先选择评分高、交通便利的酒店。",
+    )
     return "\n".join(
         [
             "你是住宿区域与酒店选择器。",
             "必须从 area_options 中选择一个 area_id；必须从 hotel_options 中选择一个 hotel_id。",
             "hotel_id 必须来自已有候选；推荐区域最好与酒店 area 一致；不要编造酒店；不要改写酒店信息。",
-            "仔细参考 upstream_results 内的前置依赖节点 (比如 weather、attraction) 等智能体给出的结果，",
-            "低预算通常优先低价格；公共交通偏好通常优先地铁方便；多天行程可优先覆盖景点较多、通勤更均衡的区域。",
+            "仔细参考 upstream_results 内的前置依赖节点 (比如 weather、attraction) 等智能体给出的结果。",
+            "",
+            f"【用户意图】{raw_constraints}" if raw_constraints else "",
+            f"【选择策略】{budget_style}",
+            f"【预算指导】{budget_guidance}",
+            "",
             "不要输出完整 hotel_plan；不要 Markdown；不要推理过程；不要大段解释；只输出合法 JSON。",
             json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
         ]
@@ -547,7 +565,7 @@ def _expand_hotel_plan(
         "nearest_subway": hotel.get("nearest_subway"),
         "type": hotel.get("type") or "经济型酒店",
     }
-    reason_prefix = f"LLM选择理由：{_truncate_text(llm_reason, 20)}；" if llm_reason else ""
+    reason_prefix = ""
     selected_hotel["location"] = hotel.get("location")
     selected_hotel["address"] = hotel.get("address")
     return {

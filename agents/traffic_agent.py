@@ -162,6 +162,8 @@ class TrafficAgent(BaseAgent):
     def call_routes_mcp(self, task_id: str, *, city: str, segments: list[dict[str, Any]], preference: str) -> list[dict[str, Any]]:
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
+        # 把 preference 映射为 AMap 请求的 mode，否则默认 transit 没有 taxi 选项
+        request_mode = _preference_to_amap_mode(preference)
         rpc_payload = {
             "jsonrpc": "2.0",
             "id": f"{task_id}:routes",
@@ -170,7 +172,7 @@ class TrafficAgent(BaseAgent):
                 "city": city,
                 "preference": preference,
                 "segments": [
-                    _route_segment_payload(segment)
+                    _route_segment_payload(segment, default_mode=request_mode)
                     for segment in segments
                 ],
             },
@@ -385,7 +387,7 @@ def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any]
     return segments[:18]
 
 
-def _route_segment_payload(segment: dict[str, Any]) -> dict[str, Any]:
+def _route_segment_payload(segment: dict[str, Any], default_mode: str = "transit") -> dict[str, Any]:
     return {
         "origin": segment.get("origin"),
         "destination": segment.get("destination"),
@@ -397,8 +399,22 @@ def _route_segment_payload(segment: dict[str, Any]) -> dict[str, Any]:
         "destination_id": segment.get("destination_id"),
         "origin_address": segment.get("origin_address"),
         "destination_address": segment.get("destination_address"),
-        "mode": segment.get("mode"),
+        "mode": segment.get("mode") or default_mode,
     }
+
+
+def _preference_to_amap_mode(preference: str) -> str:
+    """把交通偏好映射为 AMap get_route 的 mode 参数"""
+    p = preference.strip().lower()
+    if p in ("taxi", "drive", "driving"):
+        return "driving"
+    if p == "fastest":
+        return "driving"  # fastest → AMap returns both driving and transit
+    if p in ("public_transport", "cheapest"):
+        return "transit"
+    if p in ("comfort",):
+        return "driving"
+    return "transit"
 
 
 def _spot_details_by_name(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -518,12 +534,13 @@ def _traffic_route_selector_prompt(
             "reason": "不超过20个中文字符",
         },
     }
+    pref = str(traffic_constraints.get("preference", travel_task.get("transport_preference", ""))).strip().lower()
+    pref_guidance = _transport_preference_guidance(pref)
     return "\n".join(
         [
             "你是路线选择器。每个 segment 必须从 options 中选择一个已有 route_id。",
             "请仔细参考 upstream_results 内的前置依赖 agents 给出的结果，并据此作出合理调整。",
-            "根据用户预算、交通偏好、费用、耗时、换乘次数、步行时间、是否同区域自行判断。",
-            "低预算通常优先低费用；公共交通偏好通常优先 subway/bus/walk；同一区域可考虑 walk；taxi 只有明显更合理时才选。",
+            pref_guidance,
             "只能选择已有 route_id；不要编造路线；不要改写路线内容；不要输出完整 traffic_plan。",
             "不要输出 route、duration、cost 等字段；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
             json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
@@ -581,6 +598,10 @@ def _fallback_route_id(segment: dict[str, Any], travel_task: dict[str, Any]) -> 
     preference = str(traffic_constraints.get("preference") or travel_task.get("transport_preference") or "")
     if budget_level == "low":
         return str(min(options, key=lambda option: _safe_int(option.get("cost_yuan"), default=9999)).get("route_id") or "")
+    if preference in ("taxi", "drive", "driving", "fastest"):
+        drive_options = [o for o in options if o.get("mode") in {"taxi", "drive"}]
+        if drive_options:
+            return str(min(drive_options, key=lambda o: _safe_int(o.get("duration_minutes"), default=9999)).get("route_id") or "")
     if preference == "public_transport":
         public_options = [option for option in options if option.get("mode") in {"subway", "bus", "walk"}]
         if public_options:
@@ -594,6 +615,10 @@ def _fallback_route_id(segment: dict[str, Any], travel_task: dict[str, Any]) -> 
                 ).get("route_id")
                 or ""
             )
+    if preference in ("comfort",):
+        comfort_options = [o for o in options if o.get("mode") in {"taxi", "drive", "subway"}]
+        if comfort_options:
+            return str(min(comfort_options, key=lambda o: _safe_int(o.get("duration_minutes"), default=9999)).get("route_id") or "")
     return str(options[0].get("route_id") or "")
 
 
@@ -747,6 +772,20 @@ def _normalize_intercity_transport(value: dict[str, Any]) -> dict[str, Any]:
             result["estimated_intercity_cost"] = f"约{one_way_low * 2}-{one_way_high * 2}元"
             result["one_way_cost"] = f"约{one_way_low}-{one_way_high}元"
     return result
+
+
+def _transport_preference_guidance(preference: str) -> str:
+    """根据交通偏好返回选择指导"""
+    p = preference.lower()
+    if p in ("taxi", "drive", "driving"):
+        return "【硬性要求】用户要求打车/驾车出行。每个 segment 必须选 taxi 或 drive，费用和耗时不用考虑。绝对不要选 subway/bus。只有两个景点紧邻（同区域内且步行<500m）才可选 walk。"
+    if p == "fastest":
+        return "【硬性要求】用户追求最快出行。每个 segment 优先选 taxi/drive（最快），不要考虑费用。只有地铁明显更快（如高峰期）才可选 subway。不要选 bus。"
+    if p in ("public_transport", "cheapest"):
+        return "用户偏好公共交通/省钱。优先 subway/bus/walk，避免 taxi。同区域优先 walk。"
+    if p in ("comfort",):
+        return "用户追求舒适出行。优先 taxi/drive，费用无需考虑。少换乘、少步行。"
+    return "根据费用、耗时、换乘次数、步行时间综合判断。同区域可考虑 walk。"
 
 
 def _short_traffic_summary(structured_result: dict[str, Any]) -> str:
