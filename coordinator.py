@@ -808,28 +808,88 @@ def _fetch_discovered_agents() -> dict[str, Any]:
     # 尝试主注册中心
     try:
         primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover"
+        start = time.time()
+        log_network_event(
+            event="registry_discover_request",
+            direction="outbound",
+            source="coordinator",
+            target="registry_center_primary",
+            method="GET",
+            url=primary_url,
+        )
         req = request.Request(primary_url, method="GET")
         with request.urlopen(req, timeout=1.5) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode("utf-8"))
                 discovered = data.get("agents", {})
                 if isinstance(discovered, dict):
+                    log_network_event(
+                        event="registry_discover_response",
+                        direction="inbound",
+                        source="registry_center_primary",
+                        target="coordinator",
+                        method="GET",
+                        url=primary_url,
+                        payload={"agent_count": len(discovered), "agents": sorted(discovered.keys())},
+                        status_code=response.status,
+                        elapsed_ms=(time.time() - start) * 1000,
+                    )
                     return discovered
     except Exception as e:
+        log_network_event(
+            event="registry_discover_error",
+            direction="inbound",
+            source="registry_center_primary",
+            target="coordinator",
+            method="GET",
+            url=f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/discover",
+            error=str(e),
+            error_type=type(e).__name__,
+        )
         logger.warning(f"Coordinator failed to discover agents from primary registry: {e}")
 
     # 尝试备用注册中心
     try:
         backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/discover"
+        start = time.time()
+        log_network_event(
+            event="registry_discover_request",
+            direction="outbound",
+            source="coordinator",
+            target="registry_center_backup",
+            method="GET",
+            url=backup_url,
+        )
         req = request.Request(backup_url, method="GET")
         with request.urlopen(req, timeout=1.5) as response:
             if response.status == 200:
                 data = json.loads(response.read().decode("utf-8"))
                 discovered = data.get("agents", {})
                 if isinstance(discovered, dict):
+                    log_network_event(
+                        event="registry_discover_response",
+                        direction="inbound",
+                        source="registry_center_backup",
+                        target="coordinator",
+                        method="GET",
+                        url=backup_url,
+                        payload={"agent_count": len(discovered), "agents": sorted(discovered.keys())},
+                        status_code=response.status,
+                        elapsed_ms=(time.time() - start) * 1000,
+                    )
                     logger.info("Successfully discovered agents from backup registry")
                     return discovered
     except Exception as e:
+        log_network_event(
+            event="registry_discover_error",
+            direction="inbound",
+            source="registry_center_backup",
+            target="coordinator",
+            method="GET",
+            url=f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/discover",
+            error=str(e),
+            error_type=type(e).__name__,
+        )
         logger.error(f"Coordinator failed to discover agents from backup registry: {e}, fall back to local config")
         
     return dict(AGENTS)
@@ -1330,8 +1390,10 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     used in partial cases, but it never receives workflow/debug fields.
     """
     grounded_answer = _grounded_final_answer(question, snapshot)
-    if _demo_fast_mode_enabled() or snapshot.get("status") != TASK_COMPLETED:
+    if snapshot.get("status") != TASK_COMPLETED:
         return _fallback_final_answer(question, snapshot, "")
+    if _demo_fast_mode_enabled():
+        return grounded_answer
 
     results = snapshot.get("results", {}) or {}
     dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
@@ -2007,45 +2069,100 @@ def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
 
 
 def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response: str) -> str:
-    results = snapshot.get("results", {})
-    dispatch_errors = snapshot.get("dispatch_errors", {})
-    if not results:
-        return (
-            "最终旅行方案暂不可生成：未获得可用 Agent 结果。"
-            "请确认 Weather、Attraction、Hotel、Traffic Agent 及对应 MCP Server 已启动，并查看 dispatch_errors。"
-        )
+    results = snapshot.get("results", {}) or {}
+    dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
+    pending_targets = snapshot.get("pending_targets", []) or []
+    targets = snapshot.get("targets", []) or []
 
-    lines = [f"用户问题为：{question}。"]
+    successful: list[str] = []
+    failed: list[str] = []
 
-    for source in snapshot.get("targets", []):
+    for source in targets:
         payload = results.get(source)
-        if not payload:
-            continue
-        result = payload.get("result")
-        status = payload.get("status")
-        if status == RESULT_SUCCESS:
-            lines.append(f"- {source}: {result}")
-        else:
-            lines.append(f"- {source}: 执行失败，错误为 {payload.get('error')}")
+        label = _agent_display_name(source)
+        if isinstance(payload, dict) and payload.get("status") == RESULT_SUCCESS:
+            successful.append(f"- {label}: {_short_agent_result(source, payload)}")
+        elif isinstance(payload, dict):
+            failed.append(f"- {label}: {_short_error(payload.get('error') or '执行失败')}")
 
-    attraction = results.get("attraction_agent", {})
-    attraction_meta = attraction.get("metadata", {}) if isinstance(attraction, dict) else {}
-    attraction_structured = attraction_meta.get("structured_result", {})
-    daily_plan = attraction_structured.get("daily_plan_skeleton", None)
-    if isinstance(daily_plan, dict) and daily_plan:
-        lines.append("其中，景点行程骨架：")
-        for day, plan in daily_plan.items():
-            if isinstance(plan, dict):
-                spots = "、".join(plan.get("spots", [])) if isinstance(plan.get("spots"), list) else "待定"
-                lines.append(f"- {day}: {spots}（{plan.get('area', '区域待定')}）")
+    for source, err in dispatch_errors.items():
+        failed.append(f"- {_agent_display_name(source)}: {_short_error(err)}")
 
-    if dispatch_errors:
-        for source, err in dispatch_errors.items():
-            lines.append(f"- {source} [DISPATCH_ERROR]: {err}")
+    for source in pending_targets:
+        failed.append(f"- {_agent_display_name(str(source))}: 未返回结果")
 
-    if llm_response:
-        lines.append(f"- llm: {llm_response}")
+    lines = [
+        "任务未完整完成，以下只基于已成功返回的信息给出最低限度回答。",
+        f"用户问题：{question}",
+        "",
+        "已获取信息：",
+    ]
+    lines.extend(successful or ["- 暂无可用信息"])
+    lines.extend(["", "失败或缺失信息："])
+    lines.extend(failed or ["- 暂无"])
+    lines.extend(["", "最低限度回答：", _minimal_partial_answer(successful, failed)])
     return "\n".join(lines)
+
+
+def _agent_display_name(source: str) -> str:
+    return {
+        "weather_agent": "天气",
+        "attraction_agent": "景点",
+        "hotel_agent": "住宿",
+        "traffic_agent": "交通",
+        "packing_agent": "行李",
+    }.get(source, source)
+
+
+def _short_agent_result(source: str, payload: dict[str, Any]) -> str:
+    metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
+    structured = metadata.get("structured_result", {}) if isinstance(metadata, dict) else {}
+
+    if source == "attraction_agent":
+        daily_plan = structured.get("daily_plan_skeleton")
+        if isinstance(daily_plan, dict) and daily_plan:
+            days = []
+            for day, plan in list(daily_plan.items())[:3]:
+                if isinstance(plan, dict):
+                    spots = plan.get("spots")
+                    spot_text = "、".join(map(str, spots[:3])) if isinstance(spots, list) else "景点待定"
+                    days.append(f"{day}: {spot_text}")
+            if days:
+                return _short_text("；".join(days))
+
+    if source == "hotel_agent":
+        hotel_plan = structured.get("hotel_plan")
+        if isinstance(hotel_plan, dict) and hotel_plan:
+            area = hotel_plan.get("recommended_area")
+            hotel = hotel_plan.get("selected_hotel")
+            hotel_name = hotel.get("name") if isinstance(hotel, dict) else None
+            return _short_text("，".join(str(item) for item in [area, hotel_name] if item))
+
+    if source == "packing_agent":
+        packing_list = structured.get("packing_list")
+        if isinstance(packing_list, list) and packing_list:
+            return _short_text("、".join(map(str, packing_list[:5])))
+
+    return _short_text(payload.get("result") or "已返回结果")
+
+
+def _minimal_partial_answer(successful: list[str], failed: list[str]) -> str:
+    if not successful:
+        return "当前没有足够信息生成旅行方案，请先恢复关键 Agent 和 MCP 节点后重新提交。"
+    if failed:
+        return "可以先参考上方已获取的信息做初步判断；缺失模块恢复前，不应给出完整行程、住宿、交通或行李清单。"
+    return "已获取的信息可作为临时参考，但该任务未标记为完整完成，建议恢复节点后重新生成正式方案。"
+
+
+def _short_error(value: Any, max_chars: int = 90) -> str:
+    return _short_text(value or "未知错误", max_chars=max_chars)
+
+
+def _short_text(value: Any, max_chars: int = 110) -> str:
+    text = " ".join(str(value).split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
 
 
 if __name__ == "__main__":
