@@ -3,4 +3,5 @@
 __pycache__/
 *.pyc
 logs/*.jsonl
+logs/*.log
 api_test.py
