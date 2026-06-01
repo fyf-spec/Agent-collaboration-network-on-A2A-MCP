@@ -26,6 +26,7 @@ def search_attractions(
     requested_fields: list[str] | None = None,
     **kwargs: object,
 ) -> dict[str, object]:
+    # 搜索景点数据（实时 AMap + mock 回退）
     if not A2A_REALTIME_MCP_ENABLED:
         return attach_mock_source(
             search_mock_attractions(
@@ -94,6 +95,7 @@ def search_attractions(
 
 
 def main() -> None:
+    # 启动景点 MCP 服务
     config = MCP_SERVERS["attraction"]
     parser = argparse.ArgumentParser(description="Run Attraction MCP Server.")
     parser.add_argument("--host", default=config["host"])

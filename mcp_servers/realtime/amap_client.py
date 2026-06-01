@@ -25,11 +25,13 @@ class AMapClient:
         base_url: str | None = None,
         timeout: float | None = None,
     ) -> None:
+        # 初始化高德地图客户端
         self.api_key = (api_key if api_key is not None else AMAP_WEB_KEY).strip()
         self.base_url = (base_url or AMAP_API_BASE_URL).strip().rstrip("/")
         self.timeout = float(timeout if timeout is not None else MCP_REALTIME_TIMEOUT_SECONDS)
 
     def get_weather(self, city_or_adcode: str, *, forecast: bool = False) -> dict[str, Any]:
+        # 获取天气信息
         return self._get(
             "/v3/weather/weatherInfo",
             {"city": city_or_adcode, "extensions": "all" if forecast else "base"},
@@ -42,6 +44,7 @@ class AMapClient:
         types: str | None = None,
         limit: int = 20,
     ) -> dict[str, Any]:
+        # 搜索POI兴趣点
         params: dict[str, Any] = {
             "city": city,
             "offset": max(1, min(int(limit or 20), 25)),
@@ -103,6 +106,7 @@ class AMapClient:
         destination_location: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
+        # 获取路线规划
         route_timeout = float(timeout if timeout is not None else MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS)
         origin_location = self._coerce_location(origin_location) or self._coerce_location(origin) or self.geocode_city_or_address(
             origin,
@@ -139,6 +143,7 @@ class AMapClient:
         )
 
     def geocode_city_or_address(self, value: str, city: str | None = None, *, timeout: float | None = None) -> str:
+        # 将城市名称或地址解析为经纬度坐标
         text = str(value or "").strip()
         location = self._coerce_location(text)
         if location:
@@ -170,6 +175,7 @@ class AMapClient:
         raise ProviderBadResponseError(f"AMap could not resolve location: {text}")
 
     def _coerce_location(self, value: Any) -> str | None:
+        # 将逗号分隔的坐标字符串转换为标准格式
         text = str(value or "").strip()
         if "," not in text:
             return None
@@ -179,6 +185,7 @@ class AMapClient:
         return None
 
     def _get(self, path: str, params: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
+        # 发送HTTP GET请求并处理响应
         if not self.api_key:
             raise ProviderAuthError("AMAP_WEB_KEY is required for realtime MCP")
 
@@ -231,6 +238,7 @@ class AMapClient:
 
 
 def _looks_number(value: str) -> bool:
+    # 判断字符串是否为有效数字
     try:
         float(value.strip())
         return True

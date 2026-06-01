@@ -20,15 +20,18 @@ UNKNOWN_VALUES = {
 
 
 def clean_text(value: Any) -> str:
+    # 将输入值转为去除空白的字符串
     return str(value or "").strip()
 
 
 def is_unknown(value: Any) -> bool:
+    # 判断值是否为未知/未指定等占位符
     text = clean_text(value)
     return text.lower() in UNKNOWN_VALUES or text in UNKNOWN_VALUES
 
 
 def is_iso_date(value: Any) -> bool:
+    # 判断值是否为 ISO 格式日期（YYYY-MM-DD）
     text = clean_text(value)
     if len(text) < 10:
         return False
@@ -40,11 +43,13 @@ def is_iso_date(value: Any) -> bool:
 
 
 def iso_date_or_empty(value: Any) -> str:
+    # 如果是 ISO 日期则返回前 10 字符，否则返回空字符串
     text = clean_text(value)
     return text[:10] if is_iso_date(text) else ""
 
 
 def normalize_budget_level(value: Any, *, default: str = "normal") -> str:
+    # 将预算描述标准化为 low / normal / high
     text = clean_text(value).lower()
     mapping = {
         "budget": "low",
@@ -64,6 +69,7 @@ def normalize_budget_level(value: Any, *, default: str = "normal") -> str:
 
 
 def normalize_travel_style(value: Any, *, budget_level: str = "normal") -> str:
+    # 将出行风格标准化为 budget / comfort / balanced
     text = clean_text(value).lower()
     mapping = {
         "budget": "budget",
@@ -85,6 +91,7 @@ def normalize_travel_style(value: Any, *, budget_level: str = "normal") -> str:
 
 
 def normalize_transport_preference(value: Any, *, default: str = "normal") -> str:
+    # 将交通偏好标准化为内部枚举值
     text = clean_text(value).lower()
     mapping = {
         "public": "public_transport",
@@ -104,6 +111,7 @@ def normalize_transport_preference(value: Any, *, default: str = "normal") -> st
 
 
 def display_budget_level(value: Any) -> str:
+    # 返回预算等级的中文显示文本
     budget = normalize_budget_level(value)
     return {
         "low": "低预算",
@@ -113,6 +121,7 @@ def display_budget_level(value: Any) -> str:
 
 
 def display_transport_preference(value: Any) -> str:
+    # 返回交通偏好的中文显示文本
     preference = normalize_transport_preference(value)
     return {
         "public_transport": "公共交通优先",

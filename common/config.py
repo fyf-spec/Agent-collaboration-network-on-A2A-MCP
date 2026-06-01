@@ -32,6 +32,7 @@ BACKUP_REGISTRY_HOST = "127.0.0.1"
 BACKUP_REGISTRY_PORT = 7001
 
 def _env_bool(name: str, default: bool = False) -> bool:
+    # 从环境变量读取布尔值，支持 1/true/yes/on
     value = os.environ.get(name)
     if value is None:
         return default
@@ -41,8 +42,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 DEFAULT_TASK_TIMEOUT_SECONDS = float(os.environ.get("DEFAULT_TASK_TIMEOUT_SECONDS", 120.0))
 MAX_TASK_TIMEOUT_SECONDS = float(os.environ.get("MAX_TASK_TIMEOUT_SECONDS", 900.0))
 DISPATCH_HTTP_TIMEOUT_SECONDS = float(os.environ.get("DISPATCH_HTTP_TIMEOUT_SECONDS", 5.0))
-A2A_TCP_TIMEOUT_SECONDS = float(os.environ.get("A2A_TCP_TIMEOUT_SECONDS", 3.0))
-MCP_HTTP_TIMEOUT_SECONDS = float(os.environ.get("MCP_HTTP_TIMEOUT_SECONDS", 3.0))
+A2A_TCP_TIMEOUT_SECONDS = float(os.environ.get("A2A_TCP_TIMEOUT_SECONDS", 5.0))
+MCP_HTTP_TIMEOUT_SECONDS = float(os.environ.get("MCP_HTTP_TIMEOUT_SECONDS", 10.0))
 
 A2A_REALTIME_MCP_ENABLED = _env_bool("A2A_REALTIME_MCP_ENABLED", False)
 AMAP_WEB_KEY = os.environ.get("AMAP_WEB_KEY", "").strip()
@@ -55,7 +56,7 @@ MCP_TRAFFIC_REALTIME_ENABLED = _env_bool("MCP_TRAFFIC_REALTIME_ENABLED", True)
 MCP_TRAFFIC_MAX_WORKERS = int(os.environ.get("MCP_TRAFFIC_MAX_WORKERS", 4))
 MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS = float(os.environ.get("MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS", 1.5))
 MCP_TRAFFIC_MAX_SEGMENTS = int(os.environ.get("MCP_TRAFFIC_MAX_SEGMENTS", 8))
-MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 2.5))
+MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 10.0))
 
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
 

@@ -9,14 +9,17 @@ PROFILE_DIR = Path(__file__).resolve().parent
 
 
 def enrich_attraction(city: str, spot: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    # 使用本地景点配置文件增强景点数据
     return _enrich_item("attractions", city, spot, id_key="spot_id")
 
 
 def enrich_hotel(city: str, hotel: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    # 使用本地酒店配置文件增强酒店数据
     return _enrich_item("hotels", city, hotel, id_key="hotel_id")
 
 
 def _enrich_item(section: str, city: str, item: dict[str, Any], *, id_key: str) -> tuple[dict[str, Any], dict[str, str]]:
+    # 通用本地数据增强逻辑
     profile = _find_profile(section, city, item, id_key=id_key)
     if not profile:
         return item, {}
@@ -43,6 +46,7 @@ def _enrich_item(section: str, city: str, item: dict[str, Any], *, id_key: str) 
 
 
 def _find_profile(section: str, city: str, item: dict[str, Any], *, id_key: str) -> dict[str, Any] | None:
+    # 查找匹配的本地配置文件
     profiles = _load_profiles().get(section, {})
     city_profiles = profiles.get(city) or profiles.get(str(city).replace("市", "")) or []
     item_id = str(item.get(id_key) or "").strip()
@@ -78,6 +82,7 @@ def _find_profile(section: str, city: str, item: dict[str, Any], *, id_key: str)
 
 
 def _load_profiles() -> dict[str, Any]:
+    # 加载所有本地配置文件
     data: dict[str, Any] = {}
     for filename in ("attraction_profiles.json", "hotel_profiles.json"):
         path = PROFILE_DIR / filename

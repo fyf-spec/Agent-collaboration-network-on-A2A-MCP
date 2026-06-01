@@ -36,6 +36,7 @@ class PackingAgent(BaseAgent):
     mcp_server_key = "packing"
 
     def process_task(self, task_payload: dict[str, Any]) -> None:
+        # 处理行李准备任务
         task_id = str(task_payload["task_id"])
         started = time.perf_counter()
         
@@ -160,6 +161,7 @@ class PackingAgent(BaseAgent):
         temperature: str,
         condition: str,
     ) -> dict[str, Any]:
+        # 调用行李准备 MCP 获取基础清单
         server = MCP_SERVERS[self.mcp_server_key]
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
@@ -222,6 +224,7 @@ class PackingAgent(BaseAgent):
         return result
 
 def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
+    # 从上下文中提取出行任务
     if isinstance(context.get("travel_task"), dict):
         return dict(context["travel_task"])
     inputs = context.get("inputs") or {}
@@ -230,6 +233,7 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 def build_packaging_prompt(task_payload: dict[str, Any], upstream_results: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+    # 构造行李准备 LLM 提示词
     context = task_payload.get("context") or {}
     travel_task = context.get("travel_task") or {}
     # 提取天气摘要让 LLM 看到
@@ -276,6 +280,7 @@ def build_packaging_prompt(task_payload: dict[str, Any], upstream_results: dict[
     ])
 
 def main() -> None:
+    # 启动行李准备 Agent
     from common.config import AGENTS
     default_host = AGENTS[AGENT_NAME]["host"]
     default_port = AGENTS[AGENT_NAME]["port"]

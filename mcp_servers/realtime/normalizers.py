@@ -8,6 +8,7 @@ from mcp_servers.enrichment.local_profiles import enrich_attraction, enrich_hote
 
 
 def realtime_source(*, missing_fields: list[str] | None = None) -> dict[str, Any]:
+    # 构建实时数据源元信息
     return {
         "provider": "amap",
         "realtime": True,
@@ -18,6 +19,7 @@ def realtime_source(*, missing_fields: list[str] | None = None) -> dict[str, Any
 
 
 def mock_source(*, fallback_used: bool, fallback_reason: str | None = None) -> dict[str, Any]:
+    # 构建模拟数据源元信息
     source: dict[str, Any] = {
         "provider": "mock",
         "realtime": False,
@@ -35,6 +37,7 @@ def normalize_weather(
     date: str | None = None,
     days: int = 1,
 ) -> dict[str, Any]:
+    # 标准化高德天气实时数据
     forecasts = data.get("forecasts")
     if isinstance(forecasts, list) and forecasts and isinstance(forecasts[0], dict):
         return _normalize_weather_forecast(data, requested_city=requested_city, date=date, days=days)
@@ -68,6 +71,7 @@ def normalize_open_meteo_weather(
     days: int = 1,
     start_offset: int = 0,
 ) -> dict[str, Any]:
+    # 标准化Open-Meteo天气预报数据
     daily = data.get("daily")
     if not isinstance(daily, dict):
         raise ValueError("Open-Meteo response missing daily forecast")
@@ -126,6 +130,7 @@ def build_far_future_weather_result(
     days: int,
     reason: str,
 ) -> dict[str, Any]:
+    # 构建远期天气不可预测的兜底结果
     day_count = max(1, int(days or 1))
     source = realtime_source(missing_fields=["forecast"])
     source["provider"] = "open-meteo"
@@ -168,6 +173,7 @@ def _normalize_weather_forecast(
     date: str | None,
     days: int,
 ) -> dict[str, Any]:
+    # 标准化高德天气预报数据
     forecasts = data.get("forecasts")
     if not isinstance(forecasts, list) or not forecasts or not isinstance(forecasts[0], dict):
         raise ValueError("AMap weather response missing forecasts")
@@ -228,6 +234,7 @@ def normalize_attractions(
     preferences: list[str] | None,
     limit: int,
 ) -> dict[str, Any]:
+    # 标准化景点POI数据
     # 取更多原始 POI，给过滤留余量
     raw_pois = _pois(data)[: max(limit * 3, 60)]
     must_names_lower = [str(n).strip().lower() for n in (must_visit or []) if str(n).strip()]
@@ -289,6 +296,7 @@ def normalize_hotels(
     area_selection: dict[str, Any] | None,
     limit: int,
 ) -> dict[str, Any]:
+    # 标准化酒店POI数据
     hotels = []
     enriched_fields: list[str] = []
     for poi in _pois(data)[:limit]:
@@ -321,6 +329,7 @@ def normalize_route(
     preference: str,
     mode: str,
 ) -> dict[str, Any]:
+    # 标准化路线数据
     candidates = _route_candidates(data, mode=mode)
     if not candidates:
         raise ValueError("AMap route response contains no route candidates")
@@ -338,12 +347,14 @@ def normalize_route(
 
 
 def attach_mock_source(result: dict[str, Any], *, fallback_used: bool, fallback_reason: str | None = None) -> dict[str, Any]:
+    # 为结果附加模拟数据源标记
     enriched = dict(result)
     enriched["data_source"] = mock_source(fallback_used=fallback_used, fallback_reason=fallback_reason)
     return enriched
 
 
 def _merged_top_source(enriched_fields: list[str]) -> dict[str, Any]:
+    # 合并多个数据源标注信息
     source = realtime_source(missing_fields=[])
     if enriched_fields:
         source["provider"] = "amap+local_profile"
@@ -352,6 +363,7 @@ def _merged_top_source(enriched_fields: list[str]) -> dict[str, Any]:
 
 
 def _pois(data: dict[str, Any]) -> list[dict[str, Any]]:
+    # 从响应中提取POI列表
     pois = data.get("pois")
     if not isinstance(pois, list):
         return []
@@ -359,6 +371,7 @@ def _pois(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _normalize_spot(poi: dict[str, Any]) -> dict[str, Any]:
+    # 标准化单个景点POI
     missing = ["ticket", "duration", "open_time", "reservation_required", "indoor_or_outdoor", "nearest_subway"]
     biz = poi.get("biz_ext") if isinstance(poi.get("biz_ext"), dict) else {}
     return {
@@ -504,6 +517,7 @@ def _cluster_by_name_prefix(spots: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _normalize_hotel(poi: dict[str, Any]) -> dict[str, Any]:
+    # 标准化单个酒店POI
     missing = ["price_per_night", "nearest_subway", "pros", "cons"]
     typecode = str(poi.get("typecode") or "")
     hotel_type = str(poi.get("type") or "")
@@ -546,6 +560,7 @@ def _infer_hotel_price(typecode: str, hotel_type: str) -> str | None:
 
 
 def _route_candidates(data: dict[str, Any], *, mode: str) -> list[dict[str, Any]]:
+    # 从路线响应中提取候选方案
     route = data.get("route")
     if not isinstance(route, dict):
         return []
@@ -559,6 +574,7 @@ def _route_candidates(data: dict[str, Any], *, mode: str) -> list[dict[str, Any]
 
 
 def _transit_candidate(item: dict[str, Any]) -> dict[str, Any]:
+    # 标准化公交地铁换乘方案
     segments = item.get("segments") if isinstance(item.get("segments"), list) else []
     names: list[str] = []
     pending_walk_meters = 0
@@ -596,6 +612,7 @@ def _transit_candidate(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def _short_route_line_name(name: str) -> str:
+    # 精简公交线路名称
     text = name.strip()
     text = text.split("(")[0].split("（")[0]
     text = re.sub(r"\([^)]*\)", "", text)
@@ -604,6 +621,7 @@ def _short_route_line_name(name: str) -> str:
 
 
 def _path_candidate(item: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    # 标准化驾车/步行方案
     is_drive = mode not in {"walk", "walking"}
     # AMap driving routes don't have taxi fare — estimate from distance
     cost = _number_or_none(item.get("tolls")) or 0
@@ -625,6 +643,7 @@ def _path_candidate(item: dict[str, Any], *, mode: str) -> dict[str, Any]:
 
 
 def _tags_from_poi(poi: dict[str, Any]) -> list[str]:
+    # 从POI中提取标签列表
     result = []
     for key in ("type", "business_area"):
         value = poi.get(key)
@@ -634,16 +653,19 @@ def _tags_from_poi(poi: dict[str, Any]) -> list[str]:
 
 
 def _missing(source: dict[str, Any], fields: list[str]) -> list[str]:
+    # 检查缺失字段
     return [field for field in fields if source.get(field) in (None, "", [])]
 
 
 def _format_temperature(value: Any) -> str | None:
+    # 格式化温度显示
     if value in (None, ""):
         return None
     return f"{value}C"
 
 
 def _format_wind(direction: Any, power: Any) -> str | None:
+    # 格式化风力风向显示
     if direction in (None, "") and power in (None, ""):
         return None
     if power in (None, ""):
@@ -652,6 +674,7 @@ def _format_wind(direction: Any, power: Any) -> str | None:
 
 
 def _temperature_range(low: Any, high: Any) -> str | None:
+    # 格式化温度范围显示
     if low in (None, "") and high in (None, ""):
         return None
     if low in (None, ""):
@@ -662,6 +685,7 @@ def _temperature_range(low: Any, high: Any) -> str | None:
 
 
 def _seconds_to_minutes(value: Any) -> int | None:
+    # 将秒转换为分钟
     number = _number_or_none(value)
     if number is None:
         return None
@@ -669,6 +693,7 @@ def _seconds_to_minutes(value: Any) -> int | None:
 
 
 def _meters_to_walk_minutes(value: Any) -> int | None:
+    # 将步行距离转换为分钟
     number = _number_or_none(value)
     if number is None:
         return None
@@ -676,6 +701,7 @@ def _meters_to_walk_minutes(value: Any) -> int | None:
 
 
 def _number_or_none(value: Any) -> float | None:
+    # 将值转换为浮点数，失败返回None
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -683,17 +709,20 @@ def _number_or_none(value: Any) -> float | None:
 
 
 def _list_get(value: Any, index: int) -> Any:
+    # 安全获取列表中的元素
     if isinstance(value, list) and 0 <= index < len(value):
         return value[index]
     return None
 
 
 def _is_displayable_date(value: str | None) -> bool:
+    # 判断日期字符串是否可显示
     text = str(value or "").strip().lower()
     return bool(text and text not in {"unspecified", "unknown", "none", "null", "未指定", "待确认"})
 
 
 def _open_meteo_condition(code: Any) -> str:
+    # 将Open-Meteo天气码转换为中文描述
     try:
         value = int(code)
     except (TypeError, ValueError):

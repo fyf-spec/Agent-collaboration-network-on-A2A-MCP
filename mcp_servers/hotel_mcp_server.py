@@ -30,6 +30,7 @@ def search_hotels(
     centroid: str | None = None,
     **kwargs: object,
 ) -> dict[str, object]:
+    # 搜索酒店数据（实时 AMap + mock 回退）
     if not A2A_REALTIME_MCP_ENABLED:
         return attach_mock_source(
             search_mock_hotels(
@@ -133,6 +134,7 @@ def _budget_tier_keywords(budget_level: str, preferences: list[str] | None) -> s
 
 
 def main() -> None:
+    # 启动酒店 MCP 服务
     config = MCP_SERVERS["hotel"]
     parser = argparse.ArgumentParser(description="Run Hotel MCP Server.")
     parser.add_argument("--host", default=config["host"])

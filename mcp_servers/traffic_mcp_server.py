@@ -39,6 +39,7 @@ def get_route(
     preference: str = "public_transport",
     **kwargs: object,
 ) -> dict[str, object]:
+    # 获取两点间实时路线方案，支持 mock 回退
     origin_location = str(kwargs.get("origin_location") or "").strip()
     destination_location = str(kwargs.get("destination_location") or "").strip()
     if not A2A_REALTIME_MCP_ENABLED or not MCP_TRAFFIC_REALTIME_ENABLED:
@@ -71,6 +72,7 @@ def get_routes(
     preference: str = "public_transport",
     **kwargs: object,
 ) -> dict[str, object]:
+    # 批量获取多段路线方案，支持并行请求和 mock 回退
     if not A2A_REALTIME_MCP_ENABLED or not MCP_TRAFFIC_REALTIME_ENABLED:
         return attach_mock_source(
             get_mock_routes(city=city, segments=segments, preference=preference, **kwargs),
@@ -115,6 +117,7 @@ def get_routes(
 
 
 def _route_for_segment(city: str, segment: dict[str, object], preference: str) -> dict[str, Any]:
+    # 为单个路段获取路线方案（含异常回退）
     origin = str(segment.get("origin_name") or segment.get("origin") or "")
     destination = str(segment.get("destination_name") or segment.get("destination") or "")
     segment_preference = str(segment.get("mode") or preference)
@@ -136,6 +139,7 @@ def _route_for_segment(city: str, segment: dict[str, object], preference: str) -
 
 
 def _mock_route_for_segment(city: str, segment: dict[str, object], preference: str, reason: str) -> dict[str, Any]:
+    # 为单个路段返回 mock 路线方案作为回退
     origin = str(segment.get("origin_name") or segment.get("origin") or "")
     destination = str(segment.get("destination_name") or segment.get("destination") or "")
     result = get_mock_route(city=city, origin=origin, destination=destination, preference=preference)
@@ -144,11 +148,13 @@ def _mock_route_for_segment(city: str, segment: dict[str, object], preference: s
 
 
 def _route_fallback_used(route: dict[str, Any]) -> bool:
+    # 检查路线结果是否使用了回退数据
     source = route.get("data_source")
     return isinstance(source, dict) and bool(source.get("fallback_used"))
 
 
 def get_transport(city: str = "北京", date: str = "明天", **kwargs: object) -> dict[str, object]:
+    # 获取城市级别交通概况数据
     result = get_mock_transport(city=city, date=date, **kwargs)
     return attach_mock_source(
         result,
@@ -158,6 +164,7 @@ def get_transport(city: str = "北京", date: str = "明天", **kwargs: object) 
 
 
 def get_traffic(city: str = "北京", date: str = "明天", **kwargs: object) -> dict[str, object]:
+    # get_transport 的向后兼容别名
     result = get_mock_traffic(city=city, date=date, **kwargs)
     return attach_mock_source(
         result,
@@ -167,6 +174,7 @@ def get_traffic(city: str = "北京", date: str = "明天", **kwargs: object) ->
 
 
 def _route_mode(preference: str) -> str:
+    # 将偏好参数转换为高德地图路线模式
     value = (preference or "").strip().lower()
     if value in {"walk", "walking"}:
         return "walking"
@@ -228,6 +236,7 @@ def get_intercity_transport(
     budget_level: str = "normal",
     transport_preference: str = "public_transport",
 ) -> dict[str, object]:
+    # 获取城际交通方案（高铁/动车/飞机）
     origin = (origin_city or "上海").strip()
     destination = (destination_city or "北京").strip()
     options_by_od: dict[tuple[str, str], dict[str, object]] = _build_intercity_table()
@@ -293,6 +302,7 @@ def get_intercity_transport(
 
 
 def _comfort_intercity_option(origin: str, destination: str, default: dict[str, object]) -> dict[str, object]:
+    # 为高预算偏好返回更舒适的城际交通方案
     if (origin, destination) == ("上海", "北京"):
         return {
             "mode": "高铁一等座/商务座",
@@ -312,6 +322,7 @@ def _comfort_intercity_option(origin: str, destination: str, default: dict[str, 
 
 
 def main() -> None:
+    # 启动交通 MCP 服务
     config = MCP_SERVERS["traffic"]
 
     parser = argparse.ArgumentParser(description="Run Traffic MCP Server.")

@@ -10,10 +10,12 @@ from mcp_servers.realtime.errors import ProviderBadResponseError, ProviderTimeou
 
 class OpenMeteoClient:
     def __init__(self, *, base_url: str | None = None, timeout: float | None = None) -> None:
+        # 初始化Open-Meteo客户端
         self.base_url = (base_url or OPEN_METEO_API_BASE_URL).strip().rstrip("/")
         self.timeout = float(timeout if timeout is not None else MCP_REALTIME_TIMEOUT_SECONDS)
 
     def get_forecast(self, *, latitude: float, longitude: float, days: int) -> dict[str, Any]:
+        # 获取天气预报数据
         return self._get(
             "/v1/forecast",
             {
@@ -33,6 +35,7 @@ class OpenMeteoClient:
         )
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        # 发送HTTP GET请求并解析响应
         url = f"{self.base_url}{path}?{parse.urlencode({k: str(v) for k, v in params.items()})}"
         try:
             with request.urlopen(url, timeout=self.timeout) as response:

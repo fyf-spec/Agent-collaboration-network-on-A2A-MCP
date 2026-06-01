@@ -37,6 +37,7 @@ class MCPHTTPServer(ThreadingHTTPServer):
         tools: dict[str, MCPTool],
         delay: float = 0.0,
     ) -> None:
+        # 初始化 MCP HTTP 服务器实例
         super().__init__(server_address, handler_class)
         self.server_name = server_name
         self.tools = tools
@@ -47,6 +48,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     server: MCPHTTPServer
 
     def do_GET(self) -> None:
+        # 处理 GET 请求（/health 和 /methods 端点）
         if self.path == "/health":
             self._send_json(
                 HTTPStatus.OK,
@@ -74,6 +76,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
 
     def do_POST(self) -> None:
+        # 处理 POST 请求（JSON-RPC 方法调用）
         started = time.perf_counter()
         request_id: Any = None
         payload: dict[str, Any] | None = None
@@ -107,9 +110,11 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self._send_json(status, response)
 
     def log_message(self, format: str, *args: Any) -> None:
+        # 抑制 BaseHTTPRequestHandler 的默认请求日志
         return
 
     def _handle_json_rpc(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # 解析并执行 JSON-RPC 2.0 请求
         request_id = payload.get("id")
         if payload.get("jsonrpc") != "2.0":
             return _json_rpc_error(request_id, -32600, "Invalid Request: jsonrpc must be '2.0'")
@@ -141,6 +146,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         return {"jsonrpc": "2.0", "result": result, "id": request_id}
 
     def _read_json(self) -> dict[str, Any]:
+        # 读取并解析 HTTP 请求体中的 JSON 数据
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
         try:
@@ -153,6 +159,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         return payload
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        # 发送 JSON 格式的 HTTP 响应
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         try:
             self.send_response(int(status))
@@ -165,6 +172,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
 
 def run_mcp_server(*, name: str, host: str, port: int, tools: dict[str, MCPTool], delay: float = 0.0) -> None:
+    # 启动并运行 MCP HTTP JSON-RPC 服务器
     server = MCPHTTPServer(
         (host, port),
         MCPRequestHandler,
@@ -183,6 +191,7 @@ def run_mcp_server(*, name: str, host: str, port: int, tools: dict[str, MCPTool]
 
 
 def _json_rpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    # 构造 JSON-RPC 2.0 错误响应对象
     return {
         "jsonrpc": "2.0",
         "error": {

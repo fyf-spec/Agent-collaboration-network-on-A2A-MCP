@@ -30,6 +30,7 @@ from mcp_servers.realtime.open_meteo_client import OpenMeteoClient
 
 
 def get_weather(city: str = "北京", date: str = "", days: int = 1, **kwargs: object) -> dict[str, object]:
+    # 获取实时天气数据，支持 mock 回退
     if not A2A_REALTIME_MCP_ENABLED:
         return attach_mock_source(get_mock_weather(city=city, date=date, **kwargs), fallback_used=False)
     try:
@@ -74,6 +75,7 @@ def get_weather(city: str = "北京", date: str = "", days: int = 1, **kwargs: o
 
 
 def _clean_date_label(value: Any) -> str | None:
+    # 清洗日期标签，去除无效或未指定的值
     text = str(value or "").strip()
     if text.lower() in {"", "unspecified", "unknown", "none", "null"} or text in {"未指定", "待确认"}:
         return None
@@ -81,6 +83,7 @@ def _clean_date_label(value: Any) -> str | None:
 
 
 def _resolve_target_date(date_label: str | None) -> date_type | None:
+    # 将日期字符串解析为 date 对象
     text = str(date_label or "").strip()
     if not text:
         return None
@@ -93,11 +96,13 @@ def _resolve_target_date(date_label: str | None) -> date_type | None:
 
 
 def _parse_amap_location(location: str) -> tuple[float, float]:
+    # 解析高德地图定位字符串为经纬度浮点数
     longitude_text, latitude_text = location.split(",", 1)
     return float(longitude_text), float(latitude_text)
 
 
 def main() -> None:
+    # 启动天气 MCP 服务
     config = MCP_SERVERS["weather"]
     parser = argparse.ArgumentParser(description="Run Weather MCP Server.")
     parser.add_argument("--host", default=config["host"])

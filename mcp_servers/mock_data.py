@@ -403,6 +403,7 @@ def get_packing_list(city: str = DEFAULT_CITY, days: int = 3, temperature: str =
 
 
 def get_transport(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:
+    # 获取城市交通概况数据
     data = _lookup(TRANSPORT_DATA, city)
     data["date"] = date or DEFAULT_DATE
     return data
@@ -431,6 +432,7 @@ def search_attractions(
     requested_fields = requested_fields or []
 
     def score(spot: dict[str, Any]) -> int:
+        # 根据必去景点、预算和偏好给景点排序打分
         value = 0
         name = str(spot.get("name", ""))
         area = str(spot.get("area", ""))
@@ -558,6 +560,7 @@ def get_routes(
     preference: str = "public_transport",
     **_: Any,
 ) -> dict[str, Any]:
+    # 批量获取多段路线方案
     segments = segments or []
     routes = []
     for segment in segments:
@@ -575,6 +578,7 @@ def get_routes(
 
 
 def _lookup(dataset: dict[str, dict[str, Any]], city: str) -> dict[str, Any]:
+    # 从数据集中查找城市数据，缺失则回退到默认城市
     normalized_city = (city or DEFAULT_CITY).strip()
     data = dataset.get(normalized_city) or dataset[DEFAULT_CITY]
     result = deepcopy(data)
@@ -584,6 +588,7 @@ def _lookup(dataset: dict[str, dict[str, Any]], city: str) -> dict[str, Any]:
 
 
 def _spot_area(city: str, spot_name: str) -> str | None:
+    # 查找景点或酒店所属的区域名称
     spots = ATTRACTION_DATA.get(city, [])
     for spot in spots:
         name = str(spot.get("name", ""))
@@ -606,12 +611,14 @@ def _spot_area(city: str, spot_name: str) -> str | None:
 
 
 def _same_area(city: str, origin: str, destination: str) -> bool:
+    # 判断两个地点是否属于同一区域
     origin_area = _spot_area(city, origin)
     dest_area = _spot_area(city, destination)
     return bool(origin_area and dest_area and origin_area == dest_area)
 
 
 def _generic_subway_route(city: str, origin: str, destination: str) -> str:
+    # 根据城市生成通用的地铁换乘描述
     if city == "北京":
         return "地铁为主，按地图选择最近站点换乘"
     if city == "上海":
@@ -844,6 +851,7 @@ def search_hotels(
     all_area_hints = ([target_area] if target_area else []) + preferred_areas + plan_areas
 
     def area_matches(hotel: dict[str, Any], area_hint: str) -> bool:
+        # 判断酒店是否匹配目标区域提示
         area = str(hotel.get("area", ""))
         hint = str(area_hint or "")
         if not area or not hint:
@@ -862,6 +870,7 @@ def search_hotels(
         hotels = all_hotels
 
     def score(hotel: dict[str, Any]) -> int:
+        # 根据区域匹配度、预算和偏好给酒店排序打分
         value = 0
         area = str(hotel.get("area", ""))
         tags = [str(x) for x in hotel.get("tags", [])]

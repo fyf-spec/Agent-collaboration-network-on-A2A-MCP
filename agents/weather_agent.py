@@ -27,6 +27,7 @@ class WeatherAgent(BaseAgent):
     mcp_server_key = "weather"
 
     def build_mcp_params(self, task_payload: dict[str, Any]) -> dict[str, Any]:
+        # 构建天气 MCP 调用参数（城市、日期、天数）
         travel_task = _extract_travel_task(task_payload)
         city = str(
             travel_task.get("destination_city")
@@ -110,6 +111,7 @@ class WeatherAgent(BaseAgent):
         mcp_result: dict[str, Any],
         llm_error: str,
     ) -> str:
+        # 构建 LLM 调用失败时的天气降级回答
         constraints = _rule_weather_constraints(
             _safe_int(_extract_travel_task(task_payload).get("days"), default=3),
             mcp_result,
@@ -129,6 +131,7 @@ def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fallback_clothing_advice(temp: str) -> str:
+    # 根据温度给出基础穿衣建议
     if any(x in temp for x in ["24", "25", "26", "27", "28", "29", "30"]):
         return "轻薄衣物，备雨具或防晒"
     if any(x in temp for x in ["10", "11", "12", "13", "14", "15", "16", "17", "18"]):
@@ -137,6 +140,7 @@ def _fallback_clothing_advice(temp: str) -> str:
 
 
 def _rule_weather_constraints(days: int, mcp_result: dict[str, Any]) -> dict[str, Any]:
+    # 根据天气数据推导活动约束（室内/室外建议）
     day_count = max(1, days)
     forecast_days = mcp_result.get("forecast_days")
     has_forecast = isinstance(forecast_days, list) and bool(forecast_days)
@@ -167,6 +171,7 @@ def _rule_weather_constraints(days: int, mcp_result: dict[str, Any]) -> dict[str
 
 
 def _constraints_from_forecast(day_count: int, forecast_days: list[Any]) -> list[dict[str, Any]]:
+    # 从多日天气预报提取每天的约束
     result: list[dict[str, Any]] = []
     for index in range(day_count):
         item = forecast_days[index] if index < len(forecast_days) and isinstance(forecast_days[index], dict) else {}
@@ -192,6 +197,7 @@ def _constraints_from_forecast(day_count: int, forecast_days: list[Any]) -> list
 
 
 def _constraints_from_single_weather(day_count: int, mcp_result: dict[str, Any]) -> list[dict[str, Any]]:
+    # 从单日天气数据推算多日约束
     condition = str(mcp_result.get("condition") or "")
     indoor = _is_bad_outdoor_weather(condition)
     result = [
@@ -218,11 +224,13 @@ def _constraints_from_single_weather(day_count: int, mcp_result: dict[str, Any])
 
 
 def _is_bad_outdoor_weather(condition: str) -> bool:
+    # 判断天气是否不适合户外活动
     bad_keywords = ("雨", "雪", "雷", "暴", "霾", "沙尘", "台风")
     return any(word in condition for word in bad_keywords)
 
 
 def _safe_int(value: Any, *, default: int) -> int:
+    # 安全地将值转为 int，失败时返回默认值
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -230,11 +238,12 @@ def _safe_int(value: Any, *, default: int) -> int:
 
 
 def _normalize_date_label(value: str) -> str:
+    # 标准化日期格式
     return iso_date_or_empty(value)
 
 
 def _short_weather_summary(mcp_result: dict[str, Any], constraints: dict[str, Any]) -> str:
-    city = mcp_result.get("city", "目的地")
+    # 生成简短的天气总结文本
     date = mcp_result.get("date", "目标日期")
     condition = mcp_result.get("condition", "未知天气")
     temp = mcp_result.get("temp", "未知温度")
@@ -244,7 +253,7 @@ def _short_weather_summary(mcp_result: dict[str, Any], constraints: dict[str, An
 
 
 def main() -> None:
-    default_host = AGENTS["weather_agent"]["host"]
+    # 启动天气 Agent
     default_port = AGENTS["weather_agent"]["port"]
 
     parser = argparse.ArgumentParser(description="Run Weather Agent.")

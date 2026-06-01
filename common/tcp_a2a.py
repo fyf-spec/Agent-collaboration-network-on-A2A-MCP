@@ -50,10 +50,12 @@ class TcpA2AResponse:
 
 
 def tcp_url(host: str, port: int) -> str:
+    # 生成 tcp://host:port 格式的 URL
     return f"tcp://{host}:{port}"
 
 
 def parse_tcp_url(value: str) -> tuple[str, int]:
+    # 解析 tcp:// 格式 URL 为 (host, port) 元组
     parsed = urlparse(value)
     if parsed.scheme != "tcp" or not parsed.hostname or not parsed.port:
         raise TcpA2AError(f"invalid tcp url: {value}")
@@ -72,6 +74,7 @@ def build_envelope(
     parent_span_id: str | None = None,
     deadline_ms: int | None = None,
 ) -> dict[str, Any]:
+    # 构建 A2A TCP 协议信封（含版本、追踪、负载等字段）
     return {
         "version": A2A_TCP_VERSION,
         "type": message_type,
@@ -95,6 +98,7 @@ def build_error_envelope(
     trace_id: str | None = None,
     parent_span_id: str | None = None,
 ) -> dict[str, Any]:
+    # 构建 A2A TCP 错误信封
     return build_envelope(
         message_type=TYPE_ERROR,
         source=source,
@@ -107,6 +111,7 @@ def build_error_envelope(
 
 
 def validate_envelope(frame: dict[str, Any], *, expected_type: str | None = None) -> None:
+    # 校验 A2A TCP 信封的必需字段和版本号
     required = [
         "version",
         "type",
@@ -129,6 +134,7 @@ def validate_envelope(frame: dict[str, Any], *, expected_type: str | None = None
 
 
 def send_frame(sock: socket.socket, payload: dict[str, Any]) -> int:
+    # 发送长度前缀的 JSON 帧到 TCP 套接字
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     length = len(body)
     if length <= 0:
@@ -140,6 +146,7 @@ def send_frame(sock: socket.socket, payload: dict[str, Any]) -> int:
 
 
 def recv_frame(sock: socket.socket) -> TcpA2AFrame:
+    # 从 TCP 套接字接收并解析一帧长度前缀的 JSON 数据
     header = recv_exact(sock, FRAME_HEADER_BYTES)
     length = struct.unpack("!I", header)[0]
     if length <= 0:
@@ -159,6 +166,7 @@ def recv_frame(sock: socket.socket) -> TcpA2AFrame:
 
 
 def recv_exact(sock: socket.socket, size: int) -> bytes:
+    # 从 TCP 套接字精确读取指定字节数，处理超时与连接关闭
     chunks: list[bytes] = []
     remaining = size
     while remaining:
@@ -183,6 +191,7 @@ def request_frame(
     payload: dict[str, Any],
     timeout: float,
 ) -> TcpA2AResponse:
+    # 发起完整的 TCP A2A 请求-响应交互，返回响应帧
     url = tcp_url(host, port)
     started = time.perf_counter()
     try:

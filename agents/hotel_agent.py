@@ -169,6 +169,7 @@ class HotelAgent(BaseAgent):
         area_selection: dict[str, Any],
         centroid: str | None = None,
     ) -> dict[str, Any]:
+        # 调用酒店 MCP 搜索指定区域的酒店
         server = MCP_SERVERS[self.mcp_server_key]
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
@@ -245,6 +246,7 @@ class HotelAgent(BaseAgent):
         daily_plan: dict[str, Any],
         area_options: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        # 调用酒店 MCP 获取多个区域的候选酒店
         selected_areas = [str(item.get("area")) for item in area_options[:3] if item.get("area")]
         if not selected_areas:
             selected_areas = ["市中心地铁沿线"]
@@ -283,13 +285,16 @@ class HotelAgent(BaseAgent):
         }
 
     def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        # 构造提示词（此 Agent 使用 process_task 重写）
         return "HotelAgent uses process_task override for structured area and hotel selection."
 
     def build_fallback_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any], llm_error: str) -> str:
+        # 构建 LLM 调用失败时的酒店降级回答
         return "酒店 Agent 已获得候选酒店数据，并使用规则 fallback 完成住宿选择。"
 
 
 def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
+    # 从上下文中提取出行任务
     if isinstance(context.get("travel_task"), dict):
         return dict(context["travel_task"])
     inputs = context.get("inputs") or {}
@@ -302,6 +307,7 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
+    # 从上游结果中提取每日景点计划
     upstream = inputs.get("upstream_results", {})
     attr_res = upstream.get("attraction_agent", {}).get("structured", {})
     return attr_res.get("daily_plan") or attr_res.get("daily_plan_skeleton") or {}
@@ -334,7 +340,7 @@ def _attraction_centroid(daily_plan: dict[str, Any]) -> str | None:
 
 
 def _build_area_options(daily_plan: dict[str, Any]) -> list[dict[str, Any]]:
-    area_info: dict[str, dict[str, Any]] = {}
+    # 根据每日景点计划构建候选区域选项
     for day_key, day in daily_plan.items():
         if not isinstance(day, dict):
             continue
@@ -383,6 +389,7 @@ def _build_area_options(daily_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _area_options_to_legacy_candidates(area_options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 将区域选项转为旧版候选格式
     return [
         {
             "area": option.get("area"),
@@ -421,10 +428,12 @@ def _build_hotel_options_for_llm(hotel_candidates: dict[str, Any]) -> list[dict[
 
 
 def _rank_hotel_candidates(hotels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # 按质量排序候选酒店
     return sorted(hotels, key=_hotel_quality_key)
 
 
 def _hotel_quality_key(hotel: dict[str, Any]) -> tuple[int, int, int, int, int, str]:
+    # 计算酒店质量排序权重
     name = str(hotel.get("name") or "")
     hotel_type = str(hotel.get("type") or "")
     price = _safe_int(hotel.get("price_per_night"), default=9999)
@@ -480,6 +489,7 @@ def _hotel_selector_prompt(
     upstream_results: dict[str, Any],
     hotel_options: list[dict[str, Any]],
 ) -> str:
+    # 构造酒店选择 LLM 提示词
     budget_style = _hotel_style_rule(travel_task)
     raw_constraints = travel_task.get("raw_constraints") or ""
     payload = {
@@ -534,6 +544,7 @@ def _normalize_hotel_selection(
     hotel_options: list[dict[str, Any]],
     travel_task: dict[str, Any],
 ) -> tuple[dict[str, str], list[str]]:
+    # 规范化 LLM 酒店选择结果
     if not isinstance(value, dict):
         raise ValueError("hotel selection must be a JSON object")
 
@@ -561,7 +572,7 @@ def _fallback_hotel_selection(
     hotel_options: list[dict[str, Any]],
     travel_task: dict[str, Any],
 ) -> dict[str, str]:
-    hotel_id = _fallback_hotel_id(hotel_options, area_options=area_options, travel_task=travel_task)
+    # 基于规则的酒店选择降级方案
     hotel = _find_hotel_option(hotel_options, hotel_id)
     area_id = _find_area_id_by_name(area_options, str(hotel.get("area") if hotel else "")) or _fallback_area_id(area_options)
     return {"recommended_area_id": area_id, "selected_hotel_id": hotel_id}
@@ -575,7 +586,7 @@ def _expand_hotel_plan(
     travel_task: dict[str, Any],
     llm_reason: str,
 ) -> dict[str, Any]:
-    area = _find_area_option(area_options, selection.get("recommended_area_id")) or (area_options[0] if area_options else {})
+    # 将选择结果扩展为完整住宿计划
     hotel = _find_hotel_option(hotel_options, selection.get("selected_hotel_id")) or (hotel_options[0] if hotel_options else {})
     selected_hotel = {
         "hotel_id": hotel.get("provider_hotel_id") or hotel.get("hotel_id"),
@@ -603,6 +614,7 @@ def _fallback_hotel_id(
     area_options: list[dict[str, Any]],
     travel_task: dict[str, Any],
 ) -> str:
+    # 基于规则选择降级酒店
     if not hotel_options:
         return ""
     top_area = str((area_options[0] if area_options else {}).get("area") or "")
@@ -622,11 +634,12 @@ def _fallback_hotel_id(
 
 
 def _fallback_area_id(area_options: list[dict[str, Any]]) -> str:
+    # 基于规则选择降级区域
     return str((area_options[0] if area_options else {}).get("area_id") or "")
 
 
 def _hotel_reason_from_facts(selected_hotel: dict[str, Any]) -> str:
-    parts: list[str] = []
+    # 根据酒店事实信息生成推荐理由
     price = selected_hotel.get("price_per_night")
     subway = selected_hotel.get("nearest_subway")
     hotel_type = str(selected_hotel.get("type") or "")
@@ -642,7 +655,7 @@ def _hotel_reason_from_facts(selected_hotel: dict[str, Any]) -> str:
 
 
 def _hotel_style_rule(travel_task: dict[str, Any]) -> str:
-    general = _constraint_section(travel_task, "general")
+    # 根据预算和偏好确定酒店选择策略
     traffic = _constraint_section(travel_task, "traffic")
     budget_level = str(general.get("budget_level") or travel_task.get("budget_level") or "normal")
     travel_style = str(general.get("travel_style") or "")
@@ -657,6 +670,7 @@ def _hotel_style_rule(travel_task: dict[str, Any]) -> str:
 
 
 def _find_area_id_by_name(area_options: list[dict[str, Any]], area_name: str) -> str:
+    # 根据区域名称查找区域 ID
     for option in area_options:
         area = str(option.get("area") or "")
         if area_name and (area_name == area or area_name in area or area in area_name):
@@ -665,6 +679,7 @@ def _find_area_id_by_name(area_options: list[dict[str, Any]], area_name: str) ->
 
 
 def _find_area_option(area_options: list[dict[str, Any]], area_id: str | None) -> dict[str, Any] | None:
+    # 根据区域 ID 查找区域选项
     for option in area_options:
         if option.get("area_id") == area_id:
             return option
@@ -672,6 +687,7 @@ def _find_area_option(area_options: list[dict[str, Any]], area_id: str | None) -
 
 
 def _find_hotel_option(hotel_options: list[dict[str, Any]], hotel_id: str | None) -> dict[str, Any] | None:
+    # 根据酒店 ID 查找酒店选项
     for option in hotel_options:
         if option.get("hotel_id") == hotel_id:
             return option
@@ -681,10 +697,12 @@ def _find_hotel_option(hotel_options: list[dict[str, Any]], hotel_id: str | None
 
 
 def _truncate_text(value: Any, limit: int) -> str:
+    # 截断文本到指定长度
     return str(value or "").strip()[:limit]
 
 
 def _split_area_phrase(raw_area: str) -> list[str]:
+    # 拆分区域短语（如"天河及海珠"）
     text = raw_area.replace("和", "及").replace("、", "及").replace("/", "及")
     parts = [part.strip() for part in text.split("及") if part.strip()]
     result = [raw_area]
@@ -698,6 +716,7 @@ def _split_area_phrase(raw_area: str) -> list[str]:
 
 
 def _normalize_area_selection(value: Any, area_candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    # 规范化区域选择结果
     if not isinstance(value, dict):
         return _fallback_area_selection(area_candidates)
     candidate_names = [str(item.get("area")) for item in area_candidates if item.get("area")]
@@ -722,6 +741,7 @@ def _normalize_area_selection(value: Any, area_candidates: list[dict[str, Any]])
 
 
 def _fallback_area_selection(area_candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    # 基于规则的区域选择降级方案
     if area_candidates:
         area = str(area_candidates[0].get("area") or "市中心地铁沿线")
         days = area_candidates[0].get("days") or []
@@ -739,6 +759,7 @@ def _fallback_area_selection(area_candidates: list[dict[str, Any]]) -> dict[str,
 
 
 def _estimate_total_cost(selected_hotel: dict[str, Any], travel_task: dict[str, Any]) -> str:
+    # 估算住宿总费用
     days = _safe_int(travel_task.get("days"), default=3)
     nights = max(1, days - 1)
     price = selected_hotel.get("price_per_night")
@@ -749,6 +770,7 @@ def _estimate_total_cost(selected_hotel: dict[str, Any], travel_task: dict[str, 
 
 
 def _as_str_list(value: Any, default: list[str]) -> list[str]:
+    # 将值转为字符串列表，空则返回默认值
     if not isinstance(value, list):
         return list(default)
     result = [str(item) for item in value if str(item).strip()]
@@ -756,6 +778,7 @@ def _as_str_list(value: Any, default: list[str]) -> list[str]:
 
 
 def _safe_int(value: Any, default: int) -> int:
+    # 安全地将值转为 int，失败时返回默认值
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -763,6 +786,7 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _short_hotel_summary(structured_result: dict[str, Any]) -> str:
+    # 生成简短的酒店推荐总结文本
     plan = structured_result.get("hotel_plan", {}) if isinstance(structured_result, dict) else {}
     selected = plan.get("selected_hotel", {}) if isinstance(plan, dict) else {}
     return (
@@ -772,6 +796,7 @@ def _short_hotel_summary(structured_result: dict[str, Any]) -> str:
 
 
 def main() -> None:
+    # 启动酒店 Agent
     default_host = AGENTS["hotel_agent"]["host"]
     default_port = AGENTS["hotel_agent"]["port"]
 
