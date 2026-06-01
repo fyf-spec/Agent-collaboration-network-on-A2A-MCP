@@ -191,28 +191,43 @@ class AMapClient:
 
         url = f"{self.base_url}{path}?{parse.urlencode(clean_params)}"
         request_timeout = float(timeout if timeout is not None else self.timeout)
-        try:
-            with request.urlopen(url, timeout=request_timeout) as response:
-                raw_body = response.read().decode("utf-8")
-        except TimeoutError as exc:
-            raise ProviderTimeoutError(f"AMap request timed out after {request_timeout}s") from exc
-        except error.URLError as exc:
-            reason = getattr(exc, "reason", exc)
-            if isinstance(reason, TimeoutError):
+
+        # 限流重试：最多3次，指数退避
+        import time as time_module
+        for attempt in range(3):
+            try:
+                with request.urlopen(url, timeout=request_timeout) as response:
+                    raw_body = response.read().decode("utf-8")
+            except TimeoutError as exc:
                 raise ProviderTimeoutError(f"AMap request timed out after {request_timeout}s") from exc
-            raise ProviderBadResponseError(f"AMap request failed: {type(reason).__name__}") from exc
+            except error.URLError as exc:
+                reason = getattr(exc, "reason", exc)
+                if isinstance(reason, TimeoutError):
+                    raise ProviderTimeoutError(f"AMap request timed out after {request_timeout}s") from exc
+                if attempt < 2:
+                    time_module.sleep(0.5 * (attempt + 1))
+                    continue
+                raise ProviderBadResponseError(f"AMap request failed: {type(reason).__name__}") from exc
 
-        try:
-            data = json.loads(raw_body)
-        except json.JSONDecodeError as exc:
-            raise ProviderBadResponseError("AMap response is not valid JSON") from exc
-        if not isinstance(data, dict):
-            raise ProviderBadResponseError("AMap response body must be an object")
-        if data.get("status") != "1":
-            info = data.get("info") or data.get("infocode") or "unknown provider error"
-            raise ProviderBadResponseError(f"AMap returned status {data.get('status')}: {info}")
+            try:
+                data = json.loads(raw_body)
+            except json.JSONDecodeError as exc:
+                raise ProviderBadResponseError("AMap response is not valid JSON") from exc
+            if not isinstance(data, dict):
+                raise ProviderBadResponseError("AMap response body must be an object")
+            if data.get("status") != "1":
+                info = str(data.get("info") or data.get("infocode") or "")
+                # 限流错误 → 等待后重试
+                if "EXCEEDED" in info.upper() or "LIMIT" in info.upper():
+                    if attempt < 2:
+                        wait = (attempt + 1) * 1.0
+                        time_module.sleep(wait)
+                        continue
+                raise ProviderBadResponseError(f"AMap returned status {data.get('status')}: {info}")
 
-        return data
+            return data
+
+        raise ProviderBadResponseError("AMap request failed after retries")
 
 
 def _looks_number(value: str) -> bool:

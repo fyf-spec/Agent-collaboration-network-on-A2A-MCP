@@ -65,7 +65,16 @@ MCP_GATEWAY = {
     "port": 8100,
     "path": "/",
     "enabled": True,
-    "cache_ttl_seconds": 10.0,
+    "cache_ttl_seconds": 300.0,  # 默认TTL，被 per_method_ttl 覆盖
+    "per_method_ttl_seconds": {
+        # 天气数据每天变化，短TTL；其他数据稳定，长TTL
+        "get_weather": 86400.0,       # 1天
+        "get_packing_list": 86400.0,  # 依赖天气，同样1天
+        "get_routes": 2592000.0,     # 30天
+        "search_hotels": 2592000.0,  # 30天
+        "search_attractions": 2592000.0,  # 30天
+        "get_intercity_transport": 2592000.0,  # 30天
+    },
     "max_concurrent_per_method": 3,
     "rate_limit_wait_seconds": 0.2,
     "coalesce_wait_seconds": 5.0,

@@ -60,11 +60,11 @@ class TTLCache:
                 return None
             return dict(item.result)
 
-    def set(self, key: str, result: dict[str, Any]) -> None:
+    def set(self, key: str, result: dict[str, Any], ttl: float | None = None) -> None:
         with self._lock:
             self._items[key] = CacheEntry(
                 result=dict(result),
-                expires_at=time.monotonic() + self.ttl_seconds,
+                expires_at=time.monotonic() + (ttl if ttl is not None else self.ttl_seconds),
             )
 
     def size(self) -> int:
@@ -232,6 +232,10 @@ class MCPGatewayState:
             for method in server.get("extra_methods", []):
                 self.routes[str(method)] = server_key
         self.cache = TTLCache(float(MCP_GATEWAY["cache_ttl_seconds"]))
+        self._method_ttl: dict[str, float] = {
+            str(method): float(ttl)
+            for method, ttl in MCP_GATEWAY.get("per_method_ttl_seconds", {}).items()
+        }
         self.metrics = GatewayMetrics()
         self.rate_limiter = RateLimiter(
             list(self.routes),
@@ -341,7 +345,7 @@ class MCPGatewayState:
         try:
             result, rpc_error = self._call_upstream(method, payload)
             if result is not None:
-                self.cache.set(cache_key, result)
+                self.cache.set(cache_key, result, ttl=self._method_ttl.get(method))
                 inflight.result = result
                 response = _json_rpc_result(request_id, result)
             else:
@@ -642,7 +646,9 @@ def _server_url(server: dict[str, Any]) -> str:
 
 
 def _cache_key(method: str, params: dict[str, Any]) -> str:
-    return method + ":" + json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # 排除 id、task_id 等唯一标识符，只保留业务参数做缓存 key
+    semantic = {k: v for k, v in params.items() if k not in ("id", "task_id", "instruction", "daily_plan", "upstream_results", "area_selection")}
+    return method + ":" + json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _elapsed_ms(started: float) -> float:

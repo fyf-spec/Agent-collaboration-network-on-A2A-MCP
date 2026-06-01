@@ -27,6 +27,7 @@ def search_hotels(
     preferences: list[str] | None = None,
     area_selection: dict[str, object] | None = None,
     requested_fields: list[str] | None = None,
+    centroid: str | None = None,
     **kwargs: object,
 ) -> dict[str, object]:
     if not A2A_REALTIME_MCP_ENABLED:
@@ -47,9 +48,9 @@ def search_hotels(
         )
     try:
         amap = AMapClient()
-        # 把 target_area 转成坐标，用于周边搜索
-        center: str | None = None
-        if target_area:
+        # 优先用景点重心坐标，其次 geocode target_area
+        center: str | None = centroid
+        if not center and target_area:
             try:
                 center = amap.geocode_city_or_address(f"{city}{target_area}")
             except Exception:

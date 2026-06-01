@@ -2440,10 +2440,10 @@ def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response
         if isinstance(payload, dict) and payload.get("status") == RESULT_SUCCESS:
             successful.append(f"- {label}: {_short_agent_result(source, payload)}")
         elif isinstance(payload, dict):
-            failed.append(f"- {label}: {_short_error(payload.get('error') or '执行失败')}")
+            failed.append(f"- {label}: {_user_friendly_error(payload.get('error') or '执行失败')}")
 
     for source, err in dispatch_errors.items():
-        failed.append(f"- {_agent_display_name(source)}: {_short_error(err)}")
+        failed.append(f"- {_agent_display_name(source)}: {_user_friendly_error(err)}")
 
     for source in pending_targets:
         failed.append(f"- {_agent_display_name(str(source))}: 未返回结果")
@@ -2509,6 +2509,29 @@ def _minimal_partial_answer(successful: list[str], failed: list[str]) -> str:
     if failed:
         return "可以先参考上方已获取的信息做初步判断；缺失模块恢复前，不应给出完整行程、住宿、交通或行李清单。"
     return "已获取的信息可作为临时参考，但该任务未标记为完整完成，建议恢复节点后重新生成正式方案。"
+
+
+def _user_friendly_error(raw: Any) -> str:
+    """把内部错误信息转成用户可读的简短提示"""
+    text = str(raw or "").strip()
+    if not text:
+        return "暂时无法获取数据，请稍后重试"
+    # MCP 超时
+    if "timed out" in text.lower():
+        return "数据服务响应超时，请稍后重试"
+    # MCP 上游错误
+    if "upstream" in text.lower() or "-32003" in text:
+        return "数据服务暂时不可用"
+    # 调度超时
+    if "callback timed out" in text.lower():
+        return "处理超时，该模块未能及时返回结果"
+    # TCP 错误
+    if "tcp" in text.lower() or "connection" in text.lower():
+        return "服务连接异常"
+    # 兜底：截短
+    if len(text) > 40:
+        return text[:40] + "…"
+    return text
 
 
 def _short_error(value: Any, max_chars: int = 90) -> str:

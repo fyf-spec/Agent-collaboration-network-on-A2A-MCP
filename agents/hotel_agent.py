@@ -167,35 +167,28 @@ class HotelAgent(BaseAgent):
         daily_plan: dict[str, Any],
         selected_area: str,
         area_selection: dict[str, Any],
+        centroid: str | None = None,
     ) -> dict[str, Any]:
         server = MCP_SERVERS[self.mcp_server_key]
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
-        rpc_payload = {
-            "jsonrpc": "2.0",
-            "id": task_id,
-            "method": "search_hotels",
-            "params": {
-                "city": city,
-                "days": travel_task.get("days", 3),
-                "budget_level": _constraint_section(travel_task, "general").get("budget_level", travel_task.get("budget_level", "normal")),
-                "preferences": _constraint_section(travel_task, "hotel").get("preferred_features", []),
-                "target_area": selected_area,
-                "preferred_areas": [selected_area],
-                "area_selection": area_selection,
-                "daily_plan": daily_plan,
-                "requested_fields": [
-                    "name",
-                    "area",
-                    "price_per_night",
-                    "type",
-                    "nearest_subway",
-                    "tags",
-                    "pros",
-                    "cons",
-                ],
-            },
+        params: dict[str, Any] = {
+            "city": city,
+            "days": travel_task.get("days", 3),
+            "budget_level": _constraint_section(travel_task, "general").get("budget_level", travel_task.get("budget_level", "normal")),
+            "preferences": _constraint_section(travel_task, "hotel").get("preferred_features", []),
+            "target_area": selected_area,
+            "preferred_areas": [selected_area],
+            "area_selection": area_selection,
+            "daily_plan": daily_plan,
+            "requested_fields": [
+                "name", "area", "price_per_night", "type",
+                "nearest_subway", "tags", "pros", "cons",
+            ],
         }
+        if centroid:
+            params["centroid"] = centroid
+        rpc_payload = {"jsonrpc": "2.0", "id": task_id, "method": "search_hotels", "params": params}
         log_network_event(
             event="agent_call_mcp",
             direction="outbound",
@@ -256,6 +249,7 @@ class HotelAgent(BaseAgent):
         if not selected_areas:
             selected_areas = ["市中心地铁沿线"]
 
+        centroid = _attraction_centroid(daily_plan)
         merged_hotels: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         raw_results: list[dict[str, Any]] = []
@@ -268,6 +262,7 @@ class HotelAgent(BaseAgent):
                 daily_plan=daily_plan,
                 selected_area=area,
                 area_selection=area_selection,
+                centroid=centroid,
             )
             raw_results.append(result)
             for hotel in result.get("hotels", []) if isinstance(result, dict) else []:
@@ -310,6 +305,31 @@ def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
     upstream = inputs.get("upstream_results", {})
     attr_res = upstream.get("attraction_agent", {}).get("structured", {})
     return attr_res.get("daily_plan") or attr_res.get("daily_plan_skeleton") or {}
+
+
+def _attraction_centroid(daily_plan: dict[str, Any]) -> str | None:
+    """从每日景点的 spot_details 中提取坐标并计算重心"""
+    lats: list[float] = []
+    lngs: list[float] = []
+    for day in daily_plan.values():
+        if not isinstance(day, dict):
+            continue
+        for sd in day.get("spot_details", []) or []:
+            if not isinstance(sd, dict):
+                continue
+            loc = str(sd.get("location") or "").strip()
+            if "," in loc:
+                try:
+                    lng, lat = loc.split(",", 1)
+                    lngs.append(float(lng))
+                    lats.append(float(lat))
+                except (ValueError, TypeError):
+                    pass
+    if len(lats) >= 2:
+        return f"{sum(lngs)/len(lngs):.6f},{sum(lats)/len(lats):.6f}"
+    if lats:
+        return f"{lngs[0]:.6f},{lats[0]:.6f}"
+    return None
 
 
 
