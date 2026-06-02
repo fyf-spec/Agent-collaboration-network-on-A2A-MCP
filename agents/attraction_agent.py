@@ -53,12 +53,10 @@ class AttractionAgent(BaseAgent):
     mcp_server_key = MCP_SERVER_KEY
 
     def process_task(self, task_payload: dict[str, Any]) -> None:
-        # 处理景点推荐任务
         result_payload = handle_task(task_payload, callback=False)
         self.send_result_to_coordinator(task_payload, result_payload)
 
     def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
-        # 构造提示词（此 Agent 使用 process_task 重写）
         return "AttractionAgent uses process_task override for structured attraction planning."
 
 
@@ -66,13 +64,11 @@ class AttractionAgentServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, server_address: tuple[str, int]) -> None:
-        # 初始化景点 Agent HTTP 服务器
         super().__init__(server_address, AttractionAgentHandler)
 
 
 class AttractionAgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        # 处理 GET 健康检查请求
         if self.path == "/health":
             self._send_json(
                 HTTPStatus.OK,
@@ -88,7 +84,6 @@ class AttractionAgentHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
 
     def do_POST(self) -> None:
-        # 处理 POST 任务请求
         if self.path != "/execute_task":
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
             return
@@ -143,11 +138,9 @@ class AttractionAgentHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
 
     def log_message(self, format: str, *args: Any) -> None:
-        # 禁止默认日志输出
         return
 
     def _read_json(self) -> dict[str, Any]:
-        # 读取并解析 JSON 请求体
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
         payload = json.loads(raw_body or "{}")
@@ -156,7 +149,6 @@ class AttractionAgentHandler(BaseHTTPRequestHandler):
         return payload
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-        # 发送 JSON 响应
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -166,7 +158,6 @@ class AttractionAgentHandler(BaseHTTPRequestHandler):
 
 
 def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[str, Any]:
-    # 处理景点推荐任务（核心入口）
     started = time.perf_counter()
     task_id = str(task_payload["task_id"])
     instruction = str(task_payload.get("instruction", ""))
@@ -177,7 +168,7 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
 
     try:
         travel_task = _extract_travel_task(instruction, context)
-        # TODO. 整个代码还是强依赖weather_constraints，先不改动
+        # 天气约束影响景点推荐（雨天优先室内）
         inputs = context.get("inputs", {})
         weather_constraints = _extract_weather_constraints(inputs)
         upstream_results = inputs.get("upstream_results", {})
@@ -314,7 +305,6 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
 
 
 def _callback_result(task_id: str, reply_to: str, result_payload: dict[str, Any]) -> None:
-    # 将结果通过 HTTP 回调发送给协调器
     callback_started = time.perf_counter()
     log_network_event(
         event="agent_callback_result",
@@ -358,7 +348,6 @@ def _callback_result(task_id: str, reply_to: str, result_payload: dict[str, Any]
 
 
 def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, Any]:
-    # 调用景点 MCP 获取景点数据
     config = MCP_SERVERS[MCP_SERVER_KEY]
     url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
     network_target = str(MCP_GATEWAY["name"])
@@ -426,7 +415,6 @@ def _attraction_selection_prompt(
     grouped_spots: list[dict[str, Any]],
     spot_relations: list[dict[str, Any]],
 ) -> str:
-    # 构造景点选择 LLM 提示词
     must_visit_ids = _must_visit_spot_ids(grouped_spots, _attraction_must_visit(travel_task))
     payload = {
         "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
@@ -491,7 +479,7 @@ def build_compact_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _quality_filter_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # 过滤并排序景点，保留优质景点
+    candidates = [spot for spot in spots if isinstance(spot, dict) and not _is_bad_attraction_poi(spot)]
     candidates.sort(key=_attraction_quality_key)
     selected: list[dict[str, Any]] = []
     for spot in candidates:
@@ -505,7 +493,7 @@ def _quality_filter_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _is_bad_attraction_poi(spot: dict[str, Any]) -> bool:
-    # 判断是否为低质量 POI（如停车场、售票处等）
+    name = str(spot.get("name") or "")
     poi_type = str(spot.get("type") or "")
     tags = " ".join(str(item) for item in spot.get("tags", []) if item) if isinstance(spot.get("tags"), list) else ""
     text = f"{name} {poi_type} {tags}"
@@ -546,6 +534,9 @@ def _is_bad_attraction_poi(spot: dict[str, Any]) -> bool:
         "越秀",
         "广州塔",
         "北京路",
+        "大学",
+        "高等院校",
+        "学校",
     ]
     has_local_facts = any(spot.get(field) not in (None, "", "待确认") for field in ["ticket", "duration", "nearest_subway"])
     if not has_local_facts and not any(word in text for word in representative_words):
@@ -554,7 +545,7 @@ def _is_bad_attraction_poi(spot: dict[str, Any]) -> bool:
 
 
 def _attraction_quality_key(spot: dict[str, Any]) -> tuple[int, int, int, str]:
-    # 计算景点排序权重
+    name = str(spot.get("name") or "")
     tags = [str(item) for item in spot.get("tags", [])] if isinstance(spot.get("tags"), list) else []
     penalty = 0
     if any(word in name for word in ["-", "门", "广场内部点位", "站", "码头"]):
@@ -569,7 +560,6 @@ def _attraction_quality_key(spot: dict[str, Any]) -> tuple[int, int, int, str]:
 
 
 def _is_parent_child_duplicate(left: str, right: str) -> bool:
-    # 判断两个景点名称是否构成父子级重复
     if not left or not right or left == right:
         return left == right
     left_base = left.split("-")[0]
@@ -580,7 +570,7 @@ def _is_parent_child_duplicate(left: str, right: str) -> bool:
 
 
 def build_grouped_spots(compact_spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # 将景点按区域分组
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for spot in compact_spots:
         groups[str(spot.get("area") or "未知区域")].append(spot)
     result: list[dict[str, Any]] = []
@@ -598,7 +588,7 @@ def build_grouped_spots(compact_spots: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def build_spot_relations(grouped_spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # 构建景点间关系（同区域近距离 / 跨区域远距离）
+    relations: list[dict[str, Any]] = []
     for group in grouped_spots:
         spot_ids = [str(spot_id) for spot_id in group.get("spot_ids", []) if str(spot_id).strip()]
         for index, source_id in enumerate(spot_ids):
@@ -630,7 +620,6 @@ def build_spot_relations(grouped_spots: list[dict[str, Any]]) -> list[dict[str, 
 
 
 def _weather_summary(weather_constraints: dict[str, Any]) -> str:
-    # 生成天气约束的简短描述（中文版）
     if not isinstance(weather_constraints, dict) or not weather_constraints:
         return "天气约束未知，按常规户外安排"
     risk = str(weather_constraints.get("risk_level") or "unknown")
@@ -652,7 +641,6 @@ def _as_short_list(value: Any) -> list[str]:
 
 
 def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, Any]:
-    # 从 task 中提取约束信息（景点/预算/通用）
     constraints = travel_task.get("constraints")
     if isinstance(constraints, dict) and isinstance(constraints.get(section), dict):
         return dict(constraints[section])
@@ -683,7 +671,7 @@ def _must_visit_spot_ids(grouped_spots: list[dict[str, Any]], must_names: list[s
         if not isinstance(spot, dict):
             continue
         spot_name = str(spot.get("name") or "").lower()
-        if any(mn in spot_name for mn in names_lower):
+        if any(_must_visit_match(spot_name, mn) for mn in names_lower):
             sid = str(spot.get("id") or "")
             if sid:
                 ids.append(sid)
@@ -702,7 +690,6 @@ def _attraction_must_visit(travel_task: dict[str, Any]) -> list[str]:
 
 
 def _weather_summary(weather_constraints: dict[str, Any]) -> str:
-    # 生成天气约束的简短描述（英文版）
     if not isinstance(weather_constraints, dict) or not weather_constraints:
         return "weather unknown; plan outdoor normally"
     rainy_days = _as_short_list(weather_constraints.get("rainy_days"))
@@ -715,7 +702,7 @@ def _weather_summary(weather_constraints: dict[str, Any]) -> str:
 
 
 def _truncate_text(value: Any, limit: int) -> str:
-    # 截断文本到指定长度
+    text = str(value or "").strip()
     return text[:limit]
 
 
@@ -727,7 +714,6 @@ def normalize_daily_spot_ids(
     must_visit: list[str],
     weather_constraints: dict[str, Any],
 ) -> dict[str, list[str]]:
-    # 规范化 LLM 返回的每日景点 ID 选择结果
     if not isinstance(value, dict):
         raise ValueError("daily_spot_ids must be a JSON object")
     known_ids = {str(spot.get("id")) for spot in compact_spots if spot.get("id")}
@@ -760,7 +746,6 @@ def build_rule_daily_spot_ids(
     must_visit: list[str],
     weather_constraints: dict[str, Any],
 ) -> dict[str, list[str]]:
-    # 基于规则构建每日景点 ID 分配
     ranked = sorted(
         compact_spots,
         key=lambda spot: (
@@ -816,7 +801,7 @@ def expand_daily_plan_skeleton(
     weather_constraints: dict[str, Any],
     travel_task: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    # 将每日景点 ID 扩展为完整行程骨架
+    spots_by_id = {str(spot.get("id")): spot for spot in compact_spots if spot.get("id")}
     rainy_days = {str(day) for day in weather_constraints.get("rainy_days", [])}
     indoor_days = {str(day) for day in weather_constraints.get("indoor_preferred_days", [])}
     daily_plan: dict[str, Any] = {}
@@ -833,7 +818,7 @@ def expand_daily_plan_skeleton(
 
 
 def _format_compact_day_plan(selected: list[dict[str, Any]], prefer_indoor: bool, travel_task: dict[str, Any]) -> dict[str, Any]:
-    # 格式化缩略版每日行程计划
+    names = [str(spot.get("name")) for spot in selected if spot.get("name")]
     areas = [str(spot.get("area")) for spot in selected if spot.get("area")]
     area = _dominant_area(areas)
     same_area = bool(area and areas and all(item == area for item in areas))
@@ -880,7 +865,6 @@ def _add_missing_must_visit(
     compact_spots: list[dict[str, Any]],
     must_visit: list[str],
 ) -> None:
-    # 将缺失的必游景点补入每日安排
     if not must_visit:
         return
     used = {spot_id for ids in daily_spot_ids.values() for spot_id in ids}
@@ -900,7 +884,7 @@ def _fill_empty_days(
     compact_spots: list[dict[str, Any]],
     weather_constraints: dict[str, Any],
 ) -> None:
-    # 为尚未分配景点的空闲天添加景点
+    used = {spot_id for ids in daily_spot_ids.values() for spot_id in ids}
     pool = [spot for spot in compact_spots if str(spot.get("id")) not in used]
     rainy_days = {str(day) for day in weather_constraints.get("rainy_days", [])}
     indoor_days = {str(day) for day in weather_constraints.get("indoor_preferred_days", [])}
@@ -919,7 +903,6 @@ def _fill_empty_days(
 
 
 def _pick_next_spot(pool: list[dict[str, Any]], *, prefer_indoor: bool) -> dict[str, Any] | None:
-    # 从候选池中选取下一个景点
     if prefer_indoor:
         for spot in pool:
             if spot.get("indoor_or_outdoor") in {"indoor", "mixed"}:
@@ -928,26 +911,37 @@ def _pick_next_spot(pool: list[dict[str, Any]], *, prefer_indoor: bool) -> dict[
 
 
 def _find_day_with_capacity(daily_spot_ids: dict[str, list[str]]) -> str | None:
-    # 查找还有空位的天
     for day_key, ids in daily_spot_ids.items():
         if len(ids) < 3:
             return day_key
     return None
 
 
+def _must_visit_match(spot_name: str, must_keyword: str) -> bool:
+    """判断景点名称是否匹配用户要求的 must_visit，支持模糊匹配"""
+    if must_keyword in spot_name or spot_name in must_keyword:
+        return True
+    # 去除常见后缀后匹配
+    clean = must_keyword
+    for suffix in ["基地", "景区", "博物馆", "公园", "遗址", "馆", "园", "寺", "风景区"]:
+        if clean.endswith(suffix) and len(clean) > len(suffix) + 2:
+            clean = clean[:-len(suffix)]
+            break
+    return len(clean) >= 3 and clean in spot_name
+
+
 def _matches_any_must_visit(spot: dict[str, Any], must_visit: list[str]) -> bool:
-    # 判断景点是否匹配必游列表中的任一名称
-    return any(item and (item in name or name in item) for item in must_visit)
+    name = str(spot.get("name") or "").lower()
+    return any(_must_visit_match(name, item.lower()) for item in must_visit if item)
 
 
 def _is_free_or_low_cost(spot: dict[str, Any]) -> bool:
-    # 判断景点是否免费或低预算
+    ticket = str(spot.get("ticket") or "")
     tags = [str(item) for item in spot.get("tags", [])] if isinstance(spot.get("tags"), list) else []
     return "免费" in ticket or "低价" in tags or "低预算" in tags
 
 
 def _dominant_area(areas: list[str]) -> str:
-    # 获取出现最多的区域名称
     if not areas:
         return ""
     counts: dict[str, int] = {}
@@ -957,7 +951,6 @@ def _dominant_area(areas: list[str]) -> str:
 
 
 def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str, Any]:
-    # 从指令和上下文中提取出行任务信息
     travel_task = dict(context.get("travel_task") or {})
     inputs = context.get("inputs") or {}
     if not travel_task and isinstance(inputs, dict):
@@ -987,7 +980,6 @@ def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str,
 
 # TODO.确认天气约束的来源
 def _extract_weather_constraints(inputs: dict[str, Any]) -> dict[str, Any]:
-    # 从上游结果中提取天气约束
     upstream = inputs.get("upstream_results", {})
     structured = upstream.get("weather_agent", {}).get("structured", {})
     if isinstance(structured, dict) and isinstance(structured.get("weather_constraints"), dict):
@@ -996,7 +988,6 @@ def _extract_weather_constraints(inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_origin_city(text: str) -> str | None:
-    # 从指令中提取出发城市
     for city in ["上海", "北京", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]:
         if f"从{city}" in text:
             return city
@@ -1004,7 +995,6 @@ def _extract_origin_city(text: str) -> str | None:
 
 
 def _extract_destination_city(text: str) -> str:
-    # 从指令中提取目的地城市
     for city in ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]:
         if f"去{city}" in text or f"到{city}" in text:
             return city
@@ -1015,7 +1005,6 @@ def _extract_destination_city(text: str) -> str:
 
 
 def _extract_days(text: str) -> int:
-    # 从指令中提取出行天数
     cn_digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
     match = re.search(r"(\d+)\s*天", text)
     if match:
@@ -1027,13 +1016,11 @@ def _extract_days(text: str) -> int:
 
 
 def _extract_must_visit(text: str) -> list[str]:
-    # 从指令中提取必游景点列表
     known_spots = ["天安门广场", "天安门", "故宫", "国家博物馆", "天坛", "颐和园", "圆明园", "什刹海", "南锣鼓巷"]
     return [spot for spot in known_spots if spot in text]
 
 
 def build_daily_plan_skeleton(*, spots: list[dict[str, Any]], days: int, weather_constraints: dict[str, Any]) -> dict[str, Any]:
-    # 构建每日景点计划骨架（旧版逻辑）
     if days <= 0:
         days = 3
     used: set[str] = set()
@@ -1073,7 +1060,6 @@ def build_daily_plan_skeleton(*, spots: list[dict[str, Any]], days: int, weather
 
 
 def _format_day_plan(day_key: str, selected: list[dict[str, Any]], prefer_indoor: bool) -> dict[str, Any]:
-    # 格式化每日行程（旧版）
     spots = [str(spot.get("name", "")) for spot in selected if spot.get("name")]
     areas = [str(spot.get("area", "")) for spot in selected if spot.get("area")]
     area = areas[0] if areas else "待定区域"
@@ -1098,12 +1084,12 @@ def _format_day_plan(day_key: str, selected: list[dict[str, Any]], prefer_indoor
 
 
 def estimate_ticket_cost(spots: list[dict[str, Any]]) -> str:
-    # 估算景点门票费用
-    return "；".join(values) if values else "待确认"
+    values = [f"{spot.get('name')}:{spot.get('ticket')}" for spot in spots if spot.get("ticket")]
+    return "；".join(values) if values else ""
 
 
 def estimate_visit_time(spots: list[dict[str, Any]]) -> str:
-    # 估算景点游玩时间
+    total_low = 0
     total_high = 0
     for spot in spots:
         duration = str(spot.get("duration", ""))
@@ -1119,24 +1105,23 @@ def estimate_visit_time(spots: list[dict[str, Any]]) -> str:
                 total_high += value
     if total_low and total_high:
         return f"{total_low}-{total_high}小时"
-    return "待确认"
+    return ""
 
 
 def estimate_visit_time_parts(spots: list[dict[str, Any]]) -> str:
-    # 分别列出各景点游玩时间
-    return " + ".join(values) if values else "待确认"
+    values = [str(spot.get("duration")) for spot in spots if spot.get("duration")]
+    return " + ".join(values) if values else ""
 
 
 def estimate_ticket_total(daily_plan_skeleton: dict[str, Any]) -> str:
-    # 汇总所有天数的门票费用
+    costs = []
     for day in daily_plan_skeleton.values():
         if isinstance(day, dict) and day.get("estimated_ticket_cost"):
             costs.append(str(day["estimated_ticket_cost"]))
-    return "；".join(costs) if costs else "待确认"
+    return "；".join(costs) if costs else ""
 
 
 def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
-    # 生成景点规划的简短总结文本
     city = travel_task.get("destination_city", "目的地")
     days = travel_task.get("days", len(daily_plan_skeleton))
     budget_level = travel_task.get("budget_level", "normal")
@@ -1145,7 +1130,6 @@ def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, An
 
 
 def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, Any]) -> str:
-    # 生成景点规划的简短总结文本（含旅行风格）
     city = travel_task.get("destination_city", "目的地")
     days = travel_task.get("days", len(daily_plan_skeleton))
     budget_level = travel_task.get("budget_level", "normal")
@@ -1161,7 +1145,6 @@ def build_summary(travel_task: dict[str, Any], daily_plan_skeleton: dict[str, An
 
 
 def _register_to_registry(host: str, port: int) -> None:
-    # 向注册中心注册景点 Agent
     try:
         registry_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
         payload = AGENTS.get(AGENT_NAME, {}).copy()
@@ -1180,22 +1163,6 @@ def _register_to_registry(host: str, port: int) -> None:
                 print(f"{AGENT_NAME} successfully registered to {registry_url}", flush=True)
     except Exception as exc:
         print(f"{AGENT_NAME} failed to register: {exc}", flush=True)
-
-
-def main() -> None:
-    # 启动景点 Agent
-    config = AGENTS[AGENT_NAME]
-    parser = argparse.ArgumentParser(description="Run Attraction Agent.")
-    parser.add_argument("--host", default=config["host"])
-    parser.add_argument("--port", type=int, default=int(config["port"]))
-    args = parser.parse_args()
-
-    agent = AttractionAgent(host=args.host, port=args.port)
-    agent.run()
-
-
-if __name__ == "__main__":
-    main()
 
 
 def main() -> None:

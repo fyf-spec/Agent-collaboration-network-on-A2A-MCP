@@ -211,10 +211,11 @@ class CoordinatorState:
         targets: list[str],
         timeout_seconds: float,
         plan: dict[str, Any] | None = None,
+        task_id: str | None = None,
     ) -> TaskRecord:
         # 创建新任务记录
         record = TaskRecord(
-            task_id=new_task_id(),
+            task_id=task_id or new_task_id(),
             question=question,
             targets=targets,
             created_at=utc_now_iso(),
@@ -622,133 +623,87 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(exc)))
             return
 
-        available_agents = _fetch_discovered_agents()
-        travel_task, workflow_dag = extract_travel_task(question, available_agents)
-        # 所有要用到的agent列表
-        targets = [node["agent"] for node in workflow_dag]
-        # 整合成一个规范化的plan
-        plan = build_dependency_plan(question, targets, travel_task, workflow_dag)
-        record = self.server.state.create_task(question, targets, timeout_seconds, plan)
-        workflow_deadline = time.monotonic() + timeout_seconds
+        from common.schemas import new_task_id
+        temp_tid = new_task_id()
 
-        log_network_event(
-            event="submit_task",
-            direction="inbound",
-            source="user",
-            target=COORDINATOR_NAME,
-            method="POST",
-            url="/submit_task",
-            task_id=record.task_id,
-            payload=payload,
-            payload_size=payload_size,
-        )
+        # 预创建任务记录（空 targets），让客户端能立即轮询
+        init_record = self.server.state.create_task(question, [], timeout_seconds, {}, task_id=temp_tid)
 
-        def run_dag() -> None:
-            # 执行DAG工作流
-            completed_nodes = set()
-            dispatched_nodes = set()
+        def full_workflow(tid: str) -> None:
+            try:
+                available_agents = _fetch_discovered_agents()
+                travel_task, workflow_dag = extract_travel_task(question, available_agents)
+                targets = [node["agent"] for node in workflow_dag]
+                plan = build_dependency_plan(question, targets, travel_task, workflow_dag)
+                # 更新任务记录（替换空的 targets 和 plan）
+                with self.server.state._condition:
+                    record = self.server.state._tasks[tid]
+                    record.targets = targets
+                    record.plan = plan
+                    record.updated_at = utc_now_iso()
+                    self.server.state._condition.notify_all()
+                workflow_deadline = time.monotonic() + timeout_seconds
 
-            # Dynamic DAG Execution Loop
-            while len(completed_nodes) < len(workflow_dag) and time.monotonic() < workflow_deadline:
-                # 调度满足要求的agent
-                for node in workflow_dag:
-                    node_id = node["node_id"]
-                    agent_name = node["agent"]
-                    deps = set(node.get("depends_on", []))
+                log_network_event(event="submit_task", direction="inbound", source="user",
+                    target=COORDINATOR_NAME, method="POST", url="/submit_task",
+                    task_id=tid, payload=payload, payload_size=payload_size)
 
-                    if node_id not in dispatched_nodes and deps.issubset(completed_nodes):
-                        # 满足dependency的要求，可以调度
-                        # snapshot当前任务的状态
-                        snapshot = self.server.state.get_task(record.task_id).snapshot()
-                        # 提取出已完成的agent node的结果，加到下一个agent的输入
+                completed_nodes: set[str] = set()
+                dispatched_nodes: set[str] = set()
+                while len(completed_nodes) < len(workflow_dag) and time.monotonic() < workflow_deadline:
+                    for node in workflow_dag:
+                        if node["node_id"] in dispatched_nodes:
+                            continue
+                        deps = set(node.get("depends_on", []))
+                        if not deps.issubset(completed_nodes):
+                            continue
+                        rec = self.server.state.get_task(tid)
+                        snapshot = rec.snapshot()
                         inputs = build_dynamic_inputs(travel_task, snapshot.get("results", {}), deps, workflow_dag)
+                        context = build_node_context(record=rec, node_id=node["node_id"],
+                            stage=f"{node['node_id']}_processing", dependencies=list(deps),
+                            travel_task=travel_task, inputs=inputs, target=node["agent"])
+                        log_network_event(event=f"dependency_dispatch_{node['node_id']}", direction="internal",
+                            source=COORDINATOR_NAME, target=node["agent"], task_id=tid,
+                            payload={"reason": f"dependencies {list(deps)} satisfied" if deps else "no dependencies",
+                                     "node_id": node["node_id"]})
+                        self.server.dispatch_to_agent(rec, node["agent"], context=context,
+                            event=f"dispatch_{node['node_id']}_task")
+                        dispatched_nodes.add(node["node_id"])
 
-                        context = build_node_context(
-                            record=record,
-                            node_id=node_id,
-                            stage=f"{node_id}_processing",
-                            dependencies=list(deps),
-                            travel_task=travel_task,
-                            inputs=inputs,
-                            target=agent_name,
-                        )
-                        
-                        log_network_event(
-                            event=f"dependency_dispatch_{node_id}",
-                            direction="internal",
-                            source=COORDINATOR_NAME,
-                            target=agent_name,
-                            task_id=record.task_id,
-                            payload={"reason": f"dependencies {list(deps)} satisfied" if deps else "no dependencies", "node_id": node_id},
-                        )
+                    pending_nodes = dispatched_nodes - completed_nodes
+                    if not pending_nodes:
+                        break
+                    pending_agents = {n["agent"] for n in workflow_dag if n["node_id"] in pending_nodes}
+                    self.server.state.wait_for_any_target(tid, pending_agents, timeout_seconds=A2A_TCP_TIMEOUT_SECONDS)
+                    snapshot = self.server.state.get_task(tid).snapshot()
+                    results = snapshot.get("results", {})
+                    errors = snapshot.get("dispatch_errors", {})
+                    for node in workflow_dag:
+                        if node["node_id"] in pending_nodes and (node["agent"] in results or node["agent"] in errors):
+                            completed_nodes.add(node["node_id"])
+                            log_network_event(event=f"node_completed_{node['node_id']}", direction="internal",
+                                source=COORDINATOR_NAME, target="coordinator", task_id=tid,
+                                payload={"node_id": node["node_id"], "agent": node["agent"],
+                                         "status": results.get(node["agent"], {}).get("status")
+                                         if node["agent"] in results else "dispatch_error"})
 
-                        self.server.dispatch_to_agent(
-                            record,
-                            agent_name,
-                            context=context,
-                            event=f"dispatch_{node_id}_task",
-                        )
-                        dispatched_nodes.add(node_id)
+                remaining = max(2.0, workflow_deadline - time.monotonic())
+                snapshot = self.server.state.wait_for_task(tid, remaining)
+                final_answer = build_final_answer(question, snapshot)
+                snapshot = self.server.state.set_final_answer(tid, final_answer)
+                log_network_event(event="dependency_workflow_finished", direction="internal",
+                    source=COORDINATOR_NAME, target="user", task_id=tid, payload=snapshot)
+            except Exception as exc:
+                logger.exception(f"DAG worker failed for {tid}: {exc}")
 
-                
-                pending_nodes = dispatched_nodes - completed_nodes
-                # 如果没有agent在运行了，结束
-                if not pending_nodes:
-                    break
-                    
-                pending_agents = {node["agent"] for node in workflow_dag if node["node_id"] in pending_nodes}
-                # 轮询间隔不宜太短——Traffic Agent 等可能需要 2 次 MCP + LLM 调用，
-                # 总耗时可达 3-5 秒。用 A2A_TCP_TIMEOUT 作为单轮等待上限。
-                self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=A2A_TCP_TIMEOUT_SECONDS)
-
-                # 心跳完后，更新completed_nodes
-                snapshot = self.server.state.get_task(record.task_id).snapshot()
-                results = snapshot.get("results", {})
-                errors = snapshot.get("dispatch_errors", {})
-                
-                for node in workflow_dag:
-                    node_id = node["node_id"]
-                    agent_name = node["agent"]
-                    if node_id in pending_nodes:
-                        if agent_name in results or agent_name in errors:
-                            completed_nodes.add(node_id)
-                            log_network_event(
-                                event=f"node_completed_{node_id}",
-                                direction="internal",
-                                source=COORDINATOR_NAME,
-                                target="coordinator",
-                                task_id=record.task_id,
-                                payload={
-                                    "node_id": node_id,
-                                    "agent": agent_name,
-                                    "status": results.get(agent_name, {}).get("status") if agent_name in results else "dispatch_error"
-                                },
-                            )
-
-            # while出来，要么所有agent都结束，要么超过整个workflow_deadline
-            # 最多给多2秒供agent同步，传回结果
-            remaining_for_final = max(2.0, workflow_deadline - time.monotonic())
-            snapshot = self.server.state.wait_for_task(record.task_id, remaining_for_final)
-            final_answer = build_final_answer(question, snapshot)
-            snapshot = self.server.state.set_final_answer(record.task_id, final_answer)
-            log_network_event(
-                event="dependency_workflow_finished",
-                direction="internal",
-                source=COORDINATOR_NAME,
-                target="user",
-                task_id=record.task_id,
-                payload=snapshot,
-            )
-
-        is_async = bool(payload.get("async", False))
-        if is_async:
-            threading.Thread(target=run_dag, name=f"dag-worker-{record.task_id}", daemon=True).start()
-            self._send_json(HTTPStatus.ACCEPTED, success_response({"task": record.snapshot()}))
-        else:
-            run_dag()
-            snapshot = self.server.state.get_task(record.task_id).snapshot()
-            http_status = HTTPStatus.OK if snapshot["status"] != TASK_FAILED else HTTPStatus.GATEWAY_TIMEOUT
-            self._send_json(http_status, success_response({"task": snapshot}))
+        log_network_event(event="submit_task_queued", direction="inbound", source="user",
+            target=COORDINATOR_NAME, method="POST", url="/submit_task",
+            payload={"question": question, "timeout": timeout_seconds})
+        threading.Thread(target=full_workflow, args=(temp_tid,), daemon=True).start()
+        self._send_json(HTTPStatus.ACCEPTED, success_response({"task": {
+            "task_id": temp_tid, "status": "pending", "question": question,
+        }}))
 
     def _handle_task_result(self) -> None:
         # 处理任务结果回调
@@ -878,7 +833,7 @@ def _fetch_discovered_agents() -> dict[str, Any]:
             if response.status == 200:
                 data = json.loads(response.read().decode("utf-8"))
                 discovered = data.get("agents", {})
-                if isinstance(discovered, dict):
+                if isinstance(discovered, dict) and discovered:
                     log_network_event(
                         event="registry_discover_response",
                         direction="inbound",
@@ -1311,6 +1266,13 @@ def _normalize_travel_task(
         _resolve_task_dates(result, str(fallback.get("_raw_question") or ""))
     result.setdefault("avoid", [])
     result["_parser"] = parser
+    # 关键词覆盖：用户明确说了"打车"等，覆盖 LLM 解析
+    raw_q = str(fallback.get("_raw_question") or "")
+    if raw_q:
+        if any(kw in raw_q for kw in ["打车", "出租车", "专车", "taxi"]):
+            result["transport_preference"] = "taxi"
+        elif any(kw in raw_q for kw in ["地铁", "公交", "公共交通"]):
+            result["transport_preference"] = "public_transport"
     return result
 
 
@@ -1323,9 +1285,13 @@ def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
     days = _extract_days(question)
     budget_level = _infer_budget_level(question)
     transport_preference = (
-        "public_transport"
-        if any(word in question for word in ["公共交通", "地铁", "公交", "少打车", "不打车"])
-        else "normal"
+        "taxi"
+        if any(word in question for word in ["打车", "出租车", "专车"])
+        else (
+            "public_transport"
+            if any(word in question for word in ["公共交通", "地铁", "公交", "少打车", "不打车"])
+            else "normal"
+        )
     )
     must_visit = _extract_must_visit(question)
     date_info = _parse_date_constraint(question, days=days)
@@ -1946,29 +1912,39 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
             spots = "、".join(str(x) for x in day.get("spots", []))
             line = f"- {day_key}: {day.get('theme', '')}。景点：{spots}。"
             if day.get("area"):
-                line += f"区域：{day.get('area')}。"
+                area_text = str(day.get("area"))
+                # 如果区域名是区级（以"区"结尾）且不含城市名，前缀城市名
+                if area_text.endswith("区") and dest not in area_text:
+                    area_text = f"{dest}{area_text}"
+                line += f"区域：{area_text}。"
             if day.get("estimated_ticket_cost"):
                 line += f"预计门票：{day.get('estimated_ticket_cost')}。"
             reservations = day.get("reservation_required") or []
             if reservations:
                 line += f"需提前预约：{'、'.join(str(x) for x in reservations)}。"
             lines.append(line)
-        lines.append(f"景点门票小计：{_format_money_range(ticket_total)}。")
+        if ticket_total:
+            lines.append(f"景点门票小计：{_format_money_range(ticket_total)}。")
 
     if isinstance(hotel_plan, dict) and hotel_plan:
         lines.append("\n三、住宿建议")
         selected = hotel_plan.get("selected_hotel", {}) if isinstance(hotel_plan.get("selected_hotel"), dict) else {}
-        lines.append(
-            f"- 建议住宿区域：{hotel_plan.get('recommended_area', '待确认')}。"
-        )
+        area = hotel_plan.get('recommended_area')
+        if area and area != '待确认':
+            lines.append(f"- 建议住宿区域：{area}。")
         if selected:
-            lines.append(
-                f"- 推荐酒店：{selected.get('name', '待确认')}，"
-                f"类型：{selected.get('type', '经济型住宿')}，"
-                f"最近地铁：{selected.get('nearest_subway', '待确认')}，"
-                f"参考价格：{selected.get('price_per_night', '待确认')}元/晚。"
-            )
-        lines.append(f"住宿费用小计：{_format_money_range(hotel_total)}。")
+            name = selected.get('name', '待定')
+            typ = selected.get('type', '经济型住宿')
+            subway = selected.get('nearest_subway')
+            price = selected.get('price_per_night')
+            parts = [f"- 推荐酒店：{name}", f"类型：{typ}"]
+            if subway and subway != '待确认':
+                parts.append(f"最近地铁：{subway}")
+            if price and price != '待确认':
+                parts.append(f"参考价格：{price}元/晚")
+            lines.append("，".join(parts) + "。")
+        if hotel_total:
+            lines.append(f"住宿费用小计：{_format_money_range(hotel_total)}。")
 
     if isinstance(intercity_transport, dict) and intercity_transport:
         lines.append("\n四、城市间交通方案")
@@ -1976,11 +1952,12 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         alternatives = intercity_transport.get("alternatives", [])
         if isinstance(option, dict):
             one_way = intercity_transport.get("one_way_cost") or _format_money_range(_parse_cost_range_list(option.get("cost_yuan_range")))
-            lines.append(
-                f"- 推荐：{intercity_transport.get('origin_city', origin)} -> {intercity_transport.get('destination_city', dest)}，"
-                f"{option.get('mode', '交通方式待确认')}，{option.get('duration', '耗时待确认')}，单程{one_way}。"
-            )
-            lines.append(f"- 往返估算：{_format_money_range(intercity_total)}。")
+            mode = option.get('mode', '')
+            dur = option.get('duration', '')
+            detail = "，".join(p for p in [mode, dur, f"单程{one_way}"] if p)
+            lines.append(f"- 推荐：{intercity_transport.get('origin_city', origin)} -> {intercity_transport.get('destination_city', dest)}，{detail}。")
+            if intercity_total:
+                lines.append(f"- 往返估算：{_format_money_range(intercity_total)}。")
         alt_text = _format_intercity_alternatives(alternatives)
         if alt_text:
             lines.append(f"- 备选：{alt_text}")
@@ -2002,9 +1979,9 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                     f"约{segment.get('estimated_duration_minutes', '未知')}分钟，"
                     f"费用约{segment.get('estimated_cost_yuan', '未知')}元。"
                 )
-        if isinstance(traffic_summary, dict) and traffic_summary:
+        if isinstance(traffic_summary, dict) and traffic_summary.get('total_estimated_local_transport_cost'):
             lines.append(
-                f"- 预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost', '待确认')}。"
+                f"- 预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost')}。"
             )
         lines.append(f"市内交通小计：{_format_money_range(traffic_total)}。")
 
@@ -2142,7 +2119,7 @@ def _sum_money_ranges(*ranges: tuple[float, float] | None) -> tuple[float, float
 def _format_money_range(value: tuple[float, float] | None) -> str:
     # 格式化费用显示文本
     if not value:
-        return "待确认"
+        return ""
     low, high = value
     low_text = _format_amount(low)
     high_text = _format_amount(high)
@@ -2171,20 +2148,22 @@ def _format_weather_constraint_lines(dest: str, weather_constraints: dict[str, A
     if not isinstance(weather_by_day, list):
         return result
     if weather_constraints.get("forecast_unavailable"):
-        result.append("- 天气提示：出行日期距离现在太远，天气 API 无法准确预测，请临近出行前再确认。")
-    for item in weather_by_day:
-        if not isinstance(item, dict):
-            continue
+        result.append(f"- 天气提示：出行日期距离现在太远（{len(weather_by_day)}天），"
+                      "天气 API 无法准确预测，请临近出行前再确认。")
+        return result
+    # 只展示实际有预报内容的天数，跳过纯 recheck 标记
+    real_forecasts = [item for item in weather_by_day if isinstance(item, dict) and not item.get("needs_weather_recheck")]
+    recheck_count = len(weather_by_day) - len(real_forecasts)
+    for item in real_forecasts:
         day = item.get("day") or "day?"
         date = item.get("date") or ""
         condition = item.get("condition") or "天气待确认"
-        if item.get("needs_weather_recheck"):
-            result.append(f"- {day}{f'({date})' if date else ''}：{condition}，请临近出行前复查天气。")
-            continue
         temp_parts = [str(item.get(key)) for key in ("temp_min", "temp_max") if item.get(key)]
         temp_text = f"，气温{'-'.join(temp_parts)}" if temp_parts else ""
         advice = "适合户外游玩" if item.get("outdoor_suitable") else "建议减少长时间户外安排"
         result.append(f"- {dest}{day}{f'({date})' if date else ''}：{condition}{temp_text}，{advice}。")
+    if recheck_count > 0:
+        result.append(f"- 其余{recheck_count}天天气待确认，请临近出行前复查。")
     return result
 
 

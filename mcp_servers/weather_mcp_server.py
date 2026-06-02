@@ -18,6 +18,7 @@ from common.config import (
     MCP_SERVERS,
     OPEN_METEO_MAX_FORECAST_DAYS,
 )
+from common.http_client import retry_call
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
 from mcp_servers.mock_data import get_weather as get_mock_weather
 from mcp_servers.realtime.amap_client import AMapClient
@@ -56,17 +57,16 @@ def get_weather(city: str = "北京", date: str = "", days: int = 1, **kwargs: o
                 )
             start_offset = days_until
 
-        location = AMapClient().geocode_city_or_address(city)
-        longitude, latitude = _parse_amap_location(location)
-        request_days = min(OPEN_METEO_MAX_FORECAST_DAYS, start_offset + day_count)
-        data = OpenMeteoClient().get_forecast(latitude=latitude, longitude=longitude, days=request_days)
-        return normalize_open_meteo_weather(
-            data,
-            requested_city=city,
-            date=requested_date,
-            days=day_count,
-            start_offset=start_offset,
-        )
+        # 实时 API 调用（失败重试1次再降级 Mock）
+        def _realtime_weather_call():
+            location = AMapClient().geocode_city_or_address(city)
+            longitude, latitude = _parse_amap_location(location)
+            request_days = min(OPEN_METEO_MAX_FORECAST_DAYS, start_offset + day_count)
+            data = OpenMeteoClient().get_forecast(latitude=latitude, longitude=longitude, days=request_days)
+            return normalize_open_meteo_weather(
+                data, requested_city=city, date=requested_date, days=day_count, start_offset=start_offset,
+            )
+        return retry_call(_realtime_weather_call, retries=2, sleep_seconds=1.0)
     except Exception as exc:
         if not MCP_REALTIME_FALLBACK_TO_MOCK:
             raise

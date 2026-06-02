@@ -160,7 +160,6 @@ class TrafficAgent(BaseAgent):
 
 
     def call_routes_mcp(self, task_id: str, *, city: str, segments: list[dict[str, Any]], preference: str) -> list[dict[str, Any]]:
-        # 调用交通 MCP 获取各段路线候选
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
         # 把 preference 映射为 AMap 请求的 mode，否则默认 transit 没有 taxi 选项
@@ -234,7 +233,6 @@ class TrafficAgent(BaseAgent):
         return route_results
 
     def call_intercity_transport_mcp(self, task_id: str, *, travel_task: dict[str, Any]) -> dict[str, Any]:
-        # 调用交通 MCP 获取城际交通方案
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
         origin_city = str(travel_task.get("origin_city") or "上海")
@@ -300,16 +298,13 @@ class TrafficAgent(BaseAgent):
         return _normalize_intercity_transport(result)
 
     def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
-        # 构造提示词（此 Agent 使用 process_task 重写）
         return "TrafficAgent uses process_task override for structured route selection."
 
     def build_fallback_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any], llm_error: str) -> str:
-        # 构建 LLM 调用失败时的交通降级回答
         return "交通 Agent 已获得候选交通数据，并使用规则 fallback 完成选择。"
 
 
 def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
-    # 从上下文中提取出行任务
     if isinstance(context.get("travel_task"), dict):
         return dict(context["travel_task"])
     inputs = context.get("inputs") or {}
@@ -319,13 +314,14 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
-    # 从上游结果中提取每日景点计划
+
+    upstream = inputs.get("upstream_results", {})
     attr_res = upstream.get("attraction_agent", {}).get("structured", {})
     return attr_res.get("daily_plan") or attr_res.get("daily_plan_skeleton") or {}
 
 
 def _extract_hotel_plan(inputs: dict[str, Any]) -> dict[str, Any]:
-    # 从上游结果中提取酒店计划
+    upstream = inputs.get("upstream_results", {})
     hotel_res = upstream.get("hotel_agent", {}).get("structured", {})
     return hotel_res.get("hotel_plan") or {}
 
@@ -334,7 +330,7 @@ def _extract_hotel_plan(inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    # 根据每日景点和住宿构建路线段
+    segments: list[dict[str, Any]] = []
     for day_key, plan in daily_plan.items():
         if not isinstance(plan, dict):
             continue
@@ -392,7 +388,6 @@ def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any]
 
 
 def _route_segment_payload(segment: dict[str, Any], default_mode: str = "transit") -> dict[str, Any]:
-    # 构建路线段的 MCP 请求负载
     return {
         "origin": segment.get("origin"),
         "destination": segment.get("destination"),
@@ -423,7 +418,7 @@ def _preference_to_amap_mode(preference: str) -> str:
 
 
 def _spot_details_by_name(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    # 按景点名称索引详细信息
+    details = plan.get("spot_details")
     if not isinstance(details, list):
         return {}
     result: dict[str, dict[str, Any]] = {}
@@ -437,7 +432,6 @@ def _spot_details_by_name(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _hotel_origin_point(hotel_plan: dict[str, Any] | None) -> dict[str, Any]:
-    # 提取酒店作为路线起点的信息
     if not isinstance(hotel_plan, dict):
         return {}
     selected = hotel_plan.get("selected_hotel")
@@ -455,7 +449,6 @@ def _hotel_origin_point(hotel_plan: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _endpoint_fields(prefix: str, point: dict[str, Any]) -> dict[str, Any]:
-    # 构建端点的字段映射（名称/位置/ID/地址）
     return {
         f"{prefix}_name": point.get("name"),
         f"{prefix}_location": point.get("location"),
@@ -465,7 +458,6 @@ def _endpoint_fields(prefix: str, point: dict[str, Any]) -> dict[str, Any]:
 
 
 def _hotel_origin_name(hotel_plan: dict[str, Any] | None) -> str:
-    # 获取酒店作为路线起点的名称
     if not isinstance(hotel_plan, dict):
         return ""
     selected = hotel_plan.get("selected_hotel")
@@ -478,7 +470,7 @@ def _hotel_origin_name(hotel_plan: dict[str, Any] | None) -> str:
 
 
 def _build_segments_for_llm(route_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    # 将路线结果转为 LLM 可读的分段格式
+    segments: list[dict[str, Any]] = []
     route_counter = 1
     for route in route_results:
         if not isinstance(route, dict):
@@ -527,7 +519,6 @@ def _traffic_route_selector_prompt(
     upstream_results: dict[str, Any],
     segments: list[dict[str, Any]],
 ) -> str:
-    # 构造路线选择 LLM 提示词
     payload = {
         "city": city,
         "days": days,
@@ -563,7 +554,6 @@ def _normalize_selected_route_ids(
     segments: list[dict[str, Any]],
     travel_task: dict[str, Any],
 ) -> tuple[dict[str, str], list[str]]:
-    # 规范化 LLM 路线选择结果
     selected: dict[str, str] = {}
     fallback_errors: list[str] = []
     for segment in segments:
@@ -586,7 +576,6 @@ def _fallback_selected_route_ids(
     segments: list[dict[str, Any]],
     travel_task: dict[str, Any],
 ) -> dict[str, str]:
-    # 基于规则的路线降级选择
     return {
         str(segment.get("segment_id")): _fallback_route_id(segment, travel_task)
         for segment in segments
@@ -595,7 +584,6 @@ def _fallback_selected_route_ids(
 
 
 def _fallback_route_id(segment: dict[str, Any], travel_task: dict[str, Any]) -> str:
-    # 基于规则选择降级路线 ID
     options = [option for option in segment.get("options", []) if isinstance(option, dict)]
     if not options:
         return ""
@@ -635,7 +623,7 @@ def _fallback_route_id(segment: dict[str, Any], travel_task: dict[str, Any]) -> 
 
 
 def _constraint_section(travel_task: dict[str, Any], section: str) -> dict[str, Any]:
-    # 从 task 中提取交通/通用约束
+    constraints = travel_task.get("constraints")
     if isinstance(constraints, dict) and isinstance(constraints.get(section), dict):
         return dict(constraints[section])
     if section == "traffic":
@@ -658,7 +646,7 @@ def _expand_traffic_plan(
     selected_route_ids: dict[str, str],
     segments: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
-    # 将选择的路线 ID 扩展为完整交通计划
+    traffic_plan: dict[str, list[dict[str, Any]]] = {}
     for segment in segments:
         segment_id = str(segment.get("segment_id") or "")
         route_id = selected_route_ids.get(segment_id)
@@ -681,7 +669,6 @@ def _expand_traffic_plan(
 
 
 def _find_option(segment: dict[str, Any], route_id: str | None) -> dict[str, Any] | None:
-    # 在路线段中查找指定 route_id 的选项
     for option in segment.get("options", []):
         if isinstance(option, dict) and option.get("route_id") == route_id:
             return option
@@ -689,7 +676,6 @@ def _find_option(segment: dict[str, Any], route_id: str | None) -> dict[str, Any
 
 
 def _display_route_reason(option: dict[str, Any], *, same_area: bool) -> str:
-    # 生成选中路线的显示理由
     mode = str(option.get("mode") or "")
     if mode == "walk" and same_area:
         return "同一区域，选择步行"
@@ -705,7 +691,6 @@ def _display_route_reason(option: dict[str, Any], *, same_area: bool) -> str:
 
 
 def _safe_int(value: Any, default: int) -> int:
-    # 安全地将值转为 int，失败时返回默认值
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -715,7 +700,6 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _fallback_traffic_plan(route_results: list[dict[str, Any]], travel_task: dict[str, Any]) -> dict[str, Any]:
-    # 基于规则构建降级交通计划
     preference = str(travel_task.get("transport_preference") or "public_transport")
     low_budget = travel_task.get("budget_level") == "low" or preference == "public_transport"
     traffic_plan: dict[str, list[dict[str, Any]]] = {}
@@ -740,7 +724,6 @@ def _fallback_traffic_plan(route_results: list[dict[str, Any]], travel_task: dic
 
 
 def _select_candidate(candidates: list[dict[str, Any]], *, low_budget: bool, preference: str) -> dict[str, Any]:
-    # 从候选路线中选择最佳方案
     if "最快" in preference or preference == "fastest":
         return min(candidates, key=lambda x: int(x.get("duration_minutes") or 999))
     if low_budget:
@@ -751,7 +734,6 @@ def _select_candidate(candidates: list[dict[str, Any]], *, low_budget: bool, pre
 
 
 def _estimate_traffic_summary(traffic_plan: dict[str, Any]) -> dict[str, Any]:
-    # 估算交通方案总结（费用、策略）
     total_cost = 0
     has_unknown = False
     modes: set[str] = set()
@@ -774,7 +756,6 @@ def _estimate_traffic_summary(traffic_plan: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_intercity_transport(value: dict[str, Any]) -> dict[str, Any]:
-    # 规范化城际交通数据
     result = dict(value)
     option = result.get("recommended_option")
     if isinstance(option, dict):
@@ -808,29 +789,25 @@ def _transport_preference_guidance(preference: str) -> str:
 
 
 def _short_traffic_summary(structured_result: dict[str, Any]) -> str:
-    # 生成简短的交通方案总结文本
     summary = structured_result.get("traffic_summary", {}) if isinstance(structured_result, dict) else {}
     strategy = summary.get("main_strategy", "已生成交通方案")
     cost = summary.get("total_estimated_local_transport_cost", "待确认")
     return f"已根据每日景点和用户约束生成交通方案：{strategy}，市内交通费用{cost}。"
 
+    def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        city = mcp_result.get("city", "目标城市")
+        route = mcp_result.get("route", "未知路线")
+        status = mcp_result.get("status", "未知路况")
+        duration = mcp_result.get("duration", "未知耗时")
 
-def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
-    # 构建演示快速模式下的交通回答
-    city = mcp_result.get("city", "目标城市")
-    route = mcp_result.get("route", "未知路线")
-    status = mcp_result.get("status", "未知路况")
-    duration = mcp_result.get("duration", "未知耗时")
-
-    return (
-        f"交通概况：{city}推荐路线为{route}，当前路况为{status}，预计耗时{duration}。\n"
-        f"推荐方案：建议优先选择上述路线，并预留一定机动时间。\n"
-        f"注意事项：当前为演示快速模式，已跳过外部 LLM 调用。"
-    )
+        return (
+            f"交通概况：{city}推荐路线为{route}，当前路况为{status}，预计耗时{duration}。\n"
+            f"推荐方案：建议优先选择上述路线，并预留一定机动时间。\n"
+            f"注意事项：当前为演示快速模式，已跳过外部 LLM 调用。"
+        )
 
 
 def main() -> None:
-    # 启动交通 Agent
     default_host = AGENTS["traffic_agent"]["host"]
     default_port = AGENTS["traffic_agent"]["port"]
 

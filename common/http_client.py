@@ -87,3 +87,16 @@ def _decode_json(raw_body: str) -> Any:
         return json.loads(raw_body)
     except json.JSONDecodeError:
         return None
+
+
+def retry_call(func: callable, *args, retries: int = 1, sleep_seconds: float = 1.0, **kwargs) -> Any:
+    """通用重试：调用 func 失败后等待并重试，retries 次后仍失败才抛出"""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(sleep_seconds)
+    raise last_exc
