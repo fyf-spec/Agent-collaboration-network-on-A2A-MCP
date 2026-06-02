@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from datetime import date as date_type, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -49,6 +50,14 @@ from common.config import (
     MCP_SERVERS,
 )
 from common.http_client import HttpJsonClientError, post_json
+from common.internal_values import (
+    display_budget_level,
+    display_transport_preference,
+    is_iso_date as is_internal_iso_date,
+    is_unknown,
+    normalize_budget_level,
+    normalize_transport_preference,
+)
 from common.logger import log_network_event
 from common.tcp_a2a import (
     TYPE_ERROR,
@@ -117,13 +126,16 @@ class TaskRecord:
         return len(self.results) + len(self.dispatch_errors)
 
     def success_count(self) -> int:
+        # 获取成功返回结果的agent数量
         return sum(1 for item in self.results.values() if item.get("status") == RESULT_SUCCESS)
 
     def pending_targets(self) -> list[str]:
+        # 获取尚未返回结果的target列表
         finished = set(self.results) | set(self.dispatch_errors)
         return [target for target in self.targets if target not in finished]
 
     def refresh_status(self) -> None:
+        # 刷新任务状态
         if not self.targets:
             self.status = TASK_FAILED
         elif self.terminal_count() < self.expected_count():
@@ -150,6 +162,7 @@ class TaskRecord:
             self.updated_at = utc_now_iso()
 
     def snapshot(self) -> dict[str, Any]:
+        # 获取快照
         return {
             "task_id": self.task_id,
             "question": self.question,
@@ -169,6 +182,7 @@ class TaskRecord:
 
 class CoordinatorState:
     def __init__(self, *, host: str, port: int, tcp_host: str | None = None, tcp_port: int | None = None) -> None:
+        # 初始化
         self.host = host
         self.port = port
         self.tcp_host = tcp_host or COORDINATOR_A2A_TCP_HOST
@@ -178,14 +192,17 @@ class CoordinatorState:
 
     @property
     def base_url(self) -> str:
+        # 获取基础URL
         return f"http://{self.host}:{self.port}"
 
     @property
     def reply_to(self) -> str:
+        # 获取A2A TCP回调地址
         return tcp_url(self.tcp_host, self.tcp_port)
 
     @property
     def http_reply_to(self) -> str:
+        # 获取HTTP回调地址
         return f"{self.base_url}/task_result"
 
     def create_task(
@@ -195,6 +212,7 @@ class CoordinatorState:
         timeout_seconds: float,
         plan: dict[str, Any] | None = None,
     ) -> TaskRecord:
+        # 创建新任务记录
         record = TaskRecord(
             task_id=new_task_id(),
             question=question,
@@ -209,14 +227,17 @@ class CoordinatorState:
         return record
 
     def get_task(self, task_id: str) -> TaskRecord | None:
+        # 根据task_id获取任务记录
         with self._condition:
             return self._tasks.get(task_id)
 
     def list_tasks(self) -> list[dict[str, Any]]:
+        # 获取所有任务快照列表
         with self._condition:
             return [task.snapshot() for task in self._tasks.values()]
 
     def add_result(self, payload: dict[str, Any]) -> TaskRecord:
+        # 添加任务结果并刷新状态
         validate_task_result(payload)
         task_id = str(payload["task_id"])
         source = str(payload["source"])
@@ -262,6 +283,23 @@ class CoordinatorState:
                 self._condition.wait(timeout=remaining)
             return record.snapshot()
 
+    def wait_for_target(self, task_id: str, target: str, timeout_seconds: float) -> dict[str, Any]:
+        # 等待指定target返回结果
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        with self._condition:
+            record = self._tasks[task_id]
+            record.status = TASK_WAITING
+            record.updated_at = utc_now_iso()
+            while target not in record.results and target not in record.dispatch_errors:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    record.dispatch_errors[target] = f"{target} callback timed out after {timeout_seconds:.2f}s"
+                    record.refresh_status()
+                    break
+                self._condition.wait(timeout=remaining)
+            self._condition.notify_all()
+            return record.snapshot()
+
     def wait_for_task(self, task_id: str, timeout_seconds: float) -> dict[str, Any]:
         '''
         检查这个task的所有target agents是否都返回了结果或者调度失败了
@@ -277,11 +315,14 @@ class CoordinatorState:
                 if remaining <= 0:
                     break
                 self._condition.wait(timeout=remaining)
+            for target in record.pending_targets():
+                record.dispatch_errors[target] = f"{target} callback timed out after {timeout_seconds:.2f}s"
             record.finalize_after_wait()
             self._condition.notify_all()
             return record.snapshot()
 
     def set_final_answer(self, task_id: str, final_answer: str) -> dict[str, Any]:
+        # 设置最终答案
         with self._condition:
             record = self._tasks[task_id]
             record.final_answer = final_answer
@@ -299,6 +340,7 @@ class CoordinatorHTTPServer(ThreadingHTTPServer):
         handler_class: type[BaseHTTPRequestHandler],
         state: CoordinatorState | None = None,
     ) -> None:
+        # 初始化
         super().__init__(server_address, handler_class)
         self.state = state or CoordinatorState(host=server_address[0], port=server_address[1])
 
@@ -429,6 +471,7 @@ class CoordinatorA2ATCPServer(ThreadingTCPServer):
         handler_class: type[BaseRequestHandler],
         state: CoordinatorState,
     ) -> None:
+        # 初始化
         super().__init__(server_address, handler_class)
         self.state = state
 
@@ -437,6 +480,7 @@ class CoordinatorA2ATCPRequestHandler(BaseRequestHandler):
     server: CoordinatorA2ATCPServer
 
     def handle(self) -> None:
+        # 处理TCP连接请求
         self.request.settimeout(A2A_TCP_TIMEOUT_SECONDS)
         frame_data: dict[str, Any] | None = None
         task_id = "unknown"
@@ -509,6 +553,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
     server: CoordinatorHTTPServer
 
     def do_GET(self) -> None:
+        # 处理GET请求
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             self._send_json(
@@ -546,6 +591,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {parsed.path}"))
 
     def do_POST(self) -> None:
+        # 处理POST请求
         parsed = urlparse(self.path)
         if parsed.path == "/submit_task":
             try:
@@ -560,9 +606,11 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {parsed.path}"))
 
     def log_message(self, format: str, *args: Any) -> None:
+        # 禁止默认日志输出
         return
 
     def _handle_submit_task(self) -> None:
+        # 处理提交任务请求
         try:
             payload, payload_size = self._read_json_with_size()
             question = str(payload.get("question", "")).strip()
@@ -596,6 +644,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         )
 
         def run_dag() -> None:
+            # 执行DAG工作流
             completed_nodes = set()
             dispatched_nodes = set()
 
@@ -648,7 +697,9 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                     break
                     
                 pending_agents = {node["agent"] for node in workflow_dag if node["node_id"] in pending_nodes}
-                self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=2.0)
+                # 轮询间隔不宜太短——Traffic Agent 等可能需要 2 次 MCP + LLM 调用，
+                # 总耗时可达 3-5 秒。用 A2A_TCP_TIMEOUT 作为单轮等待上限。
+                self.server.state.wait_for_any_target(record.task_id, pending_agents, timeout_seconds=A2A_TCP_TIMEOUT_SECONDS)
 
                 # 心跳完后，更新completed_nodes
                 snapshot = self.server.state.get_task(record.task_id).snapshot()
@@ -700,6 +751,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(http_status, success_response({"task": snapshot}))
 
     def _handle_task_result(self) -> None:
+        # 处理任务结果回调
         try:
             payload, payload_size = self._read_json_with_size()
             log_network_event(
@@ -740,6 +792,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _handle_get_tasks(self, query: str) -> None:
+        # 处理查询任务请求
         params = parse_qs(query)
         task_id = params.get("task_id", [None])[0]
         if task_id:
@@ -755,6 +808,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, success_response({"tasks": self.server.state.list_tasks()}))
 
     def _read_json_with_size(self) -> tuple[dict[str, Any], int]:
+        # 读取请求体并解析JSON
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
         try:
@@ -766,6 +820,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
         return payload, length
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        # 发送JSON响应
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -783,6 +838,7 @@ def _refresh_final_answer_async(state: CoordinatorState, task_id: str) -> None:
     """
 
     def worker() -> None:
+        # 在后台线程刷新最终答案
         record = state.get_task(task_id)
         if record is None:
             return
@@ -896,6 +952,7 @@ def _fetch_discovered_agents() -> dict[str, Any]:
 
 
 def _infer_error_type(exc: Exception) -> str:
+    # 推断异常类型名称
     cause = exc.__cause__
     if cause is None:
         return type(exc).__name__
@@ -956,6 +1013,7 @@ def build_node_context(
     inputs: dict[str, Any],
     target: str,
 ) -> dict[str, Any]:
+    # 构建agent节点的上下文信息
     agent_config = _fetch_discovered_agents().get(target, {})
     return {
         "workflow": "travel_dependency",
@@ -976,45 +1034,58 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
     用LLM提取task和dag工作流，如果失败，返回基于规则的fallback task和默认dag（全并行）
     dag是一个列表，每个元素是一个node，包含node_id（领域名）、agent（实际调用的agent）和depends_on（依赖的上游node_id列表）。
     """
-    fallback = _extract_travel_task_by_rules(question)
-    default_dag = [
-        {"node_id": "weather_agent", "agent": "weather_agent", "depends_on": []},
-        {"node_id": "packing_agent", "agent": "packing_agent", "depends_on": ["weather_agent"]},
-        {"node_id": "attraction_agent", "agent": "attraction_agent", "depends_on": ["weather_agent"]},
-        {"node_id": "hotel_agent", "agent": "hotel_agent", "depends_on": ["weather_agent", "attraction_agent"]},
-        {"node_id": "traffic_agent", "agent": "traffic_agent", "depends_on": ["weather_agent", "attraction_agent", "hotel_agent"]},
-    ]
+    default_dag = _default_travel_dag(question, available_agents)
     try:
         logger.info("正在请求大模型生成总体规划和动态 DAG 工作流，请耐心等待...")
         llm_json = llm.chat_json(
-            _task_analysis_prompt(question, fallback, available_agents),
+            _task_analysis_prompt(question, available_agents),
             max_tokens=600,
             temperature=0.0,
             timeout_seconds=60.0,
         )
         travel_task = llm_json.get("travel_task") if isinstance(llm_json.get("travel_task"), dict) else llm_json
+        if not isinstance(travel_task, dict):
+            raise ValueError("LLM task parser returned invalid travel_task")
+        if _llm_missed_required_iso_date(question, travel_task):
+            raise ValueError("LLM task parser did not convert the date constraint to ISO format")
         workflow_dag = llm_json.get("workflow_dag", default_dag)
         logger.info(f"【大模型提取工作流】：{workflow_dag}")
         if not isinstance(workflow_dag, list):
             workflow_dag = default_dag
+        workflow_dag = _ensure_travel_workflow_dag(workflow_dag, default_dag, available_agents)
             
-        return _normalize_travel_task(travel_task, fallback, parser="coordinator_llm_task_parser"), workflow_dag
+        return _normalize_travel_task(
+            travel_task,
+            {"_raw_question": question},
+            parser="coordinator_llm_task_parser",
+            apply_rule_date_fallback=False,
+        ), workflow_dag
     except Exception as exc:
         logger.warning(f"【大模型提取工作流失败】，回退到规则提取: {type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()
+        fallback = _extract_travel_task_by_rules(question)
         fallback["_parser"] = "rule_fallback"
         fallback["_parser_error"] = str(exc)
         return fallback, default_dag
 
 
-def _task_analysis_prompt(question: str, fallback: dict[str, Any], available_agents: dict[str, Any]) -> str:
+def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> str:
     '''
-    构造给llm的提示词，给出期望的输出格式（travel_task和workflow_dag）
+    构造给llm的提示词，给出期望的输出格式（travel_task和workflow_dag）。
+
+    关键设计：output_schema 中的枚举值仅为 LLM 提供参考范围，
+    但 raw_constraints 字段才是自由文本核心——LLM 把用户的真实意图、
+    偏好、约束用自己的语言总结出来，这个字段会被传给每个 Agent，
+    让 Agent 的 LLM 在自己的领域内自行解读。
+
+    例如"舒适为主、预算不限" → raw_constraints 应写：
+    "用户追求舒适体验，不在乎花费。应优先选择高质量、高评分的选项，
+    避免因省钱而牺牲体验。适合推荐高端或奢华类型。"
     '''
     payload = {
         "question": question,
-        "rule_fallback": fallback,
+        "current_date": date_type.today().isoformat(),
         "available_agents_from_registry": {
             name: {
                 "capabilities": agent.get("capabilities", []),
@@ -1023,36 +1094,42 @@ def _task_analysis_prompt(question: str, fallback: dict[str, Any], available_age
         },
         "output_schema": {
             "travel_task": {
-                "origin_city": "city or null",
-                "destination_city": "city",
+                "origin_city": "出发城市 or null",
+                "destination_city": "目的城市",
                 "days": 5,
-                "start_date": "tomorrow|unspecified|specific date",
-                "budget_level": "low|normal|high|unknown",
-                "transport_preference": "public_transport|fastest|cheapest|taxi|normal",
-                "must_visit": ["legacy attraction names for compatibility"],
-                "preferences": ["legacy preference tags for compatibility"],
-                "avoid": ["legacy avoid tags for compatibility"],
+                "start_date": "YYYY-MM-DD 必须把相对日期（明天/下周二/中秋节假期）换算成具体日期",
+                "end_date": "YYYY-MM-DD or null",
+                "date_text": "用户原始日期表述，如 下周二、中秋节假期",
+                "budget_level": "high|normal|low|unknown",
+                "transport_preference": "fastest|comfort|public_transport|cheapest|taxi|normal",
+                "must_visit": ["用户点名必须去的景点"],
+                "preferences": ["用户偏好的标签"],
+                "avoid": ["用户明确拒绝的"],
+                "raw_constraints": "【重要】用 2-4 句自然语言总结用户的核心诉求和约束，不要压缩成枚举值。"
+                                  "例如：用户预算充裕追求舒适，希望高档酒店和专车出行，"
+                                  "行程节奏要轻松不赶，景点偏好历史文化类，对价格不敏感。"
+                                  "这个字段会被传递给下游 Agent 的 LLM 做决策。",
                 "constraints": {
                     "attractions": {
-                        "must_visit": ["attraction names user explicitly requires"],
-                        "preferred_types": ["nature", "museum", "history", "food street"],
+                        "must_visit": ["用户点名必去的景点"],
+                        "preferred_types": ["nature", "museum", "history", "food_street", "shopping", "entertainment"],
                         "avoid": [],
                         "pace": "relaxed|normal|packed|unknown",
                     },
                     "traffic": {
-                        "preference": "public_transport|fastest|cheapest|taxi|normal",
+                        "preference": "fastest|comfort|public_transport|cheapest|taxi|normal",
                         "avoid": [],
                         "max_transfer": None,
                         "walking_tolerance": "low|normal|high|unknown",
                     },
                     "hotel": {
-                        "preferred_features": ["quiet", "good environment", "near subway"],
-                        "preferred_area": None,
-                        "hotel_type": None,
+                        "preferred_features": ["quiet", "good_environment", "near_subway", "luxury", "spacious", "breakfast"],
+                        "preferred_area": "用户偏好的住宿区域 or null",
+                        "hotel_type": "luxury|high_end|comfort|economy|any —— 根据预算和舒适度要求推断，高预算+舒适→luxury/high_end",
                     },
                     "general": {
-                        "budget_level": "low|normal|high|unknown",
-                        "travel_style": "budget|comfort|balanced|unknown",
+                        "budget_level": "high|normal|low|unknown",
+                        "travel_style": "comfort|balanced|budget|unknown",
                         "special_needs": [],
                     },
                 },
@@ -1070,14 +1147,135 @@ def _task_analysis_prompt(question: str, fallback: dict[str, Any], available_age
         "你是 Coordinator 的任务解析器，只把用户自然语言解析成 travel_task JSON 和 workflow_dag。",
         "请参考 payload 中的 available_agents_from_registry 字段，那里列出了当前存活可用的 Agent 及其 capabilities（能力）。",
         "你需要根据用户的实际提问和当前存活的 Agent，动态规划需要调用的 agent 及其依赖关系。",
-        "例如：如果用户询问景点，那需要先调用天气 Agent 获取天气信息，再调用景点 Agent 推荐景点，也就是景点的 Agent depends on 天气的 Agent。同理，交通 Agent 可能还需要 depends on 酒店 Agent 和景点 Agent 的结果。另外，行李准备 Agent (packing_agent) 只需要天气信息即可，因此它可以只 depends on 天气 Agent，和景点、酒店等完全并行执行！",
-        # "例如：如果用户只问天气和交通，那就只返回对应能力的 agent，并且 depends_on 都为 [] (并行执行)。",
-        "不要安排天气、景点或交通方案；不要输出 Markdown；只输出 JSON。",
+        "",
+        "【推理链规则】请根据用户描述推断合理的约束值，而非机械填枚举：",
+        "  - '预算不限、舒适为主' → budget_level=high, travel_style=comfort,",
+        "    hotel_type=luxury 或 high_end, transport_preference=taxi（舒适优先应少走路多打车）,",
+        "    pace=relaxed, walking_tolerance=low",
+        "  - '最顶级的服务、奢华' → budget_level=high, travel_style=comfort,",
+        "    hotel_type=luxury, transport_preference=taxi, pace=relaxed,",
+        "    walking_tolerance=low（全程打车、专车接送、不挤公交地铁）",
+        "  - '打车为主、不想挤地铁' → transport_preference=taxi, walking_tolerance=low",
+        "  - '优先地铁、公交为主' → transport_preference=public_transport, walking_tolerance=high",
+        "  - '穷游、省钱' → budget_level=low, travel_style=budget,",
+        "    hotel_type=economy, transport_preference=cheapest 或 public_transport",
+        "  - '性价比、适中' → budget_level=normal, travel_style=balanced,",
+        "    hotel_type=comfort, transport_preference=normal",
+        "",
+        "【raw_constraints 字段】这是最重要的字段。用自然语言总结用户的核心诉求，",
+        "不要压缩成枚举值。下游 Agent 的 LLM 会读取这个字段来做领域内决策。",
+        "写清楚：预算态度、舒适度要求、节奏偏好、交通偏好、住宿档次、特殊需求。",
+        "",
+        "【DAG 规则】例如：景点 Agent depends_on 天气 Agent；",
+        "交通 Agent depends_on 酒店 Agent + 景点 Agent；",
+        "行李 Agent depends_on 天气 Agent。",
+        "Workflow rule: 一般旅行规划请求应启用所有在线的旅行 Agent。",
+        "",
+        "Date rule: 使用 payload.current_date 作为今天。把 明天/后天/下周/下下周/下周二",
+        "等相对日期换算为 ISO YYYY-MM-DD。绝对不要对相对日期输出 unspecified 或 null。",
+        "Weather MCP 只接受 ISO 日期，不要把 下周、中秋节 等词传入 MCP 字段。",
+        "",
+        "不要输出 Markdown；只输出 JSON。",
         json.dumps(payload, ensure_ascii=False, default=str),
     ])
 
 
-def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str) -> dict[str, Any]:
+def _default_travel_dag(question: str, available_agents: dict[str, Any]) -> list[dict[str, Any]]:
+    # 生成默认旅行DAG工作流
+    excluded = _explicitly_excluded_agents(question)
+    candidates = [
+        {"node_id": "weather_agent", "agent": "weather_agent", "depends_on": []},
+        {"node_id": "packing_agent", "agent": "packing_agent", "depends_on": ["weather_agent"]},
+        {"node_id": "attraction_agent", "agent": "attraction_agent", "depends_on": ["weather_agent"]},
+        {"node_id": "hotel_agent", "agent": "hotel_agent", "depends_on": ["weather_agent", "attraction_agent"]},
+        {"node_id": "traffic_agent", "agent": "traffic_agent", "depends_on": ["weather_agent", "attraction_agent", "hotel_agent"]},
+    ]
+    result: list[dict[str, Any]] = []
+    included_node_ids: set[str] = set()
+    for node in candidates:
+        agent = node["agent"]
+        if agent in excluded:
+            continue
+        if available_agents and agent not in available_agents:
+            continue
+        deps = [dep for dep in node.get("depends_on", []) if dep in included_node_ids]
+        result.append({"node_id": node["node_id"], "agent": agent, "depends_on": deps})
+        included_node_ids.add(node["node_id"])
+    return result
+
+
+def _explicitly_excluded_agents(question: str) -> set[str]:
+    # 识别用户明确排除的agent
+    text = str(question or "")
+    excluded: set[str] = set()
+    if any(marker in text for marker in ["不考虑酒店", "不需要酒店", "不订酒店", "不用酒店", "不考虑住宿", "不需要住宿", "不用住宿", "不安排住宿"]):
+        excluded.add("hotel_agent")
+    if any(marker in text for marker in ["不考虑交通", "不需要交通", "不用交通", "不安排交通", "不用规划交通", "不查路线", "不考虑路线"]):
+        excluded.add("traffic_agent")
+    return excluded
+
+
+def _llm_missed_required_iso_date(question: str, travel_task: dict[str, Any]) -> bool:
+    # 检查LLM是否遗漏ISO日期转换
+    days = _safe_task_days(travel_task.get("days"))
+    if not _parse_date_constraint(question, days=days):
+        return False
+    return not _is_iso_date(travel_task.get("start_date"))
+
+
+def _is_iso_date(value: Any) -> bool:
+    # 判断值是否为ISO格式日期
+    return is_internal_iso_date(value)
+
+
+def _ensure_travel_workflow_dag(
+    workflow_dag: list[Any],
+    default_dag: list[dict[str, Any]],
+    available_agents: dict[str, Any],
+) -> list[dict[str, Any]]:
+    # 规范化LLM生成的DAG工作流
+    normalized: list[dict[str, Any]] = []
+    seen_agents: set[str] = set()
+    for node in workflow_dag:
+        if not isinstance(node, dict):
+            continue
+        agent = str(node.get("agent") or node.get("node_id") or "").strip()
+        if not agent or agent in seen_agents:
+            continue
+        if available_agents and agent not in available_agents:
+            continue
+        node_id = str(node.get("node_id") or agent).strip()
+        depends_on = node.get("depends_on")
+        normalized.append(
+            {
+                "node_id": node_id,
+                "agent": agent,
+                "depends_on": [str(item) for item in depends_on] if isinstance(depends_on, list) else [],
+            }
+        )
+        seen_agents.add(agent)
+
+    known_node_ids = {node["node_id"] for node in normalized}
+    for default_node in default_dag:
+        agent = default_node["agent"]
+        if agent in seen_agents:
+            continue
+        if available_agents and agent not in available_agents:
+            continue
+        deps = [dep for dep in default_node.get("depends_on", []) if dep in known_node_ids]
+        normalized.append({"node_id": default_node["node_id"], "agent": agent, "depends_on": deps})
+        known_node_ids.add(default_node["node_id"])
+        seen_agents.add(agent)
+    return normalized or list(default_dag)
+
+
+def _normalize_travel_task(
+    value: Any,
+    fallback: dict[str, Any],
+    *,
+    parser: str,
+    apply_rule_date_fallback: bool = True,
+) -> dict[str, Any]:
     '''
     对llm输出的task做规范化
     返回规范化后的task
@@ -1085,11 +1283,20 @@ def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str)
     if not isinstance(value, dict):
         result = dict(fallback)
         result["_parser"] = "rule_fallback_invalid_llm"
+        _resolve_task_dates(result, str(fallback.get("_raw_question") or ""))
         return result
     result = dict(fallback)
-    for key in ["origin_city", "destination_city", "start_date", "budget_level", "transport_preference"]:
+    for key in ["origin_city", "destination_city", "budget_level", "transport_preference"]:
         if isinstance(value.get(key), str) and value[key].strip() and value[key] != "null":
             result[key] = value[key].strip()
+    result["budget_level"] = normalize_budget_level(result.get("budget_level"))
+    result["transport_preference"] = normalize_transport_preference(result.get("transport_preference"))
+    if _is_valid_date_label(value.get("start_date")):
+        result["start_date"] = str(value["start_date"]).strip()
+    if _is_valid_date_label(value.get("end_date")):
+        result["end_date"] = str(value["end_date"]).strip()
+    if isinstance(value.get("date_text"), str) and value["date_text"].strip():
+        result["date_text"] = value["date_text"].strip()
     if isinstance(value.get("days"), int) and 1 <= value["days"] <= 30:
         result["days"] = value["days"]
     elif isinstance(value.get("days"), str) and value["days"].isdigit():
@@ -1100,6 +1307,8 @@ def _normalize_travel_task(value: Any, fallback: dict[str, Any], *, parser: str)
     # 新增
     result["constraints"] = _normalize_task_constraints(value.get("constraints"), result)
     _sync_legacy_fields_from_constraints(result)
+    if apply_rule_date_fallback:
+        _resolve_task_dates(result, str(fallback.get("_raw_question") or ""))
     result.setdefault("avoid", [])
     result["_parser"] = parser
     return result
@@ -1112,13 +1321,14 @@ def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
     origin_city = _extract_origin_city(question)
     destination_city = _extract_destination_city(question, origin_city)
     days = _extract_days(question)
-    budget_level = "low" if any(word in question for word in ["低预算", "省钱", "便宜", "穷游"]) else "normal"
+    budget_level = _infer_budget_level(question)
     transport_preference = (
         "public_transport"
         if any(word in question for word in ["公共交通", "地铁", "公交", "少打车", "不打车"])
         else "normal"
     )
     must_visit = _extract_must_visit(question)
+    date_info = _parse_date_constraint(question, days=days)
     preferences = ["经典景点"]
     if budget_level == "low":
         preferences.append("低预算")
@@ -1129,6 +1339,11 @@ def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
         "destination_city": destination_city,
         "days": days,
         "start_date": "明天" if "明天" in question else "未指定",
+        "start_date": date_info.get("start_date") or "未指定",
+        "end_date": date_info.get("end_date"),
+        "date_text": date_info.get("date_text"),
+        "date_source": date_info.get("date_source"),
+        "date_confidence": date_info.get("date_confidence"),
         "budget_level": budget_level,
         "transport_preference": transport_preference,
         "must_visit": must_visit,
@@ -1143,7 +1358,162 @@ def _extract_travel_task_by_rules(question: str) -> dict[str, Any]:
             question=question,
         ),
         "_parser": "rule_fallback",
+        "_raw_question": question,
     }
+
+
+def _infer_budget_level(question: str, default: str = "normal") -> str:
+    # 从问题中推断预算等级
+    text = str(question or "")
+    low_markers = ["\u4f4e\u9884\u7b97", "\u7701\u94b1", "\u4fbf\u5b9c", "\u7a77\u6e38"]
+    high_markers = [
+        "\u9884\u7b97\u5145\u8db3",
+        "\u9884\u7b97\u9ad8",
+        "\u9ad8\u9884\u7b97",
+        "\u8212\u9002",
+        "\u8212\u670d",
+        "\u54c1\u8d28",
+        "\u9ad8\u7aef",
+        "\u5962\u534e",
+    ]
+    if any(marker in text for marker in low_markers):
+        return "low"
+    if any(marker in text for marker in high_markers):
+        return "high"
+    return default
+
+
+def _infer_travel_style(question: str, budget_level: str) -> str:
+    # 从问题中推断旅行风格
+    if budget_level == "low":
+        return "budget"
+    if budget_level == "high" or any(
+        marker in str(question or "")
+        for marker in ["\u8212\u9002", "\u8212\u670d", "\u54c1\u8d28", "\u9ad8\u7aef", "\u5962\u534e"]
+    ):
+        return "comfort"
+    return "balanced"
+
+
+def _is_valid_date_label(value: Any) -> bool:
+    # 判断日期标签是否有效
+    return not is_unknown(value)
+
+
+def _resolve_task_dates(task: dict[str, Any], question: str) -> None:
+    # 解析并填充任务日期
+    days = _safe_task_days(task.get("days"))
+    date_info = _parse_date_constraint(question, days=days)
+    if not date_info:
+        date_info = _parse_date_constraint(
+            " ".join(
+                part
+                for part in [
+                    str(task.get("date_text") or ""),
+                    str(task.get("start_date") or ""),
+                ]
+                if part
+            ),
+            days=days,
+        )
+    if date_info.get("start_date"):
+        task["start_date"] = date_info["start_date"]
+        task["end_date"] = date_info["end_date"]
+        task["date_text"] = date_info["date_text"]
+        task["date_source"] = date_info["date_source"]
+        task["date_confidence"] = date_info["date_confidence"]
+        return
+    if not _is_valid_date_label(task.get("start_date")):
+        task["start_date"] = "未指定"
+        task.pop("end_date", None)
+        task["date_source"] = "unresolved"
+        task["date_confidence"] = 0.0
+
+
+def _parse_date_constraint(text: str, *, days: int) -> dict[str, Any]:
+    # 从文本中解析日期约束
+    source = str(text or "")
+    today = date_type.today()
+    start: date_type | None = None
+    date_text = ""
+    date_source = "unresolved"
+    confidence = 0.0
+
+    iso_match = re.search(r"\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b", source)
+    if iso_match:
+        year, month, day = (int(part) for part in iso_match.groups())
+        try:
+            start = date_type(year, month, day)
+            date_text = iso_match.group(0)
+            date_source = "absolute_date_rule"
+            confidence = 0.95
+        except ValueError:
+            start = None
+
+    if start is None:
+        relative_rules = [
+            ("下下周末", _week_start(today, 2) + timedelta(days=5), "relative_weekend_rule", 0.85),
+            ("下周末", _week_start(today, 1) + timedelta(days=5), "relative_weekend_rule", 0.85),
+            ("下下周", _week_start(today, 2), "relative_week_rule", 0.8),
+            ("下周", _week_start(today, 1), "relative_week_rule", 0.8),
+            ("后天", today + timedelta(days=2), "relative_day_rule", 0.95),
+            ("明天", today + timedelta(days=1), "relative_day_rule", 0.95),
+            ("今天", today, "relative_day_rule", 0.95),
+        ]
+        for phrase, candidate, source_name, score in relative_rules:
+            if phrase in source:
+                start = candidate
+                date_text = phrase
+                date_source = source_name
+                confidence = score
+                break
+
+    if start is None and "中秋" in source:
+        festival = _mid_autumn_date(today.year)
+        if festival < today:
+            festival = _mid_autumn_date(today.year + 1)
+        start = festival
+        date_text = "中秋节假期"
+        date_source = "holiday_rule"
+        confidence = 0.75
+
+    if start is None:
+        return {}
+
+    day_count = max(1, days)
+    end = start + timedelta(days=day_count - 1)
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "date_text": date_text,
+        "date_source": date_source,
+        "date_confidence": confidence,
+    }
+
+
+def _week_start(today: date_type, weeks_ahead: int) -> date_type:
+    # 计算指定周数后的周一日期
+    monday = today - timedelta(days=today.weekday())
+    return monday + timedelta(days=7 * weeks_ahead)
+
+
+def _mid_autumn_date(year: int) -> date_type:
+    # 获取指定年份的中秋节日期
+    known = {
+        2026: date_type(2026, 9, 25),
+        2027: date_type(2027, 9, 15),
+        2028: date_type(2028, 10, 3),
+    }
+    return known.get(year, date_type(year, 9, 15))
+
+
+def _safe_task_days(value: Any) -> int:
+    # 安全获取并限制天数范围
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return 3
+    return min(max(days, 1), 30)
 
 
 def _normalize_task_constraints(value: Any, flat_task: dict[str, Any]) -> dict[str, Any]:
@@ -1203,13 +1573,16 @@ def _build_task_constraints(
         hotel_features.append("环境好")
     if any(word in question for word in ["近地铁", "地铁方便", "交通方便"]):
         hotel_features.append("近地铁")
+    travel_style = _infer_travel_style(question, budget_level)
+    if travel_style == "comfort":
+        hotel_features.extend(["环境好", "舒适"])
 
     return {
         "attractions": {
             "must_visit": list(dict.fromkeys(must_visit)),
             "preferred_types": list(dict.fromkeys(preferred_types)),
             "avoid": avoid,
-            "pace": "normal",
+            "pace": "relaxed" if travel_style == "comfort" else "normal",
         },
         "traffic": {
             "preference": transport_preference or "normal",
@@ -1224,7 +1597,7 @@ def _build_task_constraints(
         },
         "general": {
             "budget_level": budget_level or "normal",
-            "travel_style": "budget" if budget_level == "low" else "balanced",
+            "travel_style": travel_style,
             "special_needs": [],
         },
     }
@@ -1245,18 +1618,22 @@ def _sync_legacy_fields_from_constraints(task: dict[str, Any]) -> None:
     if isinstance(attractions.get("preferred_types"), list):
         task["preferences"] = _as_clean_list(attractions.get("preferred_types"))
     if isinstance(general.get("budget_level"), str) and general.get("budget_level"):
-        task["budget_level"] = str(general["budget_level"])
+        task["budget_level"] = normalize_budget_level(general["budget_level"])
+        general["budget_level"] = task["budget_level"]
     if isinstance(traffic.get("preference"), str) and traffic.get("preference"):
-        task["transport_preference"] = str(traffic["preference"])
+        task["transport_preference"] = normalize_transport_preference(traffic["preference"])
+        traffic["preference"] = task["transport_preference"]
 
 
 def _as_clean_list(value: Any) -> list[str]:
+    # 清理并规范化列表元素
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _extract_origin_city(text: str) -> str | None:
+    # 从文本中提取出发城市
     for city in ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]:
         if f"从{city}" in text:
             return city
@@ -1264,6 +1641,7 @@ def _extract_origin_city(text: str) -> str | None:
 
 
 def _extract_destination_city(text: str, origin_city: str | None = None) -> str:
+    # 从文本中提取目的城市
     cities = ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]
     for city in cities:
         if f"去{city}" in text or f"到{city}" in text:
@@ -1275,6 +1653,7 @@ def _extract_destination_city(text: str, origin_city: str | None = None) -> str:
 
 
 def _extract_days(text: str) -> int:
+    # 从文本中提取旅行天数
     cn_digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
     match = re.search(r"(\d+)\s*天", text)
     if match:
@@ -1286,6 +1665,7 @@ def _extract_days(text: str) -> int:
 
 
 def _extract_must_visit(text: str) -> list[str]:
+    # 从文本中提取必去景点
     known_spots = ["天安门广场", "天安门", "故宫", "国家博物馆", "天坛", "颐和园", "圆明园", "什刹海", "南锣鼓巷"]
     return [spot for spot in known_spots if spot in text]
 
@@ -1294,6 +1674,7 @@ def _extract_must_visit(text: str) -> list[str]:
 
 
 def build_collaboration_contracts(state: CoordinatorState) -> dict[str, Any]:
+    # 构建协作接口文档
     return {
         "user_to_coordinator": {
             "owner": "coordinator teammate",
@@ -1514,11 +1895,14 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     origin = travel_task.get("origin_city") or "出发地"
     dest = travel_task.get("destination_city") or "目的地"
     days = travel_task.get("days") or (len(daily_plan) if isinstance(daily_plan, dict) and daily_plan else "若干")
-    budget_text = "低预算" if travel_task.get("budget_level") == "low" else "普通预算"
-    transport_text = "公共交通优先" if travel_task.get("transport_preference") == "public_transport" else "按用户偏好安排交通"
+    budget_text = display_budget_level(travel_task.get("budget_level"))
+    transport_text = display_transport_preference(travel_task.get("transport_preference"))
 
     lines: list[str] = []
-    lines.append(f"下面是从{origin}到{dest}的{days}天{budget_text}旅行方案，整体按{transport_text}安排。")
+    if travel_task.get("origin_city"):
+        lines.append(f"下面是从{origin}到{dest}的{days}天{budget_text}旅行方案，整体按{transport_text}安排。")
+    else:
+        lines.append(f"下面是{dest}{days}天{budget_text}旅行方案，整体按{transport_text}安排。")
 
     weather_constraints = weather.get("weather_constraints", {}) or {}
     packing_list = facts.get("packing_list", [])
@@ -1533,7 +1917,12 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
             weather_line = f"- {dest}{date}天气{raw_condition}，{schedule}。"
             if clothing:
                 weather_line += f"{_format_advice_text(clothing)}。"
-            lines.append(weather_line)
+            weather_by_day = weather_constraints.get("weather_by_day")
+            if not (isinstance(weather_by_day, list) and weather_by_day):
+                lines.append(weather_line)
+            weather_by_day = weather_constraints.get("weather_by_day")
+            if isinstance(weather_by_day, list) and weather_by_day:
+                lines.extend(_format_weather_constraint_lines(dest, weather_constraints))
         
         if packing_list:
             lines.append("- 行李准备建议：")
@@ -1563,9 +1952,6 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
             reservations = day.get("reservation_required") or []
             if reservations:
                 line += f"需提前预约：{'、'.join(str(x) for x in reservations)}。"
-            notes = day.get("notes") or []
-            if notes:
-                line += f"备注：{'；'.join(str(x) for x in notes)}。"
             lines.append(line)
         lines.append(f"景点门票小计：{_format_money_range(ticket_total)}。")
 
@@ -1574,7 +1960,6 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         selected = hotel_plan.get("selected_hotel", {}) if isinstance(hotel_plan.get("selected_hotel"), dict) else {}
         lines.append(
             f"- 建议住宿区域：{hotel_plan.get('recommended_area', '待确认')}。"
-            f"理由：{hotel_plan.get('area_reason', '方便连接每日景点')}。"
         )
         if selected:
             lines.append(
@@ -1582,7 +1967,6 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                 f"类型：{selected.get('type', '经济型住宿')}，"
                 f"最近地铁：{selected.get('nearest_subway', '待确认')}，"
                 f"参考价格：{selected.get('price_per_night', '待确认')}元/晚。"
-                f"选择理由：{hotel_plan.get('hotel_reason', '兼顾低预算和交通便利')}。"
             )
         lines.append(f"住宿费用小计：{_format_money_range(hotel_total)}。")
 
@@ -1617,12 +2001,10 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
                     f"{_format_transport_mode(segment.get('selected_mode', ''))}，{segment.get('route', '')}，"
                     f"约{segment.get('estimated_duration_minutes', '未知')}分钟，"
                     f"费用约{segment.get('estimated_cost_yuan', '未知')}元。"
-                    f"选择理由：{segment.get('reason', '')}。"
                 )
         if isinstance(traffic_summary, dict) and traffic_summary:
             lines.append(
-                f"- 交通总体策略：{traffic_summary.get('main_strategy', '公共交通优先')}；"
-                f"预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost', '待确认')}。"
+                f"- 预计市内交通费用：{traffic_summary.get('total_estimated_local_transport_cost', '待确认')}。"
             )
         lines.append(f"市内交通小计：{_format_money_range(traffic_total)}。")
 
@@ -1649,6 +2031,7 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
 
 
 def _extract_ticket_total(estimated_cost: dict[str, Any], daily_plan: dict[str, Any]) -> tuple[float, float] | None:
+    # 提取门票费用总计
     if isinstance(estimated_cost, dict) and estimated_cost.get("ticket_total"):
         return _parse_money_range(estimated_cost.get("ticket_total"))
     if not isinstance(daily_plan, dict):
@@ -1663,12 +2046,14 @@ def _extract_ticket_total(estimated_cost: dict[str, Any], daily_plan: dict[str, 
 
 
 def _extract_hotel_total(hotel_plan: dict[str, Any]) -> tuple[float, float] | None:
+    # 提取住宿费用总计
     if not isinstance(hotel_plan, dict):
         return None
     return _parse_money_range(hotel_plan.get("estimated_total_hotel_cost"))
 
 
 def _extract_intercity_total(intercity_transport: dict[str, Any]) -> tuple[float, float] | None:
+    # 提取城际交通费用总计
     if not isinstance(intercity_transport, dict):
         return None
     total = _parse_money_range(intercity_transport.get("estimated_intercity_cost"))
@@ -1686,6 +2071,7 @@ def _extract_traffic_total(
     traffic_summary: dict[str, Any],
     traffic_plan: dict[str, Any],
 ) -> tuple[float, float] | None:
+    # 提取市内交通费用总计
     if isinstance(traffic_summary, dict):
         total = _parse_money_range(traffic_summary.get("total_estimated_local_transport_cost"))
         if total:
@@ -1703,6 +2089,7 @@ def _extract_traffic_total(
 
 
 def _parse_cost_range_list(value: Any) -> tuple[float, float] | None:
+    # 解析费用范围列表
     if (
         isinstance(value, list)
         and len(value) >= 2
@@ -1714,6 +2101,7 @@ def _parse_cost_range_list(value: Any) -> tuple[float, float] | None:
 
 
 def _parse_money_range(value: Any) -> tuple[float, float] | None:
+    # 解析费用金额范围
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -1738,6 +2126,7 @@ def _parse_money_range(value: Any) -> tuple[float, float] | None:
 
 
 def _sum_money_ranges(*ranges: tuple[float, float] | None) -> tuple[float, float] | None:
+    # 汇总多个费用范围
     total_low = 0.0
     total_high = 0.0
     found = False
@@ -1751,6 +2140,7 @@ def _sum_money_ranges(*ranges: tuple[float, float] | None) -> tuple[float, float
 
 
 def _format_money_range(value: tuple[float, float] | None) -> str:
+    # 格式化费用显示文本
     if not value:
         return "待确认"
     low, high = value
@@ -1762,17 +2152,44 @@ def _format_money_range(value: tuple[float, float] | None) -> str:
 
 
 def _format_amount(value: float) -> str:
+    # 格式化金额数值
     return str(int(value)) if float(value).is_integer() else f"{value:.1f}".rstrip("0").rstrip(".")
 
 
 def _format_advice_text(value: Any) -> str:
+    # 格式化建议文本
     text = str(value).strip()
     if text.startswith("建议"):
         return text
     return f"建议{text}"
 
 
+def _format_weather_constraint_lines(dest: str, weather_constraints: dict[str, Any]) -> list[str]:
+    # 格式化天气约束显示行
+    result: list[str] = []
+    weather_by_day = weather_constraints.get("weather_by_day")
+    if not isinstance(weather_by_day, list):
+        return result
+    if weather_constraints.get("forecast_unavailable"):
+        result.append("- 天气提示：出行日期距离现在太远，天气 API 无法准确预测，请临近出行前再确认。")
+    for item in weather_by_day:
+        if not isinstance(item, dict):
+            continue
+        day = item.get("day") or "day?"
+        date = item.get("date") or ""
+        condition = item.get("condition") or "天气待确认"
+        if item.get("needs_weather_recheck"):
+            result.append(f"- {day}{f'({date})' if date else ''}：{condition}，请临近出行前复查天气。")
+            continue
+        temp_parts = [str(item.get(key)) for key in ("temp_min", "temp_max") if item.get(key)]
+        temp_text = f"，气温{'-'.join(temp_parts)}" if temp_parts else ""
+        advice = "适合户外游玩" if item.get("outdoor_suitable") else "建议减少长时间户外安排"
+        result.append(f"- {dest}{day}{f'({date})' if date else ''}：{condition}{temp_text}，{advice}。")
+    return result
+
+
 def _format_transport_mode(value: Any) -> str:
+    # 格式化交通方式显示名称
     mode_map = {
         "walk": "步行",
         "bus": "公交",
@@ -1784,6 +2201,7 @@ def _format_transport_mode(value: Any) -> str:
 
 
 def _format_intercity_alternatives(alternatives: Any) -> str:
+    # 格式化备选交通方案
     if not isinstance(alternatives, list):
         return ""
     parts: list[str] = []
@@ -1808,6 +2226,7 @@ def _format_intercity_alternatives(alternatives: Any) -> str:
 
 
 def _clean_final_answer_text(text: str) -> str:
+    # 清理最终答案文本
     replacements = {
         "建议：建议": "建议",
         "。。": "。",
@@ -1830,6 +2249,7 @@ def run(
     tcp_host: str = COORDINATOR_A2A_TCP_HOST,
     tcp_port: int = COORDINATOR_A2A_TCP_PORT,
 ) -> None:
+    # 启动服务
     state = CoordinatorState(host=host, port=port, tcp_host=tcp_host, tcp_port=tcp_port)
     tcp_server = CoordinatorA2ATCPServer((tcp_host, tcp_port), CoordinatorA2ATCPRequestHandler, state)
     tcp_thread = threading.Thread(target=tcp_server.serve_forever, name="coordinator-a2a-tcp", daemon=True)
@@ -1850,6 +2270,7 @@ def run(
 
 
 def main() -> None:
+    # 命令行入口
     parser = argparse.ArgumentParser(description="Run the local A2A coordinator.")
     parser.add_argument("--host", default=COORDINATOR_HOST)
     parser.add_argument("--port", type=int, default=COORDINATOR_PORT)
@@ -1860,10 +2281,12 @@ def main() -> None:
 
 
 def _agent_execute_url(agent: dict[str, Any]) -> str:
+    # 构建agent的HTTP执行URL
     return f"http://{agent['host']}:{agent['port']}{agent.get('execute_path', '/execute_task')}"
 
 
 def _agent_tcp_url(agent: dict[str, Any]) -> str:
+    # 构建agent的TCP地址
     return tcp_url(str(agent["host"]), int(agent["port"]))
 
 
@@ -1884,6 +2307,7 @@ def _enabled_agents_view() -> dict[str, Any]:
 
 
 def _mcp_servers_view() -> dict[str, Any]:
+    # 获取MCP服务器信息视图
     return {
         name: {
             "name": server["name"],
@@ -1895,6 +2319,7 @@ def _mcp_servers_view() -> dict[str, Any]:
 
 
 def _normalize_timeout(value: Any) -> float:
+    # 规范化超时时间
     if value is None:
         return DEFAULT_TASK_TIMEOUT_SECONDS
     try:
@@ -1907,6 +2332,7 @@ def _normalize_timeout(value: Any) -> float:
 
 
 def _remaining_seconds(deadline: float) -> float:
+    # 计算剩余秒数
     return max(0.1, deadline - time.monotonic())
 
 
@@ -1919,18 +2345,21 @@ def _stage_wait_seconds(deadline: float, minimum_seconds: float = 45.0) -> float
     a few seconds and cause Traffic to start without hotel_plan. This helper
     keeps dependency order correct for the demo.
     """
-    return min(MAX_TASK_TIMEOUT_SECONDS, max(minimum_seconds, _remaining_seconds(deadline)))
+    return min(MAX_TASK_TIMEOUT_SECONDS, minimum_seconds, _remaining_seconds(deadline))
 
 
 def _looks_like_result_payload(value: Any) -> bool:
+    # 判断是否为任务结果负载
     return isinstance(value, dict) and {"source", "target", "task_id", "status"}.issubset(value)
 
 
 def _demo_fast_mode_enabled() -> bool:
+    # 判断是否为快速演示模式
     return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _coordinator_plan_prompt(question: str, targets: list[str]) -> str:
+    # 构建agent选择提示词
     return "\n".join(
         [
             "A2A_COORDINATOR_PLAN",
@@ -2047,6 +2476,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
 
 
 def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
+    # 构建最终总结提示词
     clean_payload = _build_clean_final_plan_payload(question, snapshot)
     return "\n".join(
         [
@@ -2069,6 +2499,7 @@ def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
 
 
 def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response: str) -> str:
+    # 生成降级最终答案
     results = snapshot.get("results", {}) or {}
     dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
     pending_targets = snapshot.get("pending_targets", []) or []
@@ -2083,10 +2514,10 @@ def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response
         if isinstance(payload, dict) and payload.get("status") == RESULT_SUCCESS:
             successful.append(f"- {label}: {_short_agent_result(source, payload)}")
         elif isinstance(payload, dict):
-            failed.append(f"- {label}: {_short_error(payload.get('error') or '执行失败')}")
+            failed.append(f"- {label}: {_user_friendly_error(payload.get('error') or '执行失败')}")
 
     for source, err in dispatch_errors.items():
-        failed.append(f"- {_agent_display_name(source)}: {_short_error(err)}")
+        failed.append(f"- {_agent_display_name(source)}: {_user_friendly_error(err)}")
 
     for source in pending_targets:
         failed.append(f"- {_agent_display_name(str(source))}: 未返回结果")
@@ -2105,6 +2536,7 @@ def _fallback_final_answer(question: str, snapshot: dict[str, Any], llm_response
 
 
 def _agent_display_name(source: str) -> str:
+    # 获取agent的中文显示名称
     return {
         "weather_agent": "天气",
         "attraction_agent": "景点",
@@ -2115,6 +2547,7 @@ def _agent_display_name(source: str) -> str:
 
 
 def _short_agent_result(source: str, payload: dict[str, Any]) -> str:
+    # 生成agent结果的简短摘要
     metadata = payload.get("metadata", {}) if isinstance(payload, dict) else {}
     structured = metadata.get("structured_result", {}) if isinstance(metadata, dict) else {}
 
@@ -2147,6 +2580,7 @@ def _short_agent_result(source: str, payload: dict[str, Any]) -> str:
 
 
 def _minimal_partial_answer(successful: list[str], failed: list[str]) -> str:
+    # 生成最低限度部分回答
     if not successful:
         return "当前没有足够信息生成旅行方案，请先恢复关键 Agent 和 MCP 节点后重新提交。"
     if failed:
@@ -2154,11 +2588,36 @@ def _minimal_partial_answer(successful: list[str], failed: list[str]) -> str:
     return "已获取的信息可作为临时参考，但该任务未标记为完整完成，建议恢复节点后重新生成正式方案。"
 
 
+def _user_friendly_error(raw: Any) -> str:
+    """把内部错误信息转成用户可读的简短提示"""
+    text = str(raw or "").strip()
+    if not text:
+        return "暂时无法获取数据，请稍后重试"
+    # MCP 超时
+    if "timed out" in text.lower():
+        return "数据服务响应超时，请稍后重试"
+    # MCP 上游错误
+    if "upstream" in text.lower() or "-32003" in text:
+        return "数据服务暂时不可用"
+    # 调度超时
+    if "callback timed out" in text.lower():
+        return "处理超时，该模块未能及时返回结果"
+    # TCP 错误
+    if "tcp" in text.lower() or "connection" in text.lower():
+        return "服务连接异常"
+    # 兜底：截短
+    if len(text) > 40:
+        return text[:40] + "…"
+    return text
+
+
 def _short_error(value: Any, max_chars: int = 90) -> str:
+    # 截断错误信息
     return _short_text(value or "未知错误", max_chars=max_chars)
 
 
 def _short_text(value: Any, max_chars: int = 110) -> str:
+    # 截断文本至指定长度
     text = " ".join(str(value).split())
     if len(text) <= max_chars:
         return text

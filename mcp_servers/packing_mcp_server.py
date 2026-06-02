@@ -16,6 +16,7 @@ from mcp_servers.mock_data import get_packing_list
 
 
 def main() -> None:
+    # 启动打包清单 MCP 服务
     config = MCP_SERVERS["packing"]
     parser = argparse.ArgumentParser(description="Run Packing MCP Server.")
     parser.add_argument("--host", default=config["host"])

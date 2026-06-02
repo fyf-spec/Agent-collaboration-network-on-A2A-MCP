@@ -1,0 +1,92 @@
+{
+  "attractions": {
+    "北京": [
+      {"name": "故宫", "aliases": ["故宫博物院", "紫禁城"], "ticket": "40-60元", "duration": "3-5小时", "open_time": "08:30-17:00，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "天安门东站/天安门西站", "tags": ["历史文化", "博物馆", "必去"]},
+      {"name": "天安门广场", "ticket": 0, "duration": "1-2小时", "open_time": "按预约时段开放", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "天安门东站/天安门西站", "tags": ["地标", "历史", "免费"]},
+      {"name": "景山公园", "ticket": "2-10元", "duration": "1-2小时", "open_time": "06:00-21:00", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "南锣鼓巷站/北海北站", "tags": ["俯瞰故宫", "公园", "低价"]},
+      {"name": "天坛", "ticket": "15-34元", "duration": "2-3小时", "open_time": "06:00-22:00，景点院落按时段开放", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "天坛东门站", "tags": ["世界遗产", "历史文化", "公园"]},
+      {"name": "颐和园", "ticket": "20-60元", "duration": "3-5小时", "open_time": "06:00-20:00", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "北宫门站/西苑站", "tags": ["皇家园林", "湖景", "世界遗产"]},
+      {"name": "八达岭长城", "ticket": "35-40元", "duration": "3-5小时", "open_time": "07:30-18:00", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "清河站换乘市郊铁路/公交", "tags": ["长城", "世界遗产", "户外"]}
+    ],
+    "上海": [
+      {"name": "外滩", "ticket": 0, "duration": "1-2小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "南京东路站", "tags": ["城市地标", "夜景", "免费"]},
+      {"name": "南京路步行街", "ticket": 0, "duration": "1-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "人民广场站/南京东路站", "tags": ["步行街", "购物", "免费"]},
+      {"name": "豫园", "ticket": "30-40元", "duration": "1.5-2小时", "open_time": "09:00-16:30", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "豫园站", "tags": ["古典园林", "历史文化", "老城厢"]},
+      {"name": "上海博物馆", "ticket": 0, "duration": "2-3小时", "open_time": "09:00-17:00，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "indoor", "nearest_subway": "人民广场站", "tags": ["博物馆", "室内", "免费"]},
+      {"name": "陆家嘴", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "陆家嘴站", "tags": ["城市天际线", "夜景", "商圈"]},
+      {"name": "田子坊", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "打浦桥站", "tags": ["弄堂", "文创", "citywalk"]}
+    ],
+    "广州": [
+      {"name": "沙面岛", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "黄沙站/文化公园站", "tags": ["历史街区", "建筑", "citywalk"]},
+      {"name": "永庆坊", "ticket": 0, "duration": "2-3小时", "open_time": "街区全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "长寿路站/黄沙站", "tags": ["西关", "历史街区", "美食"]},
+      {"name": "陈家祠", "ticket": 10, "duration": "1.5-2小时", "open_time": "09:00-17:30", "reservation_required": false, "indoor_or_outdoor": "indoor", "nearest_subway": "陈家祠站", "tags": ["博物馆", "岭南建筑", "室内"]},
+      {"name": "越秀公园", "ticket": 0, "duration": "2-3小时", "open_time": "06:00-22:00", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "越秀公园站", "tags": ["公园", "五羊石像", "免费"]},
+      {"name": "北京路步行街", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "公园前站/北京路站", "tags": ["步行街", "美食", "购物"]},
+      {"name": "广州塔", "ticket": 150, "duration": "2-3小时", "open_time": "09:30-22:30", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "广州塔站", "tags": ["地标", "夜景", "观景"]}
+    ],
+    "深圳": [
+      {"name": "深圳湾公园", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "深圳湾公园站", "tags": ["海滨", "骑行", "免费"]},
+      {"name": "莲花山公园", "ticket": 0, "duration": "1.5-2小时", "open_time": "06:00-23:00", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "少年宫站/莲花村站", "tags": ["公园", "城市景观", "免费"]},
+      {"name": "南头古城", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "中山公园站/桃园站", "tags": ["历史街区", "citywalk", "美食"]},
+      {"name": "世界之窗", "ticket": "220元左右", "duration": "4-6小时", "open_time": "09:00-22:00", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "世界之窗站", "tags": ["主题公园", "演出", "亲子"]},
+      {"name": "大梅沙海滨公园", "ticket": 0, "duration": "3-4小时", "open_time": "07:00-23:00", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "大梅沙站", "tags": ["海滩", "户外", "免费"]}
+    ],
+    "杭州": [
+      {"name": "西湖", "ticket": 0, "duration": "3-5小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "龙翔桥站/凤起路站", "tags": ["湖景", "经典景点", "步行"]},
+      {"name": "灵隐寺", "ticket": 75, "duration": "2-3小时", "open_time": "07:00-18:15", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "黄龙体育中心站后换乘公交", "tags": ["寺庙", "飞来峰", "预约"]},
+      {"name": "西溪湿地", "ticket": "70-80元", "duration": "3-5小时", "open_time": "08:00-17:30", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "西溪湿地南站", "tags": ["湿地", "自然", "户外"]},
+      {"name": "河坊街", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "定安路站/吴山广场站", "tags": ["老街", "美食", "免费"]},
+      {"name": "京杭大运河", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "拱宸桥东站", "tags": ["运河", "历史", "步行"]},
+      {"name": "良渚古城遗址公园", "ticket": "60元左右", "duration": "3-5小时", "open_time": "09:00-17:00", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "良渚站后换乘公交", "tags": ["世界遗产", "考古", "户外"]}
+    ],
+    "南京": [
+      {"name": "中山陵", "ticket": 0, "duration": "2-3小时", "open_time": "08:30-17:00，周一部分区域闭馆", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "苜蓿园站后换乘", "tags": ["历史", "钟山风景区", "免费"]},
+      {"name": "南京博物院", "ticket": 0, "duration": "3-4小时", "open_time": "09:00-17:00，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "indoor", "nearest_subway": "明故宫站", "tags": ["博物馆", "室内", "免费"]},
+      {"name": "夫子庙秦淮河", "ticket": 0, "duration": "2-3小时", "open_time": "街区全天开放，游船另计", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "夫子庙站", "tags": ["夜景", "老街", "美食"]},
+      {"name": "玄武湖公园", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "玄武门站", "tags": ["湖景", "公园", "免费"]},
+      {"name": "总统府", "ticket": "35-40元", "duration": "2-3小时", "open_time": "08:30-17:00，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "大行宫站", "tags": ["历史建筑", "展馆", "预约"]}
+    ],
+    "成都": [
+      {"name": "宽窄巷子", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "宽窄巷子站", "tags": ["老街", "美食", "citywalk"]},
+      {"name": "武侯祠", "ticket": "50元左右", "duration": "2-3小时", "open_time": "09:00-18:00", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "高升桥站", "tags": ["三国文化", "历史", "园林"]},
+      {"name": "锦里古街", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "高升桥站", "tags": ["古街", "美食", "夜景"]},
+      {"name": "成都大熊猫繁育研究基地", "ticket": "55元左右", "duration": "3-4小时", "open_time": "07:30-18:00", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "熊猫大道站后换乘", "tags": ["熊猫", "亲子", "热门"]},
+      {"name": "杜甫草堂", "ticket": "50元左右", "duration": "2-3小时", "open_time": "09:00-18:00", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "草堂北路站", "tags": ["诗歌文化", "园林", "历史"]}
+    ],
+    "重庆": [
+      {"name": "洪崖洞", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，夜景灯光按实际开放", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "小什字站", "tags": ["夜景", "吊脚楼", "免费"]},
+      {"name": "解放碑", "ticket": 0, "duration": "1-2小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "临江门站/较场口站", "tags": ["地标", "商圈", "免费"]},
+      {"name": "磁器口古镇", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "磁器口站", "tags": ["古镇", "美食", "老街"]},
+      {"name": "李子坝轻轨站", "ticket": 0, "duration": "0.5-1小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "李子坝站", "tags": ["城市交通", "打卡", "免费"]},
+      {"name": "长江索道", "ticket": "20-30元", "duration": "1-2小时", "open_time": "08:00-22:00", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "小什字站/上新街站", "tags": ["索道", "江景", "预约"]}
+    ],
+    "武汉": [
+      {"name": "黄鹤楼", "ticket": "70元左右", "duration": "2-3小时", "open_time": "08:30-18:00", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "司门口黄鹤楼站", "tags": ["名楼", "历史", "地标"]},
+      {"name": "东湖", "ticket": 0, "duration": "3-5小时", "open_time": "全天开放，部分景区另计", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "省博湖北日报站/梨园站", "tags": ["湖景", "骑行", "免费"]},
+      {"name": "湖北省博物馆", "ticket": 0, "duration": "2-3小时", "open_time": "09:00-17:00，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "indoor", "nearest_subway": "省博湖北日报站", "tags": ["博物馆", "室内", "免费"]},
+      {"name": "江汉路步行街", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "江汉路站", "tags": ["步行街", "美食", "建筑"]},
+      {"name": "武汉长江大桥", "ticket": 0, "duration": "1-2小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "司门口黄鹤楼站", "tags": ["江景", "城市地标", "免费"]}
+    ],
+    "西安": [
+      {"name": "秦始皇帝陵博物院", "aliases": ["兵马俑"], "ticket": "120元左右", "duration": "3-4小时", "open_time": "08:30-18:00", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "华清池站后换乘", "tags": ["世界遗产", "历史", "热门"]},
+      {"name": "西安城墙", "ticket": "54元左右", "duration": "2-3小时", "open_time": "08:00-22:00", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "永宁门站", "tags": ["城墙", "骑行", "夜景"]},
+      {"name": "陕西历史博物馆", "ticket": 0, "duration": "2-3小时", "open_time": "09:00-17:30，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "indoor", "nearest_subway": "小寨站/大雁塔站", "tags": ["博物馆", "室内", "预约"]},
+      {"name": "大雁塔", "ticket": "登塔另计", "duration": "1.5-2小时", "open_time": "08:30-18:00", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "大雁塔站", "tags": ["历史文化", "地标", "广场"]},
+      {"name": "回民街", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "钟楼站", "tags": ["美食", "老街", "免费"]}
+    ],
+    "苏州": [
+      {"name": "拙政园", "ticket": "70-90元", "duration": "2-3小时", "open_time": "07:30-17:30", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "北寺塔站后步行/公交", "tags": ["古典园林", "世界遗产", "预约"]},
+      {"name": "苏州博物馆", "ticket": 0, "duration": "2-3小时", "open_time": "09:00-17:00，周一通常闭馆", "reservation_required": true, "indoor_or_outdoor": "indoor", "nearest_subway": "北寺塔站", "tags": ["博物馆", "建筑", "免费"]},
+      {"name": "平江路", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "相门站", "tags": ["历史街区", "美食", "citywalk"]},
+      {"name": "虎丘", "ticket": "60-70元", "duration": "2-3小时", "open_time": "07:30-17:30", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "虎丘站", "tags": ["园林", "历史", "户外"]},
+      {"name": "金鸡湖", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "东方之门站", "tags": ["湖景", "夜景", "免费"]}
+    ],
+    "天津": [
+      {"name": "五大道", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "小白楼站", "tags": ["历史街区", "建筑", "citywalk"]},
+      {"name": "意式风情区", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "建国道站", "tags": ["历史街区", "餐饮", "免费"]},
+      {"name": "天津之眼", "ticket": "70-100元", "duration": "1-2小时", "open_time": "09:30-21:30", "reservation_required": true, "indoor_or_outdoor": "mixed", "nearest_subway": "西北角站后步行/公交", "tags": ["摩天轮", "夜景", "预约"]},
+      {"name": "古文化街", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "东南角站", "tags": ["老街", "民俗", "美食"]},
+      {"name": "海河", "ticket": 0, "duration": "1-2小时", "open_time": "全天开放，游船另计", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "津湾广场站", "tags": ["河景", "夜景", "免费"]}
+    ]
+  }
+}

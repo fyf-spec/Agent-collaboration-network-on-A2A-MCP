@@ -3,4 +3,7 @@
 __pycache__/
 *.pyc
 logs/*.jsonl
-api_test.py
+logs/*.txt
+logs/*.json
+PROJECT_HANDOFF_FOR_CHATGPT.md
+REALTIME_MCP_CHECK_REPORT.md

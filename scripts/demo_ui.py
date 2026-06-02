@@ -1622,7 +1622,7 @@ with col_sidebar:
     
     st.markdown("### 全局超时参数")
     a2a_tcp_timeout = st.number_input("A2A TCP Timeout (秒)", value=3.0, step=1.0)
-    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=3.0, step=1.0)
+    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=10.0, step=1.0)
     task_timeout = st.number_input("Task 整体 Timeout (秒)", value=120.0, step=10.0)
     
     st.markdown("### 启停控制")

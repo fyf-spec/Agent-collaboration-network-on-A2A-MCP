@@ -319,10 +319,51 @@ ATTRACTION_DATA = {
 }
 
 
-def get_weather(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:
-    data = _lookup(WEATHER_DATA, city)
-    data["date"] = date or data.get("date", DEFAULT_DATE)
-    return data
+def get_weather(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, days: int = 1, **_: Any) -> dict[str, Any]:
+    """Return mock weather data. When days > 1, returns forecast_days array."""
+    from datetime import date as date_type, datetime, timedelta
+    normalized_city = (city or DEFAULT_CITY).strip()
+    data = _lookup(WEATHER_DATA, normalized_city)
+
+    # Parse the requested start date
+    start_date = date or DEFAULT_DATE
+    try:
+        base_date = datetime.strptime(start_date[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        base_date = date_type.today() + timedelta(days=1)
+
+    day_count = max(1, int(days or 1))
+
+    # Build multi-day forecast from the base data
+    base_condition = str(data.get("condition", "晴"))
+    base_temp_str = str(data.get("temp", "15°C"))
+    base_temp = int(__import__("re").findall(r"-?\d+", base_temp_str)[0]) if __import__("re").findall(r"-?\d+", base_temp_str) else 15
+    base_wind = str(data.get("wind", "微风"))
+
+    conditions_pool = ["晴", "多云", "阴", "小雨", "晴间多云", "晴", "多云转晴"]
+    forecast_days = []
+    for i in range(day_count):
+        d = base_date + timedelta(days=i)
+        temp_offset = (i * 3) % 7 - 3  # small variation across days
+        forecast_days.append({
+            "date": d.isoformat(),
+            "temp_max": f"{base_temp + temp_offset + 5}°C",
+            "temp_min": f"{base_temp + temp_offset - 3}°C",
+            "condition": conditions_pool[i % len(conditions_pool)],
+            "wind": base_wind,
+            "weather_code": 0 if "晴" in conditions_pool[i % len(conditions_pool)] else (2 if "多云" in conditions_pool[i % len(conditions_pool)] else 3),
+        })
+
+    result = {
+        "city": normalized_city,
+        "date": start_date,
+        "temp": data.get("temp", "15°C"),
+        "condition": base_condition,
+        "wind": base_wind,
+        "requested_city": normalized_city,
+        "forecast_days": forecast_days,
+    }
+    return result
 
 def get_packing_list(city: str = DEFAULT_CITY, days: int = 3, temperature: str = "", condition: str = "", **_: Any) -> dict[str, Any]:
     """Return mock packing list based on destination and weather."""
@@ -362,6 +403,7 @@ def get_packing_list(city: str = DEFAULT_CITY, days: int = 3, temperature: str =
 
 
 def get_transport(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:
+    # 获取城市交通概况数据
     data = _lookup(TRANSPORT_DATA, city)
     data["date"] = date or DEFAULT_DATE
     return data
@@ -390,6 +432,7 @@ def search_attractions(
     requested_fields = requested_fields or []
 
     def score(spot: dict[str, Any]) -> int:
+        # 根据必去景点、预算和偏好给景点排序打分
         value = 0
         name = str(spot.get("name", ""))
         area = str(spot.get("area", ""))
@@ -517,6 +560,7 @@ def get_routes(
     preference: str = "public_transport",
     **_: Any,
 ) -> dict[str, Any]:
+    # 批量获取多段路线方案
     segments = segments or []
     routes = []
     for segment in segments:
@@ -534,6 +578,7 @@ def get_routes(
 
 
 def _lookup(dataset: dict[str, dict[str, Any]], city: str) -> dict[str, Any]:
+    # 从数据集中查找城市数据，缺失则回退到默认城市
     normalized_city = (city or DEFAULT_CITY).strip()
     data = dataset.get(normalized_city) or dataset[DEFAULT_CITY]
     result = deepcopy(data)
@@ -543,6 +588,7 @@ def _lookup(dataset: dict[str, dict[str, Any]], city: str) -> dict[str, Any]:
 
 
 def _spot_area(city: str, spot_name: str) -> str | None:
+    # 查找景点或酒店所属的区域名称
     spots = ATTRACTION_DATA.get(city, [])
     for spot in spots:
         name = str(spot.get("name", ""))
@@ -565,12 +611,14 @@ def _spot_area(city: str, spot_name: str) -> str | None:
 
 
 def _same_area(city: str, origin: str, destination: str) -> bool:
+    # 判断两个地点是否属于同一区域
     origin_area = _spot_area(city, origin)
     dest_area = _spot_area(city, destination)
     return bool(origin_area and dest_area and origin_area == dest_area)
 
 
 def _generic_subway_route(city: str, origin: str, destination: str) -> str:
+    # 根据城市生成通用的地铁换乘描述
     if city == "北京":
         return "地铁为主，按地图选择最近站点换乘"
     if city == "上海":
@@ -586,6 +634,59 @@ def _generic_subway_route(city: str, origin: str, destination: str) -> str:
 
 HOTEL_DATA = {
     "北京": [
+        # ── 奢华/高端 (高预算) ──
+        {
+            "name": "北京王府半岛酒店",
+            "area": "王府井-故宫区域",
+            "price_per_night": 1800,
+            "type": "奢华五星酒店",
+            "nearest_subway": "灯市口/金鱼胡同",
+            "tags": ["奢华", "近故宫", "高品质", "管家服务"],
+            "pros": ["步行可达故宫、王府井", "房间宽敞舒适", "服务和设施一流", "适合追求高品质住宿"],
+            "cons": ["价格较高"],
+        },
+        {
+            "name": "北京国贸大酒店",
+            "area": "CBD-国贸区域",
+            "price_per_night": 1500,
+            "type": "豪华五星酒店",
+            "nearest_subway": "国贸",
+            "tags": ["高端商务", "天际线景观", "行政酒廊", "舒适优先"],
+            "pros": ["京城天际线景观", "行政酒廊待遇", "房间设施顶级", "适合商务和度假"],
+            "cons": ["距离故宫等景点需打车或地铁约20分钟"],
+        },
+        {
+            "name": "北京璞瑄酒店",
+            "area": "天安门-故宫区域",
+            "price_per_night": 2200,
+            "type": "奢华设计师酒店",
+            "nearest_subway": "中国美术馆/东四",
+            "tags": ["设计师酒店", "近故宫景山", "低调奢华", "艺术氛围"],
+            "pros": ["紧邻中国美术馆和故宫", "设计感极强", "闹中取静", "适合追求独特体验"],
+            "cons": ["价格较高", "偏好传统酒店风格者可能不适应"],
+        },
+        # ── 中端舒适型 ──
+        {
+            "name": "北京诺富特和平宾馆",
+            "area": "王府井-灯市口区域",
+            "price_per_night": 580,
+            "type": "舒适型酒店",
+            "nearest_subway": "灯市口",
+            "tags": ["舒适", "近王府井", "性价比", "国际品牌"],
+            "pros": ["步行可达王府井步行街", "国际品牌标准", "早餐品质好", "性价比高"],
+            "cons": ["房间面积中等"],
+        },
+        {
+            "name": "北京西苑饭店",
+            "area": "西直门-动物园区域",
+            "price_per_night": 450,
+            "type": "舒适型酒店",
+            "nearest_subway": "动物园/西直门",
+            "tags": ["舒适", "近动物园", "园林式", "家庭友好"],
+            "pros": ["园林式环境", "靠近动物园和天文馆", "适合家庭出行", "价格适中"],
+            "cons": ["距离故宫核心区需地铁约20分钟"],
+        },
+        # ── 经济型 (低预算) ──
         {
             "name": "前门轻居酒店",
             "area": "天坛-前门区域",
@@ -597,16 +698,6 @@ HOTEL_DATA = {
             "cons": ["核心区房间可能偏小"],
         },
         {
-            "name": "王府井青年旅舍",
-            "area": "天安门-故宫区域",
-            "price_per_night": 160,
-            "type": "青旅/床位",
-            "nearest_subway": "王府井/金鱼胡同",
-            "tags": ["低预算", "近故宫", "公共交通方便", "性价比"],
-            "pros": ["靠近故宫和天安门", "价格低", "适合低预算"],
-            "cons": ["私密性较弱", "舒适度一般"],
-        },
-        {
             "name": "东直门便捷酒店",
             "area": "东直门-雍和宫区域",
             "price_per_night": 260,
@@ -615,6 +706,16 @@ HOTEL_DATA = {
             "tags": ["交通枢纽", "地铁方便", "机场线方便"],
             "pros": ["地铁线路多", "去机场方便", "换乘便利"],
             "cons": ["离天安门和故宫不是最近"],
+        },
+        {
+            "name": "王府井青年旅舍",
+            "area": "天安门-故宫区域",
+            "price_per_night": 160,
+            "type": "青旅/床位",
+            "nearest_subway": "王府井/金鱼胡同",
+            "tags": ["低预算", "近故宫", "公共交通方便", "性价比"],
+            "pros": ["靠近故宫和天安门", "价格低", "适合低预算"],
+            "cons": ["私密性较弱", "舒适度一般"],
         },
         {
             "name": "西直门地铁站酒店",
@@ -750,6 +851,7 @@ def search_hotels(
     all_area_hints = ([target_area] if target_area else []) + preferred_areas + plan_areas
 
     def area_matches(hotel: dict[str, Any], area_hint: str) -> bool:
+        # 判断酒店是否匹配目标区域提示
         area = str(hotel.get("area", ""))
         hint = str(area_hint or "")
         if not area or not hint:
@@ -768,6 +870,7 @@ def search_hotels(
         hotels = all_hotels
 
     def score(hotel: dict[str, Any]) -> int:
+        # 根据区域匹配度、预算和偏好给酒店排序打分
         value = 0
         area = str(hotel.get("area", ""))
         tags = [str(x) for x in hotel.get("tags", [])]

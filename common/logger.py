@@ -16,6 +16,7 @@ import logging
 
 # 全局logging格式
 def setup_system_logger():
+    # 配置全局 logging 基本格式与级别
     logging.basicConfig(
         level=logging.INFO,
         format="\033[0m[%(asctime)s]\033[0m \033[36m[%(levelname)s]\033[0m [%(name)s] %(message)s",
@@ -45,6 +46,7 @@ def log_network_event(
     error_type: str | None = None,
     log_file: Path = LOG_FILE,
 ) -> dict[str, Any]:
+    # 记录网络事件到控制台和 JSONL 日志文件
     record: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "event": event,
@@ -94,6 +96,7 @@ def log_network_event(
 
 
 def _format_console_line(record: dict[str, Any]) -> str:
+    # 将日志记录格式化为带 ANSI 颜色的控制台输出行
     RESET = "\033[0m"
     DIM = "\033[2m" # 灰色
     CYAN = "\033[36m" # 青色
