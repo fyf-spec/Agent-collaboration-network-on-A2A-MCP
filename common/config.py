@@ -53,7 +53,7 @@ OPEN_METEO_MAX_FORECAST_DAYS = int(os.environ.get("OPEN_METEO_MAX_FORECAST_DAYS"
 MCP_REALTIME_TIMEOUT_SECONDS = float(os.environ.get("MCP_REALTIME_TIMEOUT_SECONDS", 5.0))
 MCP_REALTIME_FALLBACK_TO_MOCK = _env_bool("MCP_REALTIME_FALLBACK_TO_MOCK", True)
 MCP_TRAFFIC_REALTIME_ENABLED = _env_bool("MCP_TRAFFIC_REALTIME_ENABLED", True)
-MCP_TRAFFIC_MAX_WORKERS = int(os.environ.get("MCP_TRAFFIC_MAX_WORKERS", 4))
+MCP_TRAFFIC_MAX_WORKERS = int(os.environ.get("MCP_TRAFFIC_MAX_WORKERS", 8))
 MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS = float(os.environ.get("MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS", 1.5))
 MCP_TRAFFIC_MAX_SEGMENTS = int(os.environ.get("MCP_TRAFFIC_MAX_SEGMENTS", 8))
 MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", 10.0))
@@ -76,9 +76,9 @@ MCP_GATEWAY = {
         "search_attractions": 2592000.0,  # 30天
         "get_intercity_transport": 2592000.0,  # 30天
     },
-    "max_concurrent_per_method": 3,
-    "rate_limit_wait_seconds": 0.2,
-    "coalesce_wait_seconds": 5.0,
+    "max_concurrent_per_method": 10,
+    "rate_limit_wait_seconds": 0.5,
+    "coalesce_wait_seconds": 3.0,
     "upstream_timeout_seconds": MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS,
     "circuit_failure_threshold": 3,
     "circuit_cooldown_seconds": 10.0,

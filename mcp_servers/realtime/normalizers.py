@@ -252,7 +252,7 @@ def normalize_attractions(
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # ── 先做名称前缀聚类（合并同景区子区域），再做坐标去重 ──
-    all_spots = [spot for _, spot, _ in scored if _score_spot(spot) >= 2]
+    all_spots = [spot for _, spot, _ in scored if _score_spot(spot) >= 4]
     clustered = _cluster_by_name_prefix(all_spots)
 
     spots: list[dict[str, Any]] = []

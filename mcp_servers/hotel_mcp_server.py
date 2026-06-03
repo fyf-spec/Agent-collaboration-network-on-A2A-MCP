@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from common.config import A2A_REALTIME_MCP_ENABLED, MCP_REALTIME_FALLBACK_TO_MOCK, MCP_SERVERS
+from common.http_client import retry_call
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
 from mcp_servers.mock_data import search_hotels as search_mock_hotels
 from mcp_servers.realtime.amap_client import AMapClient
@@ -48,51 +49,39 @@ def search_hotels(
             fallback_used=False,
         )
     try:
-        amap = AMapClient()
-        # 优先用景点重心坐标，其次 geocode target_area
-        center: str | None = centroid
-        if not center and target_area:
-            try:
-                center = amap.geocode_city_or_address(f"{city}{target_area}")
-            except Exception:
-                center = None
+        # 实时 API 调用（失败重试1次再降级 Mock）
+        def _realtime_hotel_search():
+            amap = AMapClient()
+            center: str | None = centroid
+            if not center and target_area:
+                try:
+                    center = amap.geocode_city_or_address(f"{city}{target_area}")
+                except Exception:
+                    center = None
 
-        # 泛搜（有坐标用周边搜索，没有用文本搜索）
-        data = amap.search_hotels(city=city, target_area=target_area, limit=20, center=center)
+            data = amap.search_hotels(city=city, target_area=target_area, limit=20, center=center)
+            tier_keywords = _budget_tier_keywords(budget_level, preferences)
+            tier_data: dict[str, Any] | None = None
+            if tier_keywords:
+                try:
+                    tier_data = amap.search_pois(city=city, keywords=tier_keywords, types="100000", limit=10)
+                except Exception:
+                    tier_data = None
 
-        # 按预算档次做精确搜索
-        tier_keywords = _budget_tier_keywords(budget_level, preferences)
-        tier_data: dict[str, Any] | None = None
-        if tier_keywords:
-            try:
-                tier_data = amap.search_pois(
-                    city=city, keywords=tier_keywords, types="100000", limit=10,
-                )
-            except Exception:
-                tier_data = None
+            all_pois = list(data.get("pois", []) if isinstance(data.get("pois"), list) else [])
+            if isinstance(tier_data, dict):
+                seen_ids = {str(p.get("id") or "") for p in all_pois if isinstance(p, dict)}
+                for p in (tier_data.get("pois") or []) if isinstance(tier_data.get("pois"), list) else []:
+                    if not isinstance(p, dict): continue
+                    pid = str(p.get("id") or "")
+                    if pid and pid not in seen_ids:
+                        seen_ids.add(pid)
+                        all_pois.insert(0, p)
 
-        # 合并：精确搜结果插入最前面
-        all_pois = list(data.get("pois", []) if isinstance(data.get("pois"), list) else [])
-        if isinstance(tier_data, dict):
-            seen_ids = {str(p.get("id") or "") for p in all_pois if isinstance(p, dict)}
-            for p in (tier_data.get("pois") or []) if isinstance(tier_data.get("pois"), list) else []:
-                if not isinstance(p, dict):
-                    continue
-                pid = str(p.get("id") or "")
-                if pid and pid not in seen_ids:
-                    seen_ids.add(pid)
-                    all_pois.insert(0, p)
-
-        return normalize_hotels(
-            {"pois": all_pois},
-            city=city,
-            days=days,
-            budget_level=budget_level,
-            target_area=target_area,
-            preferred_areas=preferred_areas,
-            area_selection=area_selection,
-            limit=20,
-        )
+            return normalize_hotels({"pois": all_pois}, city=city, days=days, budget_level=budget_level,
+                target_area=target_area, preferred_areas=preferred_areas,
+                area_selection=area_selection, limit=20)
+        return retry_call(_realtime_hotel_search, retries=2, sleep_seconds=1.0)
     except Exception as exc:
         if not MCP_REALTIME_FALLBACK_TO_MOCK:
             raise

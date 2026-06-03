@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from common.config import A2A_REALTIME_MCP_ENABLED, MCP_REALTIME_FALLBACK_TO_MOCK, MCP_SERVERS
+from common.http_client import retry_call
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
 from mcp_servers.mock_data import search_attractions as search_mock_attractions
 from mcp_servers.realtime.amap_client import AMapClient
@@ -41,44 +42,33 @@ def search_attractions(
             fallback_used=False,
         )
     try:
-        amap = AMapClient()
-        # 泛搜：按偏好关键词
-        data = amap.search_attractions(city=city, preferences=preferences, limit=30)
-        all_pois = list(data.get("pois", []) if isinstance(data.get("pois"), list) else [])
+        # 实时 API 调用（失败重试1次再降级 Mock）
+        def _realtime_attraction_search():
+            amap = AMapClient()
+            data = amap.search_attractions(city=city, preferences=preferences, limit=30)
+            all_pois = list(data.get("pois", []) if isinstance(data.get("pois"), list) else [])
 
-        # 精确搜：must_visit 中的每个景点单独搜索，确保不被遗漏
-        must_ids: set[str] = set()
-        must_pois: list[dict[str, Any]] = []
-        for name in (must_visit or []):
-            if not str(name).strip():
-                continue
-            # 先按风景名胜搜，搜不到再不限类型
-            for search_types in ("110000", None):
-                try:
-                    mv_data = amap.search_pois(city=city, keywords=str(name), types=search_types, limit=5)
-                except Exception:
-                    continue
-                if mv_data.get("pois"):
-                    break
-            for poi in (mv_data.get("pois") or []) if isinstance(mv_data, dict) else []:
-                if not isinstance(poi, dict):
-                    continue
-                pid = str(poi.get("id") or "")
-                if pid and pid not in must_ids:
-                    must_ids.add(pid)
-                    must_pois.append(poi)
+            must_ids: set[str] = set()
+            must_pois: list[dict[str, Any]] = []
+            for name in (must_visit or []):
+                if not str(name).strip(): continue
+                # 先不限类型搜（高校/博物馆也能搜到），搜不到再用风景名胜
+                for search_types in (None, "110000"):
+                    try:
+                        mv_data = amap.search_pois(city=city, keywords=str(name), types=search_types, limit=5)
+                    except Exception: continue
+                    if mv_data.get("pois"): break
+                for poi in (mv_data.get("pois") or []) if isinstance(mv_data, dict) else []:
+                    if not isinstance(poi, dict): continue
+                    pid = str(poi.get("id") or "")
+                    if pid and pid not in must_ids:
+                        must_ids.add(pid)
+                        must_pois.append(poi)
 
-        # 合并：must_visit 放前面
-        merged = {"pois": must_pois + all_pois}
-        return normalize_attractions(
-            merged,
-            city=city,
-            days=days,
-            budget_level=budget_level,
-            must_visit=must_visit,
-            preferences=preferences,
-            limit=30,
-        )
+            merged = {"pois": must_pois + all_pois}
+            return normalize_attractions(merged, city=city, days=days, budget_level=budget_level,
+                must_visit=must_visit, preferences=preferences, limit=30)
+        return retry_call(_realtime_attraction_search, retries=2, sleep_seconds=1.0)
     except Exception as exc:
         if not MCP_REALTIME_FALLBACK_TO_MOCK:
             raise

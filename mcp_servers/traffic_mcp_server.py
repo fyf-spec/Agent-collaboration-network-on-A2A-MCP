@@ -21,6 +21,7 @@ from common.config import (
     MCP_TRAFFIC_REALTIME_ENABLED,
     MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS,
 )
+from common.http_client import retry_call
 from mcp_servers.base_mcp_server import MCPTool, run_mcp_server
 from mcp_servers.mock_data import (
     get_route as get_mock_route,

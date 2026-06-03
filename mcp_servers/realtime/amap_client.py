@@ -63,12 +63,15 @@ class AMapClient:
         preferences: list[str] | None = None,
         limit: int = 30,
     ) -> dict[str, Any]:
-        """Search attractions via AMap POI text search.  Falls back to broad search when preferences yield no results."""
-        keywords = " ".join(str(item) for item in preferences or [] if str(item).strip()) or "景点"
-        result = self.search_pois(city=city, keywords=keywords, types="110000", limit=limit)
-        # 如果偏好关键词没搜到结果，用宽泛关键词重试
-        if preferences and not result.get("pois"):
-            result = self.search_pois(city=city, keywords="景点", types="110000", limit=limit)
+        """Search attractions via AMap POI text search.  Preferences are NOT used as keywords to avoid bad results."""
+        # 始终用"景点"搜索，避免偏好关键词（如 nature/entertainment）污染搜索结果
+        result = self.search_pois(city=city, keywords="景点", types="110000", limit=limit)
+        # 如果搜不到，不加类型限制再试
+        if not result.get("pois"):
+            result = self.search_pois(city=city, keywords="景点", limit=limit)
+        # 检查结果是否属于目标城市
+        if not _belongs_to_city(result, city):
+            result = self.search_pois(city=city, keywords="景点", limit=limit)
         return result
 
     def search_hotels(
@@ -244,3 +247,21 @@ def _looks_number(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _belongs_to_city(result: dict[str, Any], city: str) -> bool:
+    """检查 AMap 返回的 POI 是否属于目标城市（防止高德无提示地跨城市返回错误数据）"""
+    pois = result.get("pois") if isinstance(result.get("pois"), list) else []
+    if not pois:
+        return True
+    samples = [p for p in pois[:3] if isinstance(p, dict)]
+    if not samples:
+        return True
+    # 取前3个POI的cityname/pname，看是否包含目标城市名
+    wrong = 0
+    for p in samples:
+        cn = str(p.get("cityname") or "")
+        pn = str(p.get("pname") or "")
+        if city not in cn and city not in pn:
+            wrong += 1
+    return wrong < len(samples)  # 至少一个匹配就算通过
