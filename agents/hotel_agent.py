@@ -41,7 +41,7 @@ class HotelAgent(BaseAgent):
             inputs = context.get("inputs") or {}
             upstream_results = inputs.get("upstream_results", {})
             daily_plan = _extract_daily_plan(inputs)
-            city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
+            city = str(travel_task.get("destination_city") or travel_task.get("city") or "未指定")
 
             area_options = _build_area_options(daily_plan)
             area_candidates = _area_options_to_legacy_candidates(area_options)
@@ -467,7 +467,7 @@ def _hotel_selector_prompt(
     budget_style = _hotel_style_rule(travel_task)
     raw_constraints = travel_task.get("raw_constraints") or ""
     payload = {
-        "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
+        "city": travel_task.get("destination_city") or travel_task.get("city") or "未指定",
         "days": travel_task.get("days", 3),
         "user_intent": raw_constraints,
         "selection_rule": budget_style,

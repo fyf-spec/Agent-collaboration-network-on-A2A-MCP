@@ -1066,7 +1066,7 @@ def search_attractions(
         spots = [{key: value for key, value in spot.items() if key in keep} for spot in spots]
 
     return {
-        "city": normalized_city if normalized_city in ATTRACTION_DATA else DEFAULT_CITY,
+        "city": normalized_city,
         "requested_city": normalized_city,
         "fallback_used": normalized_city not in ATTRACTION_DATA,
         "days": days,

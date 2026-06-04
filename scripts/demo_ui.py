@@ -64,6 +64,12 @@ if "GLOBAL_PROCESSES" not in st.session_state:
 # 方便后续代码引用全局字典
 _processes = st.session_state.GLOBAL_PROCESSES
 
+
+def clear_generated_content_state() -> None:
+    for key in GENERATED_CONTENT_STATE_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.generated_content_cleared_at = time.time()
+
 # --- 服务定义与启动逻辑 ---
 SERVICES = {
     "registry_center_primary": [sys.executable, "registry_center.py"],
@@ -398,6 +404,10 @@ def read_recent_network_activity(
     task_start_time = None
     if isinstance(task_start, (int, float)):
         task_start_time = datetime.fromtimestamp(max(0.0, task_start - 1.0), timezone.utc)
+    clear_marker = st.session_state.get("generated_content_cleared_at")
+    clear_time = None
+    if isinstance(clear_marker, (int, float)):
+        clear_time = datetime.fromtimestamp(clear_marker, timezone.utc)
 
     for line in lines:
         try:
@@ -407,6 +417,8 @@ def read_recent_network_activity(
 
         event_time = _parse_event_time(event.get("ts"))
         if event_time is None or (now - event_time).total_seconds() > window_seconds:
+            continue
+        if clear_time is not None and event_time < clear_time:
             continue
         if task_start_time is not None and event_time < task_start_time:
             continue
@@ -3957,6 +3969,7 @@ with col_main:
             st.warning("请输入您的旅行需求。")
         else:
             try:
+                st.session_state.pop("generated_content_cleared_at", None)
                 st.session_state.task_start_time = time.time()
                 st.session_state.task_transfer_active = True
                 capture = None
