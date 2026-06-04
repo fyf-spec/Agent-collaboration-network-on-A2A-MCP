@@ -40,7 +40,7 @@ class TrafficAgent(BaseAgent):
             upstream_results = inputs.get("upstream_results", {})
             daily_plan = _extract_daily_plan(inputs)
             hotel_plan = _extract_hotel_plan(inputs)
-            city = str(travel_task.get("destination_city") or travel_task.get("city") or self.build_mcp_params(task_payload).get("city") or "北京")
+            city = str(travel_task.get("destination_city") or travel_task.get("city") or self.build_mcp_params(task_payload).get("city") or "未指定")
             traffic_constraints = _constraint_section(travel_task, "traffic")
             general_constraints = _constraint_section(travel_task, "general")
             preference = str(traffic_constraints.get("preference") or travel_task.get("transport_preference") or "public_transport")
@@ -235,8 +235,8 @@ class TrafficAgent(BaseAgent):
     def call_intercity_transport_mcp(self, task_id: str, *, travel_task: dict[str, Any]) -> dict[str, Any]:
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
-        origin_city = str(travel_task.get("origin_city") or "上海")
-        destination_city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
+        origin_city = str(travel_task.get("origin_city") or "未指定")
+        destination_city = str(travel_task.get("destination_city") or travel_task.get("city") or "未指定")
         traffic_constraints = _constraint_section(travel_task, "traffic")
         general_constraints = _constraint_section(travel_task, "general")
         rpc_payload = {

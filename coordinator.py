@@ -1269,6 +1269,12 @@ def _normalize_travel_task(
     # 关键词覆盖：用户明确说了"打车"等，覆盖 LLM 解析
     raw_q = str(fallback.get("_raw_question") or "")
     if raw_q:
+        origin_from_text = _extract_origin_city(raw_q)
+        destination_from_text = _extract_destination_city(raw_q, origin_from_text)
+        if origin_from_text:
+            result["origin_city"] = origin_from_text
+        if not is_unknown(destination_from_text):
+            result["destination_city"] = destination_from_text
         if any(kw in raw_q for kw in ["打车", "出租车", "专车", "taxi"]):
             result["transport_preference"] = "taxi"
         elif any(kw in raw_q for kw in ["地铁", "公交", "公共交通"]):
@@ -1598,24 +1604,65 @@ def _as_clean_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+KNOWN_TRAVEL_LOCATIONS = [
+    "北京",
+    "上海",
+    "广州",
+    "深圳",
+    "杭州",
+    "南京",
+    "成都",
+    "重庆",
+    "武汉",
+    "西安",
+    "苏州",
+    "天津",
+]
+
+
+def _clean_extracted_location(value: str) -> str:
+    # 清理“去云南玩3天”这类短语里跟在地点后的动作、时长和约束词。
+    text = str(value or "").strip(" \t\r\n，,。.!！？?；;、")
+    text = re.sub(r"(?:\d+\s*天|[一二两三四五六七八九十]+天).*$", "", text)
+    for marker in ["玩", "游玩", "旅游", "旅行", "自由行", "出差", "住宿", "住", "待", "逛", "看", "要求", "并且", "同时", "尽量", "必须"]:
+        index = text.find(marker)
+        if index > 0:
+            text = text[:index]
+    return text.strip(" \t\r\n，,。.!！？?；;、")
+
+
 def _extract_origin_city(text: str) -> str | None:
-    # 从文本中提取出发城市
-    for city in ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]:
+    # 从文本中提取出发地；不限制在内置城市表内。
+    match = re.search(r"从(?P<origin>[\u4e00-\u9fa5A-Za-z0-9·\-]{1,30}?)(?:出发)?(?:去|到|前往)", text)
+    if match:
+        origin = _clean_extracted_location(match.group("origin"))
+        if origin:
+            return origin
+    for city in KNOWN_TRAVEL_LOCATIONS:
         if f"从{city}" in text:
             return city
     return None
 
 
 def _extract_destination_city(text: str, origin_city: str | None = None) -> str:
-    # 从文本中提取目的城市
-    cities = ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]
-    for city in cities:
+    # 从文本中提取目的地；未知地点也保留原文，不能偷换为默认城市。
+    match = re.search(
+        r"(?:去|到|前往)(?P<destination>[\u4e00-\u9fa5A-Za-z0-9·\-]{1,30}?)(?="
+        r"玩|游玩|旅游|旅行|自由行|出差|住宿|住|待|逛|看|要求|并且|同时|尽量|必须|"
+        r"\d+\s*天|[一二两三四五六七八九十]+天|[，,。.!！？?；;\s]|$)",
+        text,
+    )
+    if match:
+        destination = _clean_extracted_location(match.group("destination"))
+        if destination and destination != origin_city:
+            return destination
+    for city in KNOWN_TRAVEL_LOCATIONS:
         if f"去{city}" in text or f"到{city}" in text:
             return city
-    for city in cities:
+    for city in KNOWN_TRAVEL_LOCATIONS:
         if city in text and city != origin_city:
             return city
-    return "北京"
+    return "未指定"
 
 
 def _extract_days(text: str) -> int:
