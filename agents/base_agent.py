@@ -704,17 +704,57 @@ class BaseAgent:
         )
 
 
+def _known_location(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"", "null", "none", "unknown", "unspecified"} or text in {"未指定", "未知", "待确认"}:
+        return ""
+    return text
+
+
+def _clean_extracted_location(value: str) -> str:
+    text = str(value or "").strip(" \t\r\n，,。.!！？?；;、")
+    text = re.sub(r"(?:\d+\s*天|[一二两三四五六七八九十]+天).*$", "", text)
+    for marker in ["玩", "游玩", "旅游", "旅行", "自由行", "出差", "住宿", "住", "待", "逛", "看", "要求", "并且", "同时", "尽量", "必须"]:
+        index = text.find(marker)
+        if index > 0:
+            text = text[:index]
+    return text.strip(" \t\r\n，,。.!！？?；;、")
+
+
+def _extract_destination_from_text(text: str) -> str:
+    match = re.search(
+        r"(?:去|到|前往)(?P<destination>[\u4e00-\u9fa5A-Za-z0-9·\-]{1,30}?)(?="
+        r"玩|游玩|旅游|旅行|自由行|出差|住宿|住|待|逛|看|要求|并且|同时|尽量|必须|"
+        r"\d+\s*天|[一二两三四五六七八九十]+天|[，,。.!！？?；;\s]|$)",
+        text,
+    )
+    if not match:
+        return ""
+    return _clean_extracted_location(match.group("destination"))
+
+
 def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str:
-    # 从指令和上下文中提取目标城市
+    # 从上下文优先提取目的地；没有上下文时再从“去/到/前往X”短语中提取。
+    context = context or {}
+    inputs = context.get("inputs") if isinstance(context.get("inputs"), dict) else {}
+    travel_task = context.get("travel_task") if isinstance(context.get("travel_task"), dict) else {}
+    if not travel_task and isinstance(inputs, dict) and isinstance(inputs.get("travel_task"), dict):
+        travel_task = inputs.get("travel_task") or {}
+    if isinstance(travel_task, dict):
+        for key in ("destination_city", "city", "destination_region"):
+            location = _known_location(travel_task.get(key))
+            if location:
+                return location
+
     context_text = json.dumps(context or {}, ensure_ascii=False)
     full_text = instruction + "\n" + context_text
+    destination = _extract_destination_from_text(full_text)
+    if destination:
+        return destination
     for city in KNOWN_CITIES:
         if city in full_text:
             return city
-    match = re.search(r"去([\u4e00-\u9fa5]{2,4})", full_text)
-    if match:
-        return match.group(1)
-    return "北京"
+    return "未指定"
 
 
 def _infer_error_type(exc: Exception) -> str:

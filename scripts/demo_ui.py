@@ -27,6 +27,20 @@ packet_component = components.declare_component("packet_inspector", path=str(PAC
 TOPOLOGY_REFRESH_SECONDS = 0.35
 TRANSFER_HISTORY_SECONDS = 30.0
 TRANSFER_PULSE_SECONDS = 1.6
+GENERATED_CONTENT_STATE_KEYS = [
+    "current_task_id",
+    "task_start_time",
+    "task_transfer_active",
+    "task_highlight_cleared_for",
+    "last_recent_network_events",
+    "selected_packet_event_key",
+    "selected_packet_event_index",
+    "last_packet_click_nonce",
+    "topology_edge_pulses",
+    "topology_failed_edge_pulses",
+    "topology_node_pulses",
+    "topology_seen_event_keys",
+]
 
 import sys
 import atexit
@@ -45,6 +59,12 @@ if "GLOBAL_PROCESSES" not in st.session_state:
 
 # 方便后续代码引用全局字典
 _processes = st.session_state.GLOBAL_PROCESSES
+
+
+def clear_generated_content_state() -> None:
+    for key in GENERATED_CONTENT_STATE_KEYS:
+        st.session_state.pop(key, None)
+    st.session_state.generated_content_cleared_at = time.time()
 
 # --- 服务定义与启动逻辑 ---
 SERVICES = {
@@ -289,6 +309,10 @@ def read_recent_network_activity(
     task_start_time = None
     if isinstance(task_start, (int, float)):
         task_start_time = datetime.fromtimestamp(max(0.0, task_start - 1.0), timezone.utc)
+    clear_marker = st.session_state.get("generated_content_cleared_at")
+    clear_time = None
+    if isinstance(clear_marker, (int, float)):
+        clear_time = datetime.fromtimestamp(clear_marker, timezone.utc)
 
     for line in lines:
         try:
@@ -298,6 +322,8 @@ def read_recent_network_activity(
 
         event_time = _parse_event_time(event.get("ts"))
         if event_time is None or (now - event_time).total_seconds() > window_seconds:
+            continue
+        if clear_time is not None and event_time < clear_time:
             continue
         if task_start_time is not None and event_time < task_start_time:
             continue
@@ -1702,7 +1728,22 @@ with col_main:
         value="中秋节假期从上海去北京玩3天，要求穷游并且尽量乘坐地铁，必须去故宫看看。"
     )
 
-    if st.button("提交任务 / Submit", type="primary"):
+    submit_col, clear_col = st.columns([2, 1])
+    has_generated_content = bool(
+        st.session_state.get("current_task_id")
+        or st.session_state.get("last_recent_network_events")
+        or st.session_state.get("selected_packet_event_key")
+    )
+    clear_requested = clear_col.button(
+        "清空生成内容 / Clear",
+        use_container_width=True,
+        disabled=not has_generated_content,
+    )
+    if clear_requested:
+        clear_generated_content_state()
+        st.rerun()
+
+    if submit_col.button("提交任务 / Submit", type="primary", use_container_width=True):
         is_coordinator_running = is_service_running("coordinator")
         
         if not is_coordinator_running:
@@ -1711,6 +1752,7 @@ with col_main:
             st.warning("请输入您的旅行需求。")
         else:
             try:
+                st.session_state.pop("generated_content_cleared_at", None)
                 st.session_state.task_start_time = time.time()
                 st.session_state.task_transfer_active = True
                 st.session_state.task_highlight_cleared_for = None

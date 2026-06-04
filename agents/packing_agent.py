@@ -50,7 +50,7 @@ class PackingAgent(BaseAgent):
             weather_struct = upstream_results.get("weather_agent", {}).get("structured", {})
             weather_constraints = weather_struct.get("weather_constraints", weather_struct)
             weather_by_day = weather_constraints.get("weather_by_day", [])
-            city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
+            city = str(travel_task.get("destination_city") or travel_task.get("city") or "未指定")
             days = travel_task.get("days", 3)
 
             # 汇总多日天气：温度范围、天气状况、雨天标记

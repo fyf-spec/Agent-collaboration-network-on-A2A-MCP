@@ -238,8 +238,8 @@ def get_intercity_transport(
     transport_preference: str = "public_transport",
 ) -> dict[str, object]:
     # 获取城际交通方案（高铁/动车/飞机）
-    origin = (origin_city or "上海").strip()
-    destination = (destination_city or "北京").strip()
+    origin = (origin_city or "未指定").strip()
+    destination = (destination_city or "未指定").strip()
     options_by_od: dict[tuple[str, str], dict[str, object]] = _build_intercity_table()
     selected = options_by_od.get((origin, destination))
     fallback_used = selected is None
