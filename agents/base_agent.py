@@ -82,6 +82,7 @@ class AgentHTTPServer(ThreadingHTTPServer):
         handler_class: type[BaseHTTPRequestHandler],
         agent: "BaseAgent",
     ) -> None:
+        # 初始化 HTTP 服务器
         super().__init__(server_address, handler_class)
         self.agent = agent
 
@@ -90,6 +91,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
     server: AgentHTTPServer
 
     def do_GET(self) -> None:
+        # 处理 GET 健康检查请求
         if self.path == "/health":
             self._send_json(
                 HTTPStatus.OK,
@@ -106,15 +108,18 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
 
     def do_POST(self) -> None:
+        # 处理 POST 任务执行请求
         if self.path == "/execute_task":
             self._handle_execute_task()
             return
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
 
     def log_message(self, format: str, *args: Any) -> None:
+        # 禁止默认日志输出
         return
 
     def _handle_execute_task(self) -> None:
+        # 处理任务执行 POST 请求
         try:
             payload, payload_size = self._read_json_with_size()
             validate_task_payload(payload)
@@ -156,6 +161,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _read_json_with_size(self) -> tuple[dict[str, Any], int]:
+        # 读取并解析 JSON 请求体（含大小）
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
         try:
@@ -167,6 +173,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         return payload, length
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        # 发送 JSON 响应
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -185,6 +192,7 @@ class AgentA2ATCPServer(ThreadingTCPServer):
         handler_class: type[BaseRequestHandler],
         agent: "BaseAgent",
     ) -> None:
+        # 初始化 A2A TCP 服务器
         super().__init__(server_address, handler_class)
         self.agent = agent
 
@@ -193,6 +201,7 @@ class AgentA2ATCPRequestHandler(BaseRequestHandler):
     server: AgentA2ATCPServer
 
     def handle(self) -> None:
+        # 处理 A2A TCP 任务请求
         self.request.settimeout(A2A_TCP_TIMEOUT_SECONDS)
         frame_data: dict[str, Any] | None = None
         task_id = "unknown"
@@ -289,10 +298,12 @@ class BaseAgent:
     prompt_role: str = ""
 
     def __init__(self, *, host: str, port: int) -> None:
+        # 初始化基础 Agent
         self.host = host
         self.port = port
 
     def run(self) -> None:
+        # 启动 Agent（注册 + 心跳 + 协议监听）
         config = AGENTS.get(self.agent_name, {})
         protocol = config.get("protocol", "tcp")
         self._register_with_registry()
@@ -305,6 +316,7 @@ class BaseAgent:
             self._run_tcp()
 
     def _run_http(self) -> None:
+        # 启动 HTTP 服务
         server = AgentHTTPServer((self.host, self.port), AgentRequestHandler, self)
         logger.info(f"{self.agent_name} listening on http://{self.host}:{self.port}")
         logger.info("Endpoints: POST /execute_task, GET /health")
@@ -316,6 +328,7 @@ class BaseAgent:
             server.server_close()
 
     def _run_tcp(self) -> None:
+        # 启动 A2A TCP 服务
         server = AgentA2ATCPServer((self.host, self.port), AgentA2ATCPRequestHandler, self)
         logger.info(f"{self.agent_name} A2A TCP listening on {tcp_url(self.host, self.port)}")
         logger.info("Protocol: 4-byte big-endian length prefix + UTF-8 JSON body")
@@ -327,7 +340,7 @@ class BaseAgent:
             server.server_close()
 
     def _heartbeat_loop(self) -> None:
-        primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/heartbeat"
+        # 心跳循环，向主备注册中心上报状态
         backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/heartbeat"
         payload = json.dumps({"agent_name": self.agent_name}, ensure_ascii=False).encode("utf-8")
         
@@ -361,6 +374,7 @@ class BaseAgent:
             time.sleep(2.0)
 
     def _register_with_registry(self) -> None:
+        # 向主备注册中心注册 Agent
         primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/register"
         backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/register"
         payload = self.registration_payload()
@@ -399,6 +413,7 @@ class BaseAgent:
             logger.error(f"{self.agent_name} failed to register to backup: {exc}")
 
     def registration_payload(self) -> dict[str, Any]:
+        # 构建注册请求负载
         config = AGENTS.get(self.agent_name, {})
         return {
             "agent_name": self.agent_name,
@@ -412,6 +427,7 @@ class BaseAgent:
         }
 
     def process_task(self, task_payload: dict[str, Any]) -> None:
+        # 处理任务：调用 MCP、构造提示词、调用 LLM、回调结果
         task_id = str(task_payload["task_id"])
         started = time.perf_counter()
         try:
@@ -465,6 +481,7 @@ class BaseAgent:
         self.send_result_to_coordinator(task_payload, result_payload)
 
     def call_mcp_server(self, task_payload: dict[str, Any]) -> dict[str, Any]:
+        # 调用 MCP 服务器获取数据
         task_id = str(task_payload["task_id"])
         server = MCP_SERVERS[self.mcp_server_key]
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
@@ -536,6 +553,7 @@ class BaseAgent:
         task_payload: dict[str, Any],
         result_payload: dict[str, Any],
     ) -> None:
+        # 将结果发送回协调器（根据 reply_to 选择 TCP 或 HTTP）
         reply_to = str(task_payload["reply_to"])
         if reply_to.startswith("tcp://"):
             self._send_result_to_coordinator_tcp(task_payload, result_payload)
@@ -543,6 +561,7 @@ class BaseAgent:
             self._send_result_to_coordinator_http(task_payload, result_payload)
 
     def _send_result_to_coordinator_tcp(self, task_payload: dict[str, Any], result_payload: dict[str, Any]) -> None:
+        # 通过 TCP 将结果发送回协调器
         task_id = str(task_payload["task_id"])
         reply_to = str(task_payload["reply_to"])
         context = task_payload.get("context", {})
@@ -608,6 +627,7 @@ class BaseAgent:
             logger.error(f"{self.agent_name} callback got unexpected TCP response: {response.data.get('type')}")
 
     def _send_result_to_coordinator_http(self, task_payload: dict[str, Any], result_payload: dict[str, Any]) -> None:
+        # 通过 HTTP 将结果发送回协调器
         task_id = str(task_payload["task_id"])
         reply_to = str(task_payload["reply_to"])
         log_network_event(
@@ -652,12 +672,14 @@ class BaseAgent:
         )
 
     def build_mcp_params(self, task_payload: dict[str, Any]) -> dict[str, Any]:
+        # 构建 MCP 调用参数（提取城市等信息）
         instruction = str(task_payload.get("instruction", ""))
         context = task_payload.get("context", {})
         city = extract_city(instruction, context)
         return {"city": city}
 
     def build_prompt(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        # 构建 LLM 提示词（子类需重写）
         raise NotImplementedError
 
     def build_fallback_answer(
@@ -666,6 +688,7 @@ class BaseAgent:
         mcp_result: dict[str, Any],
         llm_error: str,
     ) -> str:
+        # 构建 LLM 调用失败时的降级回答
         return (
             f"{self.agent_name} 已获得 MCP 数据，但 LLM 调用失败。"
             f"原始 MCP 数据为：{json.dumps(mcp_result, ensure_ascii=False)}。"
@@ -673,6 +696,7 @@ class BaseAgent:
         )
 
     def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+        # 构建演示快速模式下的回答（跳过 LLM）
         return (
             f"{self.agent_name} 已获得 MCP 数据。"
             f"当前为演示快速模式，跳过外部 LLM 调用。"
@@ -681,6 +705,7 @@ class BaseAgent:
 
 
 def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str:
+    # 从指令和上下文中提取目标城市
     context_text = json.dumps(context or {}, ensure_ascii=False)
     full_text = instruction + "\n" + context_text
     for city in KNOWN_CITIES:
@@ -693,6 +718,7 @@ def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str
 
 
 def _infer_error_type(exc: Exception) -> str:
+    # 推断异常的根本类型
     cause = exc.__cause__
     if cause is None:
         return type(exc).__name__
@@ -703,4 +729,5 @@ def _infer_error_type(exc: Exception) -> str:
 
 
 def _demo_fast_mode_enabled() -> bool:
+    # 检查是否启用了演示快速模式
     return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}

@@ -38,6 +38,7 @@ class LLMClient:
     timeout_seconds: float = field(default_factory=lambda: float(os.getenv("A2A_LLM_TIMEOUT_SECONDS", "60")))
 
     def __post_init__(self) -> None:
+        # 初始化后处理，清理URL与模型名
         self.base_url = self.base_url.strip().rstrip("/")
         self.model = self.model.strip()
 
@@ -49,6 +50,7 @@ class LLMClient:
         temperature: float | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
+        # 发送单轮提示并获取文本回复
         return self.chat_messages(
             [{"role": "user", "content": prompt}],
             max_tokens=max_tokens,
@@ -65,6 +67,7 @@ class LLMClient:
         timeout_seconds: float | None = None,
         stream: bool = True,
     ) -> str:
+        # 发送多轮消息并获取文本回复
         if not stream:
             return self._chat_messages_non_stream(
                 messages,
@@ -107,6 +110,7 @@ class LLMClient:
         temperature: float | None = None,
         timeout_seconds: float | None = None,
     ) -> str:
+        # 非流式发送消息并获取完整回复
         _validate_messages(messages)
         if not self.api_key:
             raise LLMClientError("MODELSCOPE_API_KEY is required")
@@ -136,6 +140,7 @@ class LLMClient:
             raise LLMClientError(f"OpenAI API error: {str(e)}") from e
 
     def stream_chat(self, prompt: str) -> Iterator[str]:
+        # 流式发送单轮提示
         yield from self.stream_chat_messages([{"role": "user", "content": prompt}])
 
     def stream_chat_messages(
@@ -146,6 +151,7 @@ class LLMClient:
         temperature: float | None = None,
         timeout_seconds: float | None = None,
     ) -> Iterator[str]:
+        # 流式发送多轮消息
         _validate_messages(messages)
         if not self.api_key:
             raise LLMClientError("MODELSCOPE_API_KEY is required")
@@ -176,6 +182,7 @@ class LLMClient:
             raise LLMClientError(f"OpenAI API error: {str(e)}") from e
 
     def info(self) -> dict[str, str]:
+        # 获取LLM客户端配置信息
         return {
             "provider": "modelscope",
             "model": self.model,
@@ -184,6 +191,7 @@ class LLMClient:
 
 
 def _validate_messages(messages: list[dict[str, Any]]) -> None:
+    # 验证消息格式是否正确
     if not messages:
         raise LLMClientError("messages are required")
     for index, message in enumerate(messages):
@@ -201,6 +209,7 @@ def _validate_messages(messages: list[dict[str, Any]]) -> None:
 
 
 def _read_delta_content(delta: Any) -> str:
+    # 从流式响应块中读取内容
     if delta is None:
         return ""
     if isinstance(delta, dict):
@@ -209,6 +218,7 @@ def _read_delta_content(delta: Any) -> str:
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
+    # 从文本中提取第一个JSON对象
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)

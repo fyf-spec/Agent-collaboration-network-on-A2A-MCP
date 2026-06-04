@@ -15,10 +15,12 @@ logger = logging.getLogger("registry")
 
 class Registry:
     def __init__(self) -> None:
+        # 初始化
         self.agents: dict[str, dict[str, Any]] = {}
         self.AGENT_TTL = 6.0
 
     def register(self, agent_name: str, payload: dict[str, Any]) -> None:
+        # 注册agent
         payload["last_heartbeat"] = time.time()
         payload["status"] = "healthy"
         self.agents[agent_name] = payload
@@ -26,6 +28,7 @@ class Registry:
         logger.info(f"Agent registered: {agent_name} at {protocol}://{payload.get('host')}:{payload.get('port')}")
 
     def heartbeat(self, agent_name: str) -> bool:
+        # 更新agent心跳
         if agent_name in self.agents:
             self.agents[agent_name]["last_heartbeat"] = time.time()
             self.agents[agent_name]["status"] = "healthy"
@@ -34,6 +37,7 @@ class Registry:
 
     # 查找所有健康的agents
     def discover(self) -> dict[str, dict[str, Any]]:
+        # 发现所有健康的agent
         now = time.time()
         healthy_agents = {}
         for name, data in self.agents.items():
@@ -45,6 +49,7 @@ class Registry:
     
     # 在健康的agent中根据能力查找agents
     def lookup(self, capability: str) -> dict[str, dict[str, Any]]:
+        # 根据能力查找健康的agent
         healthy_agents = self.discover()
         return {
             name: data for name, data in healthy_agents.items()
@@ -53,6 +58,7 @@ class Registry:
 
     # 查找所有agents
     def get_all_agents(self) -> dict[str, dict[str, Any]]:
+        # 获取所有agent及其状态
         now = time.time()
         for name, data in self.agents.items():
             if now - data.get("last_heartbeat", 0) > self.AGENT_TTL:
@@ -65,6 +71,7 @@ _registry = Registry()
 
 class RegistryRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        # 处理GET请求
         parsed_url = urlparse(self.path)
         if parsed_url.path == "/discover":
             self._send_json(HTTPStatus.OK, success_response({"agents": _registry.discover()}))
@@ -83,6 +90,7 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
 
     def do_POST(self) -> None:
+        # 处理POST请求
         if self.path == "/register":
             try:
                 payload = self._read_json()
@@ -113,6 +121,7 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, error_response("not_found", f"unknown path: {self.path}"))
 
     def _read_json(self) -> dict[str, Any]:
+        # 读取并解析JSON请求体
         content_length_str = self.headers.get("Content-Length")
         if not content_length_str:
             raise ValueError("missing Content-Length")
@@ -120,6 +129,7 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
         return json.loads(body.decode("utf-8"))
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        # 发送JSON响应
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -128,10 +138,12 @@ class RegistryRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args: Any) -> None:
+        # 禁止默认日志输出
         pass
 
 
 def run() -> None:
+    # 启动服务
     parser = argparse.ArgumentParser(description="Registry Center")
     parser.add_argument("--host", default=REGISTRY_HOST, help="Host to bind to")
     parser.add_argument("--port", type=int, default=REGISTRY_PORT, help="Port to bind to")

@@ -36,6 +36,7 @@ class PackingAgent(BaseAgent):
     mcp_server_key = "packing"
 
     def process_task(self, task_payload: dict[str, Any]) -> None:
+        # 处理行李准备任务
         task_id = str(task_payload["task_id"])
         started = time.perf_counter()
         
@@ -45,20 +46,42 @@ class PackingAgent(BaseAgent):
             inputs = context.get("inputs") or {}
             upstream_results = inputs.get("upstream_results", {})
             
-            # Extract weather condition for MCP
-            weather_data = upstream_results.get("weather_agent", {}).get("structured", {})
-            temperature = str(weather_data.get("temp", ""))
-            condition = str(weather_data.get("condition", ""))
+            # Extract multi-day weather from upstream
+            weather_struct = upstream_results.get("weather_agent", {}).get("structured", {})
+            weather_constraints = weather_struct.get("weather_constraints", weather_struct)
+            weather_by_day = weather_constraints.get("weather_by_day", [])
             city = str(travel_task.get("destination_city") or travel_task.get("city") or "北京")
             days = travel_task.get("days", 3)
 
-            # Step 1: Call MCP
+            # 汇总多日天气：温度范围、天气状况、雨天标记
+            all_conditions: list[str] = []
+            all_temps_min: list[float] = []
+            all_temps_max: list[float] = []
+            rainy_days = weather_constraints.get("rainy_days", [])
+            for wd in (weather_by_day or []):
+                if isinstance(wd, dict):
+                    cond = str(wd.get("condition") or "").strip()
+                    if cond and cond != "待确认" and "待确认" not in cond:
+                        all_conditions.append(cond)
+                    for key in ("temp_min", "temp_max", "temp"):
+                        val = wd.get(key)
+                        if val is not None:
+                            try:
+                                num = float(str(val).replace("C", "").replace("°", "").strip())
+                                all_temps_max.append(num) if "max" in key or key == "temp" else all_temps_min.append(num)
+                            except (ValueError, TypeError):
+                                pass
+            temp_range = f"{min(all_temps_min):.0f}-{max(all_temps_max):.0f}°C" if all_temps_min and all_temps_max else str(weather_struct.get("temp", ""))
+            condition_summary = "、".join(dict.fromkeys(all_conditions[:5])) or str(weather_struct.get("condition", ""))
+            has_rain = bool(rainy_days) or any("雨" in c or "雪" in c for c in all_conditions)
+
+            # Step 1: Call MCP with enriched weather
             mcp_result = self.call_packing_mcp(
                 task_id,
                 city=city,
                 days=days,
-                temperature=temperature,
-                condition=condition
+                temperature=temp_range,
+                condition=condition_summary
             )
             
             prompt = build_packaging_prompt(task_payload, upstream_results, mcp_result)
@@ -138,6 +161,7 @@ class PackingAgent(BaseAgent):
         temperature: str,
         condition: str,
     ) -> dict[str, Any]:
+        # 调用行李准备 MCP 获取基础清单
         server = MCP_SERVERS[self.mcp_server_key]
         url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
         network_target = str(MCP_GATEWAY["name"])
@@ -200,6 +224,7 @@ class PackingAgent(BaseAgent):
         return result
 
 def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
+    # 从上下文中提取出行任务
     if isinstance(context.get("travel_task"), dict):
         return dict(context["travel_task"])
     inputs = context.get("inputs") or {}
@@ -208,12 +233,35 @@ def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 def build_packaging_prompt(task_payload: dict[str, Any], upstream_results: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+    # 构造行李准备 LLM 提示词
     context = task_payload.get("context") or {}
     travel_task = context.get("travel_task") or {}
-    
+    # 提取天气摘要让 LLM 看到
+    weather_struct = upstream_results.get("weather_agent", {}).get("structured", {})
+    wc = weather_struct.get("weather_constraints", weather_struct)
+    weather_by_day = wc.get("weather_by_day", [])
+    city = travel_task.get("destination_city", "未知")
+    days = travel_task.get("days", 3)
+
+    weather_summary = "未获取到天气信息"
+    if weather_by_day:
+        lines = []
+        for wd in weather_by_day:
+            if isinstance(wd, dict):
+                d = wd.get("day", "?")
+                c = wd.get("condition", "?")
+                tmin = wd.get("temp_min", "")
+                tmax = wd.get("temp_max", "")
+                t = f"{tmin}~{tmax}" if tmin and tmax else wd.get("temp", "?")
+                lines.append(f"{d}: {c} {t}")
+        if lines:
+            weather_summary = f"{city}{days}天天气: " + "; ".join(lines)
+
     payload = {
+        "destination": city,
+        "days": days,
+        "weather_summary": weather_summary,
         "travel_task": travel_task,
-        "upstream_results": upstream_results,
         "mcp_packing_list": mcp_result.get("packing_list", []),
         "output_schema": {
             "packing_list": [
@@ -222,15 +270,17 @@ def build_packaging_prompt(task_payload: dict[str, Any], upstream_results: dict[
             "summary": "一句简短的总结"
         }
     }
-    
+
     return "\n".join([
-        "你是 Packing Agent，负责根据目的地、天数、天气情况，以及 MCP 返回的基础行李清单，生成贴心的最终行李准备清单。",
-        "请仔细参考上下文中 mcp_packing_list 内的基础物品，可以对其进行补充、精简和个性化调整。",
+        "你是 Packing Agent，负责根据目的地、天数、天气情况，生成贴心的行李准备清单。",
+        f"请根据 weather_summary 中的每天天气和温度，给出具体的衣物建议（如温度>30°C建议短袖、<10°C建议羽绒服等）。",
+        "可以参考 mcp_packing_list 中的基础物品，根据实际天气进行个性化调整。",
         "必须输出严格的 JSON 格式，不要输出 Markdown 或其他解释文字。",
         json.dumps(payload, ensure_ascii=False, default=str)
     ])
 
 def main() -> None:
+    # 启动行李准备 Agent
     from common.config import AGENTS
     default_host = AGENTS[AGENT_NAME]["host"]
     default_port = AGENTS[AGENT_NAME]["port"]

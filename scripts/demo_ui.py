@@ -2922,9 +2922,9 @@ with col_sidebar:
     render_demo_parameter_presets()
 
     st.markdown("### 全局超时参数")
-    a2a_tcp_timeout = st.number_input("A2A TCP Timeout (秒)", value=3.0, step=1.0, key="a2a_tcp_timeout_seconds")
-    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=3.0, step=1.0, key="mcp_http_timeout_seconds")
-    task_timeout = st.number_input("Task 整体 Timeout (秒)", value=120.0, step=10.0, key="task_timeout_seconds")
+    a2a_tcp_timeout = st.number_input("A2A TCP Timeout (秒)", value=3.0, step=1.0)
+    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=10.0, step=1.0)
+    task_timeout = st.number_input("Task 整体 Timeout (秒)", value=120.0, step=10.0)
     
     st.markdown("### 启停控制")
     col_btn1, col_btn2 = st.columns(2)

@@ -20,17 +20,20 @@ class HttpJsonResponse:
 
     @property
     def ok(self) -> bool:
+        # 判断 HTTP 状态码是否表示成功（2xx）
         return 200 <= self.status_code < 300
 
 
 class HttpJsonClientError(RuntimeError):
     def __init__(self, message: str, *, url: str, elapsed_ms: float | None = None) -> None:
+        # 初始化错误信息、请求 URL 和耗时
         super().__init__(message)
         self.url = url
         self.elapsed_ms = elapsed_ms
 
 
 def post_json(url: str, payload: dict[str, Any], *, timeout: float) -> HttpJsonResponse:
+    # 发送 HTTP POST JSON 请求并返回结构化响应
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     http_request = request.Request(
         url,
@@ -77,9 +80,23 @@ def post_json(url: str, payload: dict[str, Any], *, timeout: float) -> HttpJsonR
 
 
 def _decode_json(raw_body: str) -> Any:
+    # 安全解析 JSON 字符串，解析失败返回 None
     if not raw_body:
         return None
     try:
         return json.loads(raw_body)
     except json.JSONDecodeError:
         return None
+
+
+def retry_call(func: callable, *args, retries: int = 1, sleep_seconds: float = 1.0, **kwargs) -> Any:
+    """通用重试：调用 func 失败后等待并重试，retries 次后仍失败才抛出"""
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(sleep_seconds)
+    raise last_exc

@@ -29,14 +29,17 @@ class PayloadValidationError(ValueError):
 
 
 def utc_now_iso() -> str:
+    # 返回当前 UTC 时间的 ISO 格式字符串
     return datetime.now(timezone.utc).isoformat()
 
 
 def new_task_id() -> str:
+    # 生成一个新的任务 ID（UUID hex）
     return uuid4().hex
 
 
 def require_fields(payload: dict[str, Any], fields: list[str]) -> None:
+    # 检查 payload 中是否包含所有必需字段，缺失则抛出异常
     missing = [field for field in fields if field not in payload]
     if missing:
         raise PayloadValidationError(f"missing required field(s): {', '.join(missing)}")
@@ -52,6 +55,7 @@ def build_task_payload(
     context: dict[str, Any] | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
+    # 构建标准任务请求 payload 字典
     return {
         "source": source,
         "target": target,
@@ -64,6 +68,7 @@ def build_task_payload(
 
 
 def validate_task_payload(payload: dict[str, Any]) -> None:
+    # 验证任务 payload 的字段完整性和类型正确性
     require_fields(payload, ["source", "target", "task_id", "instruction", "reply_to"])
     if "context" in payload and not isinstance(payload["context"], dict):
         raise PayloadValidationError("context must be a JSON object")
@@ -79,6 +84,7 @@ def build_result_payload(
     error: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # 构建标准任务结果 payload 字典
     return {
         "source": source,
         "target": target,
@@ -125,6 +131,7 @@ def build_error_result_payload(
 
 
 def validate_task_result(payload: dict[str, Any]) -> None:
+    # 验证任务结果 payload 的字段和状态合法性
     require_fields(payload, ["source", "target", "task_id", "status"])
     if payload["status"] not in {RESULT_SUCCESS, RESULT_ERROR}:
         raise PayloadValidationError("status must be 'success' or 'error'")
@@ -133,6 +140,7 @@ def validate_task_result(payload: dict[str, Any]) -> None:
 
 
 def success_response(data: dict[str, Any]) -> dict[str, Any]:
+    # 构建成功响应包装（ok=True + 数据）
     return {"ok": True, **data}
 
 
@@ -142,6 +150,7 @@ def error_response(
     *,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # 构建错误响应包装（ok=False + 错误码/信息）
     body: dict[str, Any] = {
         "ok": False,
         "error": {

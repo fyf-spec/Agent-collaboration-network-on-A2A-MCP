@@ -390,3 +390,71 @@ test: 测试相关修改
 - `logs/`、临时 Streamlit 日志和本地缓存文件不应作为核心代码提交。
 - UI 节点启停依赖本机端口状态；如果端口被外部进程占用，先结束占用进程再启动。
 - Windows PowerShell 中建议设置 `$env:PYTHONIOENCODING="utf-8"`，避免中文输出乱码。
+
+## Realtime MCP Data Source
+
+MCP servers now support realtime providers first, with automatic mock fallback. Weather uses Open-Meteo forecasts after AMap geocoding; attractions, hotels, and routes use AMap Web Service. Existing MCP method names are unchanged:
+
+```text
+get_weather
+search_attractions
+search_hotels
+get_route / get_routes / get_transport
+```
+
+Configure `.env` locally:
+
+```env
+A2A_REALTIME_MCP_ENABLED=true
+AMAP_WEB_KEY=your_amap_web_service_key
+AMAP_API_BASE_URL=https://restapi.amap.com
+OPEN_METEO_API_BASE_URL=https://api.open-meteo.com
+OPEN_METEO_MAX_FORECAST_DAYS=16
+MCP_REALTIME_TIMEOUT_SECONDS=5
+MCP_REALTIME_FALLBACK_TO_MOCK=true
+MCP_HTTP_TIMEOUT_SECONDS=8
+MCP_TRAFFIC_REALTIME_ENABLED=true
+MCP_TRAFFIC_MAX_WORKERS=4
+MCP_TRAFFIC_ROUTE_TIMEOUT_SECONDS=1.5
+MCP_TRAFFIC_MAX_SEGMENTS=8
+MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS=8
+```
+
+Do not commit `.env` or API keys. The code does not print the key.
+
+Run the realtime MCP smoke test:
+
+```bash
+uv run python scripts/test_realtime_mcp.py
+```
+
+Check whether realtime data was used through `data_source` in MCP results:
+
+```json
+{
+  "provider": "open-meteo",
+  "realtime": true,
+  "fallback_used": false,
+  "fetched_at": "...",
+  "missing_fields": []
+}
+```
+
+If `AMAP_WEB_KEY` is missing, the network times out, a realtime provider returns an error, or the response cannot be normalized, the MCP server falls back to `mcp_servers/mock_data.py`:
+
+```json
+{
+  "provider": "mock",
+  "realtime": false,
+  "fallback_used": true,
+  "fallback_reason": "..."
+}
+```
+
+Traffic realtime support is intentionally limited to route planning in this first version. `get_transport/get_traffic` still use mock data and mark `fallback_reason=transport_status_not_implemented`.
+
+For realtime traffic demos and concurrent tasks, keep both `MCP_HTTP_TIMEOUT_SECONDS=8` and `MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS=8` so Agents and the Gateway have enough time for realtime AMap calls. Route segment requests still use short per-segment timeouts and partial mock fallback; cache is intentionally not implemented in the AMap client or MCP servers because Gateway-level caching will be handled separately.
+
+Weather uses Open-Meteo forecast mode when the travel task has multiple days, and `weather_agent` builds per-day `weather_by_day` constraints from `forecast_days`. Open-Meteo is capped at `OPEN_METEO_MAX_FORECAST_DAYS` days; farther future trips return a structured "too far to forecast accurately" weather result and ask the user to recheck near departure.
+
+AMap POI responses do not reliably provide ticket price, visit duration, opening hours, reservation requirement, indoor/outdoor classification, nearest subway, hotel price, hotel pros, or hotel cons. Realtime normalizers keep those existing fields and fill missing values with `None` or empty lists. For fixed demo cities, `mcp_servers/enrichment/*.json` supplements known attraction and hotel fields from local profiles. Enriched results are marked with `provider=amap+local_profile` and `data_source.field_sources`; fields still unavailable remain in `data_source.missing_fields`.

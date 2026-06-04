@@ -45,11 +45,13 @@ class InflightCall:
 
 class TTLCache:
     def __init__(self, ttl_seconds: float) -> None:
+        # 初始化
         self.ttl_seconds = ttl_seconds
         self._items: dict[str, CacheEntry] = {}
         self._lock = threading.RLock()
 
     def get(self, key: str) -> dict[str, Any] | None:
+        # 获取缓存项
         now = time.monotonic()
         with self._lock:
             item = self._items.get(key)
@@ -60,14 +62,16 @@ class TTLCache:
                 return None
             return dict(item.result)
 
-    def set(self, key: str, result: dict[str, Any]) -> None:
+    def set(self, key: str, result: dict[str, Any], ttl: float | None = None) -> None:
+        # 设置缓存项
         with self._lock:
             self._items[key] = CacheEntry(
                 result=dict(result),
-                expires_at=time.monotonic() + self.ttl_seconds,
+                expires_at=time.monotonic() + (ttl if ttl is not None else self.ttl_seconds),
             )
 
     def size(self) -> int:
+        # 返回有效缓存项数量
         now = time.monotonic()
         with self._lock:
             expired = [key for key, item in self._items.items() if item.expires_at <= now]
@@ -78,18 +82,21 @@ class TTLCache:
 
 class RateLimiter:
     def __init__(self, method_names: list[str], max_concurrent: int) -> None:
+        # 初始化
         self._semaphores = {
             method: threading.BoundedSemaphore(max(1, max_concurrent))
             for method in method_names
         }
 
     def acquire(self, method: str, timeout: float) -> bool:
+        # 获取方法执行许可
         semaphore = self._semaphores.get(method)
         if semaphore is None:
             return True
         return semaphore.acquire(timeout=timeout)
 
     def release(self, method: str) -> None:
+        # 释放方法执行许可
         semaphore = self._semaphores.get(method)
         if semaphore is not None:
             semaphore.release()
@@ -97,6 +104,7 @@ class RateLimiter:
 
 class CircuitBreaker:
     def __init__(self, *, failure_threshold: int, cooldown_seconds: float) -> None:
+        # 初始化
         self.failure_threshold = max(1, failure_threshold)
         self.cooldown_seconds = cooldown_seconds
         self.state = "closed"
@@ -106,6 +114,7 @@ class CircuitBreaker:
         self._lock = threading.RLock()
 
     def before_request(self) -> tuple[bool, str | None]:
+        # 请求前检查熔断状态
         now = time.monotonic()
         with self._lock:
             if self.state == "open":
@@ -123,6 +132,7 @@ class CircuitBreaker:
             return True, None
 
     def record_success(self) -> None:
+        # 记录成功调用
         with self._lock:
             self.state = "closed"
             self.failure_count = 0
@@ -130,6 +140,7 @@ class CircuitBreaker:
             self._half_open_probe_running = False
 
     def record_failure(self) -> None:
+        # 记录失败调用
         now = time.monotonic()
         with self._lock:
             self._half_open_probe_running = False
@@ -139,6 +150,7 @@ class CircuitBreaker:
                 self.opened_until = now + self.cooldown_seconds
 
     def snapshot(self) -> dict[str, Any]:
+        # 获取快照
         with self._lock:
             retry_after_ms = max(0.0, (self.opened_until - time.monotonic()) * 1000)
             return {
@@ -150,6 +162,7 @@ class CircuitBreaker:
 
 class GatewayMetrics:
     def __init__(self) -> None:
+        # 初始化
         self._lock = threading.RLock()
         self.total_requests = 0
         self.upstream_calls = 0
@@ -163,22 +176,26 @@ class GatewayMetrics:
         self.method_stats: dict[str, dict[str, float | int]] = {}
 
     def record_request(self, method: str) -> None:
+        # 记录请求数
         with self._lock:
             self.total_requests += 1
             self._stats(method)["requests"] += 1
 
     def record_latency(self, method: str, elapsed_ms: float) -> None:
+        # 记录延迟
         with self._lock:
             self.total_latency_ms += elapsed_ms
             self._stats(method)["total_latency_ms"] += elapsed_ms
 
     def increment(self, method: str, field_name: str) -> None:
+        # 递增指定指标
         with self._lock:
             current = getattr(self, field_name)
             setattr(self, field_name, current + 1)
             self._stats(method)[field_name] += 1
 
     def snapshot(self) -> dict[str, Any]:
+        # 获取快照
         with self._lock:
             avg_latency = self.total_latency_ms / self.total_requests if self.total_requests else 0.0
             method_stats: dict[str, Any] = {}
@@ -204,6 +221,7 @@ class GatewayMetrics:
             }
 
     def _stats(self, method: str) -> dict[str, float | int]:
+        # 获取或创建方法的统计字典
         if method not in self.method_stats:
             self.method_stats[method] = {
                 "requests": 0,
@@ -221,6 +239,7 @@ class GatewayMetrics:
 
 class MCPGatewayState:
     def __init__(self, *, host: str, port: int) -> None:
+        # 初始化
         self.host = host
         self.port = port
         self.name = str(MCP_GATEWAY["name"])
@@ -232,6 +251,10 @@ class MCPGatewayState:
             for method in server.get("extra_methods", []):
                 self.routes[str(method)] = server_key
         self.cache = TTLCache(float(MCP_GATEWAY["cache_ttl_seconds"]))
+        self._method_ttl: dict[str, float] = {
+            str(method): float(ttl)
+            for method, ttl in MCP_GATEWAY.get("per_method_ttl_seconds", {}).items()
+        }
         self.metrics = GatewayMetrics()
         self.rate_limiter = RateLimiter(
             list(self.routes),
@@ -249,9 +272,11 @@ class MCPGatewayState:
 
     @property
     def base_url(self) -> str:
+        # 获取基础URL
         return f"http://{self.host}:{self.port}"
 
     def health(self) -> dict[str, Any]:
+        # 获取健康检查信息
         return {
             "role": self.name,
             "status": "ok",
@@ -263,6 +288,7 @@ class MCPGatewayState:
         }
 
     def route_view(self) -> dict[str, Any]:
+        # 获取路由视图
         return {
             method: {
                 "upstream": MCP_SERVERS[server_key]["name"],
@@ -272,12 +298,14 @@ class MCPGatewayState:
         }
 
     def breaker_view(self) -> dict[str, Any]:
+        # 获取熔断器状态视图
         return {
             method: breaker.snapshot()
             for method, breaker in self.breakers.items()
         }
 
     def metrics_view(self) -> dict[str, Any]:
+        # 获取指标视图
         return {
             **self.metrics.snapshot(),
             "cache_size": self.cache.size(),
@@ -285,6 +313,7 @@ class MCPGatewayState:
         }
 
     def handle_json_rpc(self, payload: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
+        # 处理JSON-RPC请求
         request_id = payload.get("id")
         method = payload.get("method")
         started = time.perf_counter()
@@ -341,7 +370,7 @@ class MCPGatewayState:
         try:
             result, rpc_error = self._call_upstream(method, payload)
             if result is not None:
-                self.cache.set(cache_key, result)
+                self.cache.set(cache_key, result, ttl=self._method_ttl.get(method))
                 inflight.result = result
                 response = _json_rpc_result(request_id, result)
             else:
@@ -357,6 +386,7 @@ class MCPGatewayState:
             self.metrics.record_latency(method, _elapsed_ms(started))
 
     def _get_or_create_inflight(self, cache_key: str) -> tuple[InflightCall, bool]:
+        # 获取或创建正在处理的请求记录
         with self._inflight_lock:
             inflight = self._inflight.get(cache_key)
             if inflight is not None:
@@ -373,6 +403,7 @@ class MCPGatewayState:
         inflight: InflightCall,
         started: float,
     ) -> tuple[HTTPStatus, dict[str, Any]]:
+        # 等待其他线程处理相同请求的结果
         self.metrics.increment(method, "coalesced_requests")
         timeout = float(MCP_GATEWAY["coalesce_wait_seconds"])
         waited = inflight.event.wait(timeout=timeout)
@@ -404,6 +435,7 @@ class MCPGatewayState:
         return HTTPStatus.OK, _json_rpc_error_from_body(request_id, error_body)
 
     def _clear_inflight(self, cache_key: str) -> None:
+        # 清理正在处理的请求记录
         with self._inflight_lock:
             self._inflight.pop(cache_key, None)
 
@@ -412,6 +444,7 @@ class MCPGatewayState:
         method: str,
         payload: dict[str, Any],
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        # 调用上游MCP服务
         request_id = payload.get("id")
         server = MCP_SERVERS[self.routes[method]]
         server_name = str(server["name"])
@@ -538,6 +571,7 @@ class MCPGatewayHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, server_address: tuple[str, int], handler_class: type[BaseHTTPRequestHandler]) -> None:
+        # 初始化
         super().__init__(server_address, handler_class)
         self.state = MCPGatewayState(host=server_address[0], port=server_address[1])
 
@@ -546,6 +580,7 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
     server: MCPGatewayHTTPServer
 
     def do_GET(self) -> None:
+        # 处理GET请求
         if self.path == "/health":
             self._send_json(HTTPStatus.OK, {"ok": True, **self.server.state.health()})
             return
@@ -558,6 +593,7 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
 
     def do_POST(self) -> None:
+        # 处理POST请求
         if self.path != str(MCP_GATEWAY.get("path", "/")):
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
             return
@@ -590,9 +626,11 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
         self._send_json(status, response)
 
     def log_message(self, format: str, *args: Any) -> None:
+        # 禁止默认日志输出
         return
 
     def _read_json_with_size(self) -> tuple[dict[str, Any], int]:
+        # 读取请求体并解析JSON
         length = int(self.headers.get("Content-Length", "0"))
         raw_body = self.rfile.read(length).decode("utf-8") if length else ""
         try:
@@ -604,6 +642,7 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
         return payload, length
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        # 发送JSON响应
         body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         try:
             self.send_response(int(status))
@@ -616,6 +655,7 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
 
 
 def run(host: str | None = None, port: int | None = None) -> None:
+    # 启动服务
     host = host or str(MCP_GATEWAY["host"])
     port = port or int(MCP_GATEWAY["port"])
     server = MCPGatewayHTTPServer((host, port), MCPGatewayRequestHandler)
@@ -630,6 +670,7 @@ def run(host: str | None = None, port: int | None = None) -> None:
 
 
 def main() -> None:
+    # 命令行入口
     parser = argparse.ArgumentParser(description="Run MCP Gateway.")
     parser.add_argument("--host", default=MCP_GATEWAY["host"])
     parser.add_argument("--port", type=int, default=MCP_GATEWAY["port"])
@@ -638,36 +679,45 @@ def main() -> None:
 
 
 def _server_url(server: dict[str, Any]) -> str:
+    # 构建MCP服务URL
     return f"http://{server['host']}:{server['port']}{server.get('path', '/')}"
 
 
 def _cache_key(method: str, params: dict[str, Any]) -> str:
-    return method + ":" + json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    # 排除 id、task_id 等唯一标识符，只保留业务参数做缓存 key
+    semantic = {k: v for k, v in params.items() if k not in ("id", "task_id", "instruction", "daily_plan", "upstream_results", "area_selection")}
+    return method + ":" + json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _elapsed_ms(started: float) -> float:
+    # 计算从开始到现在的毫秒数
     return (time.perf_counter() - started) * 1000
 
 
 def _json_rpc_result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
+    # 构建JSON-RPC成功响应
     return {"jsonrpc": "2.0", "result": result, "id": request_id}
 
 
 def _json_rpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    # 构建JSON-RPC错误响应
     return {"jsonrpc": "2.0", "error": _error_body(code, message), "id": request_id}
 
 
 def _json_rpc_error_from_body(request_id: Any, error_body: dict[str, Any]) -> dict[str, Any]:
+    # 从错误体构建JSON-RPC错误响应
     code = int(error_body.get("code", JSONRPC_INTERNAL_ERROR))
     message = str(error_body.get("message", "Gateway error"))
     return _json_rpc_error(request_id, code, message)
 
 
 def _error_body(code: int, message: str) -> dict[str, Any]:
+    # 构建错误体
     return {"code": code, "message": message}
 
 
 def _infer_error_type(exc: Exception) -> str:
+    # 推断异常类型名称
     cause = exc.__cause__
     if cause is None:
         return type(exc).__name__
