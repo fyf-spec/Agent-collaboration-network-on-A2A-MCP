@@ -14,7 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.request_parser import extract_travel_task_from_payload
 from common.config import COORDINATOR_NAME, MCP_SERVERS, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
@@ -42,7 +43,7 @@ class PackingAgent(BaseAgent):
         
         try:
             context = task_payload.get("context") or {}
-            travel_task = _extract_travel_task(context)
+            travel_task = _extract_travel_task(task_payload)
             inputs = context.get("inputs") or {}
             upstream_results = inputs.get("upstream_results", {})
             
@@ -85,23 +86,29 @@ class PackingAgent(BaseAgent):
             )
             
             prompt = build_packaging_prompt(task_payload, upstream_results, mcp_result)
-            
-            try:
-                llm_json = llm.chat_json(
-                    prompt,
-                    max_tokens=600,
-                    temperature=0.7,
-                    timeout_seconds=20.0,
-                )
-                packing_list = llm_json.get("packing_list", mcp_result.get("packing_list", []))
-                summary = llm_json.get("summary", "行李准备清单已生成。")
-                llm_used = True
-                llm_error = None
-            except Exception as exc:
-                llm_error = str(exc)
-                packing_list = mcp_result.get("packing_list", [])
-                summary = "由于网络原因，为您直接返回了基础版行李准备清单。"
-                llm_used = False
+            packing_list = mcp_result.get("packing_list", [])
+            llm_used = False
+            llm_error = None
+            quality_source = "packing_agent_mcp_rule_summary"
+
+            if _demo_fast_mode_enabled():
+                summary = _packing_summary_from_list(packing_list)
+                quality_source = "packing_agent_mcp_rule_summary_demo_fast"
+            else:
+                try:
+                    llm_json = llm.chat_json(
+                        prompt,
+                        max_tokens=600,
+                        temperature=0.7,
+                        timeout_seconds=20.0,
+                    )
+                    packing_list = llm_json.get("packing_list", packing_list)
+                    summary = llm_json.get("summary", "行李准备清单已生成。")
+                    llm_used = True
+                    quality_source = "packing_agent_llm_summary"
+                except Exception as exc:
+                    llm_error = str(exc)
+                    summary = _packing_summary_from_list(packing_list)
 
             elapsed_ms = (time.perf_counter() - started) * 1000
             
@@ -129,7 +136,8 @@ class PackingAgent(BaseAgent):
                     "quality": {
                         "llm_used": llm_used,
                         "llm_error": llm_error,
-                        "confidence": 0.9 if llm_used else 0.7,
+                        "source": quality_source,
+                        "confidence": 0.9 if llm_error is None else 0.7,
                     },
                     "elapsed_ms": round(elapsed_ms, 2),
                 },
@@ -223,19 +231,12 @@ class PackingAgent(BaseAgent):
             raise RuntimeError("Packing MCP result missing")
         return result
 
-def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
-    # 从上下文中提取出行任务
-    if isinstance(context.get("travel_task"), dict):
-        return dict(context["travel_task"])
-    inputs = context.get("inputs") or {}
-    if isinstance(inputs, dict) and isinstance(inputs.get("travel_task"), dict):
-        return dict(inputs["travel_task"])
-    return {}
+def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
+    return extract_travel_task_from_payload(task_payload, capability="packing")
 
 def build_packaging_prompt(task_payload: dict[str, Any], upstream_results: dict[str, Any], mcp_result: dict[str, Any]) -> str:
+    travel_task = _extract_travel_task(task_payload)
     # 构造行李准备 LLM 提示词
-    context = task_payload.get("context") or {}
-    travel_task = context.get("travel_task") or {}
     # 提取天气摘要让 LLM 看到
     weather_struct = upstream_results.get("weather_agent", {}).get("structured", {})
     wc = weather_struct.get("weather_constraints", weather_struct)
@@ -278,6 +279,21 @@ def build_packaging_prompt(task_payload: dict[str, Any], upstream_results: dict[
         "必须输出严格的 JSON 格式，不要输出 Markdown 或其他解释文字。",
         json.dumps(payload, ensure_ascii=False, default=str)
     ])
+
+
+def _packing_summary_from_list(packing_list: Any) -> str:
+    if not isinstance(packing_list, list) or not packing_list:
+        return "已根据目的地、天数和天气生成基础行李准备清单。"
+    categories = []
+    for item in packing_list:
+        if isinstance(item, dict):
+            category = str(item.get("category") or "").strip()
+            if category:
+                categories.append(category)
+    if categories:
+        shown = "、".join(dict.fromkeys(categories[:5]))
+        return f"已生成行李准备清单，覆盖{shown}等类别。"
+    return "已根据 MCP 返回数据生成行李准备清单。"
 
 def main() -> None:
     # 启动行李准备 Agent

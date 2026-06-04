@@ -14,7 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from common.config import (
     A2A_REALTIME_MCP_ENABLED,
+    MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS,
+    MCP_HTTP_TIMEOUT_SECONDS,
     MCP_REALTIME_FALLBACK_TO_MOCK,
+    MCP_REALTIME_TIMEOUT_SECONDS,
     MCP_SERVERS,
     OPEN_METEO_MAX_FORECAST_DAYS,
 )
@@ -57,16 +60,29 @@ def get_weather(city: str = "北京", date: str = "", days: int = 1, **kwargs: o
                 )
             start_offset = days_until
 
-        # 实时 API 调用（失败重试1次再降级 Mock）
+        # 实时 API 调用必须早于 Agent/Gateway 超时完成，失败后直接降级 Mock。
+        realtime_budget = max(
+            1.0,
+            min(float(MCP_HTTP_TIMEOUT_SECONDS), float(MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS)) - 1.0,
+        )
+        provider_timeout = max(
+            1.0,
+            min(float(MCP_REALTIME_TIMEOUT_SECONDS), realtime_budget / 3.0),
+        )
+
         def _realtime_weather_call():
-            location = AMapClient().geocode_city_or_address(city)
+            location = AMapClient(timeout=provider_timeout).geocode_city_or_address(city, timeout=provider_timeout)
             longitude, latitude = _parse_amap_location(location)
             request_days = min(OPEN_METEO_MAX_FORECAST_DAYS, start_offset + day_count)
-            data = OpenMeteoClient().get_forecast(latitude=latitude, longitude=longitude, days=request_days)
+            data = OpenMeteoClient(timeout=provider_timeout).get_forecast(
+                latitude=latitude,
+                longitude=longitude,
+                days=request_days,
+            )
             return normalize_open_meteo_weather(
                 data, requested_city=city, date=requested_date, days=day_count, start_offset=start_offset,
             )
-        return retry_call(_realtime_weather_call, retries=2, sleep_seconds=1.0)
+        return retry_call(_realtime_weather_call, retries=0, sleep_seconds=0.0)
     except Exception as exc:
         if not MCP_REALTIME_FALLBACK_TO_MOCK:
             raise

@@ -20,7 +20,7 @@ if hasattr(sys.stderr, "reconfigure"):
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
-from common.config import MCP_GATEWAY
+from common.config import MCP_GATEWAY, MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS, MCP_HTTP_TIMEOUT_SECONDS
 from common.http_client import HttpJsonClientError, post_json
 from scripts.start_all import run_services
 
@@ -28,14 +28,22 @@ from scripts.start_all import run_services
 def main() -> None:
     gateway_url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
     metrics_url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}/metrics"
+    request_timeout = max(5.0, float(MCP_HTTP_TIMEOUT_SECONDS), float(MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS)) + 2.0
 
     # This demo only needs Weather MCP and MCP Gateway. It avoids Agent/Coordinator/LLM
     # so cache behavior is easy to observe and repeat.
     exclude = [
-        "registry_center",
+        "registry_center_primary",
+        "registry_center_backup",
         "traffic_mcp_server",
+        "attraction_mcp_server",
+        "hotel_mcp_server",
+        "packing_mcp_server",
         "weather_agent",
         "traffic_agent",
+        "attraction_agent",
+        "hotel_agent",
+        "packing_agent",
         "coordinator",
     ]
 
@@ -60,9 +68,9 @@ def main() -> None:
             print(f"Gateway URL: {gateway_url}")
             print("Sending two identical get_weather requests with different JSON-RPC ids...\n")
 
-            first = post_json(gateway_url, first_payload, timeout=5.0)
-            second = post_json(gateway_url, second_payload, timeout=5.0)
-            metrics = _get_json(metrics_url, timeout=5.0)
+            first = post_json(gateway_url, first_payload, timeout=request_timeout)
+            second = post_json(gateway_url, second_payload, timeout=request_timeout)
+            metrics = _get_json(metrics_url, timeout=request_timeout)
 
             print("First response:")
             print(json.dumps(first.data, ensure_ascii=False, indent=2))

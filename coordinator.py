@@ -95,10 +95,6 @@ from llm_client import LLMClientError, llm
 logger = logging.getLogger("coordinator")
 
 
-
-
-
-
 @dataclass
 class TaskRecord:
     task_id: str
@@ -659,10 +655,10 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                             continue
                         rec = self.server.state.get_task(tid)
                         snapshot = rec.snapshot()
-                        inputs = build_dynamic_inputs(travel_task, snapshot.get("results", {}), deps, workflow_dag)
+                        inputs = build_dynamic_inputs(snapshot.get("results", {}), deps, workflow_dag)
                         context = build_node_context(record=rec, node_id=node["node_id"],
                             stage=f"{node['node_id']}_processing", dependencies=list(deps),
-                            travel_task=travel_task, inputs=inputs, target=node["agent"])
+                            inputs=inputs, target=node["agent"])
                         log_network_event(event=f"dependency_dispatch_{node['node_id']}", direction="internal",
                             source=COORDINATOR_NAME, target=node["agent"], task_id=tid,
                             payload={"reason": f"dependencies {list(deps)} satisfied" if deps else "no dependencies",
@@ -926,16 +922,20 @@ def build_dependency_plan(question: str, targets: list[str], travel_task: dict[s
         "workflow": "travel_dependency",
         "selected_targets": targets,
         "dependency_chain": workflow_dag,
-        "travel_task": travel_task,
+        "task_request": {
+            "raw_instruction": question,
+            "split_policy": "coordinator_only_splits_request",
+            "agent_parse_policy": "each_agent_extracts_mcp_params_from_instruction",
+        },
         "available_agents": _enabled_agents_view(),
         "routing_policy": "dynamic LLM-based DAG scheduler",
         "llm": llm.info(),
     }
 
 
-def build_dynamic_inputs(travel_task: dict[str, Any], results: dict[str, Any], deps: set[str], workflow_dag: list[dict[str, Any]]) -> dict[str, Any]:
+def build_dynamic_inputs(results: dict[str, Any], deps: set[str], workflow_dag: list[dict[str, Any]]) -> dict[str, Any]:
     """基于已完成agent的结果，动态构建下一个agent的输入"""
-    inputs = {"travel_task": travel_task}
+    inputs: dict[str, Any] = {}
     upstream_results = {}
     
     for dep_node_id in deps:
@@ -964,64 +964,84 @@ def build_node_context(
     node_id: str,
     stage: str,
     dependencies: list[str],
-    travel_task: dict[str, Any],
     inputs: dict[str, Any],
     target: str,
 ) -> dict[str, Any]:
     # 构建agent节点的上下文信息
     agent_config = _fetch_discovered_agents().get(target, {})
+    node_goal = _agent_node_goal(target)
     return {
         "workflow": "travel_dependency",
         "node_id": node_id,
         "stage": stage,
         "dependencies": dependencies,
-        "travel_task": travel_task,
+        "request": {
+            "original_instruction": record.question,
+            "node_goal": node_goal,
+            "agent_instruction": f"{node_goal}。请在 Agent 内部解析原始请求，并转换为对应 MCP 方法的 JSON-RPC params。",
+        },
         "inputs": inputs,
         "coordinator_plan": record.plan,
         "agent_capabilities": agent_config.get("capabilities", []),
     }
 
 
+def _agent_node_goal(target: str) -> str:
+    return {
+        "weather_agent": "解析目的地、日期和天数，查询天气并生成天气约束",
+        "attraction_agent": "解析目的地、天数、预算、必去景点和偏好，查询并规划景点",
+        "hotel_agent": "解析目的地、预算、住宿偏好，并结合景点结果选择住宿区域和酒店",
+        "traffic_agent": "解析出发地、目的地、交通偏好和预算，并结合景点/酒店结果生成路线",
+        "packing_agent": "解析目的地、天数和出行约束，并结合天气结果生成行李清单",
+    }.get(target, "解析原始用户请求并完成本节点任务")
+
+
 def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
-    输入：问题、可用agent
-    返回：提取的travel_task和workflow_dag
-    用LLM提取task和dag工作流，如果失败，返回基于规则的fallback task和默认dag（全并行）
-    dag是一个列表，每个元素是一个node，包含node_id（领域名）、agent（实际调用的agent）和depends_on（依赖的上游node_id列表）。
+    Coordinator only splits the request into a workflow DAG.
+
+    The returned first dict is split metadata, not MCP-callable travel params.
+    Each downstream Agent must parse the original instruction and build its own
+    MCP JSON-RPC params.
     """
     default_dag = _default_travel_dag(question, available_agents)
+    if _demo_fast_mode_enabled():
+        fallback = {
+            "_parser": "demo_fast_request_split",
+            "_raw_question": question,
+            "split_only": True,
+        }
+        return fallback, default_dag
     try:
         logger.info("正在请求大模型生成总体规划和动态 DAG 工作流，请耐心等待...")
         llm_json = llm.chat_json(
             _task_analysis_prompt(question, available_agents),
-            max_tokens=600,
+            max_tokens=900,
             temperature=0.0,
             timeout_seconds=60.0,
         )
-        travel_task = llm_json.get("travel_task") if isinstance(llm_json.get("travel_task"), dict) else llm_json
-        if not isinstance(travel_task, dict):
-            raise ValueError("LLM task parser returned invalid travel_task")
-        if _llm_missed_required_iso_date(question, travel_task):
-            raise ValueError("LLM task parser did not convert the date constraint to ISO format")
+        request_split = llm_json.get("request_split") if isinstance(llm_json.get("request_split"), dict) else {}
+        if not isinstance(request_split, dict):
+            request_split = {}
         workflow_dag = llm_json.get("workflow_dag", default_dag)
         logger.info(f"【大模型提取工作流】：{workflow_dag}")
         if not isinstance(workflow_dag, list):
             workflow_dag = default_dag
         workflow_dag = _ensure_travel_workflow_dag(workflow_dag, default_dag, available_agents)
-            
-        return _normalize_travel_task(
-            travel_task,
-            {"_raw_question": question},
-            parser="coordinator_llm_task_parser",
-            apply_rule_date_fallback=False,
-        ), workflow_dag
+        request_split.setdefault("_parser", "coordinator_llm_request_splitter")
+        request_split.setdefault("_raw_question", question)
+        request_split.setdefault("split_only", True)
+        return request_split, workflow_dag
     except Exception as exc:
         logger.warning(f"【大模型提取工作流失败】，回退到规则提取: {type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()
-        fallback = _extract_travel_task_by_rules(question)
-        fallback["_parser"] = "rule_fallback"
-        fallback["_parser_error"] = str(exc)
+        fallback = {
+            "_parser": "rule_fallback_request_split",
+            "_parser_error": str(exc),
+            "_raw_question": question,
+            "split_only": True,
+        }
         return fallback, default_dag
 
 
@@ -1038,6 +1058,48 @@ def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> st
     "用户追求舒适体验，不在乎花费。应优先选择高质量、高评分的选项，
     避免因省钱而牺牲体验。适合推荐高端或奢华类型。"
     '''
+    split_payload = {
+        "question": question,
+        "available_agents_from_registry": {
+            name: {
+                "capabilities": agent.get("capabilities", []),
+            }
+            for name, agent in available_agents.items()
+        },
+        "output_schema": {
+            "request_split": {
+                "split_only": True,
+                "summary": "只概括用户请求用于调度展示，不解析 MCP 参数",
+                "agent_tasks": {
+                    "weather_agent": "本节点需要从原始请求中自行解析天气查询参数",
+                    "attraction_agent": "本节点需要从原始请求中自行解析景点查询参数",
+                    "hotel_agent": "本节点需要从原始请求中自行解析酒店查询参数",
+                    "traffic_agent": "本节点需要从原始请求中自行解析交通查询参数",
+                    "packing_agent": "本节点需要从原始请求中自行解析行李查询参数",
+                },
+            },
+            "workflow_dag": [
+                {
+                    "node_id": "agent_domain_name",
+                    "agent": "actual_agent_name",
+                    "depends_on": ["upstream_node_id"],
+                }
+            ],
+        },
+    }
+    return "\n".join(
+        [
+            "你是 Coordinator 的请求拆分器，只负责选择需要调用的 Agent 和 DAG 依赖关系。",
+            "禁止解析或输出 origin_city、destination_city、days、start_date、budget_level、transport_preference 等 MCP 参数字段。",
+            "这些业务字段必须由各 Agent 在收到原始 instruction 后自行解析，并转换为 Gateway/MCP 可调用的 JSON-RPC params。",
+            "请参考 available_agents_from_registry，只选择当前在线且与用户请求相关的 Agent。",
+            "一般旅行规划需要 weather、attraction、hotel、traffic、packing；若用户明确排除某类任务，可不选择对应 Agent。",
+            "依赖关系建议：attraction 依赖 weather；hotel 依赖 attraction；traffic 依赖 attraction 和 hotel；packing 依赖 weather。",
+            "只输出合法 JSON，不要 Markdown，不要解释。",
+            json.dumps(split_payload, ensure_ascii=False, default=str),
+        ]
+    )
+
     payload = {
         "question": question,
         "current_date": date_type.today().isoformat(),
@@ -1120,6 +1182,7 @@ def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> st
         "【raw_constraints 字段】这是最重要的字段。用自然语言总结用户的核心诉求，",
         "不要压缩成枚举值。下游 Agent 的 LLM 会读取这个字段来做领域内决策。",
         "写清楚：预算态度、舒适度要求、节奏偏好、交通偏好、住宿档次、特殊需求。",
+        "目的地必须来自用户问题本身；如果用户说的是省份、区域或非典型城市，也保留用户原词，绝对不要默认成北京。",
         "",
         "【DAG 规则】例如：景点 Agent depends_on 天气 Agent；",
         "交通 Agent depends_on 酒店 Agent + 景点 Agent；",
@@ -1128,6 +1191,8 @@ def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> st
         "",
         "Date rule: 使用 payload.current_date 作为今天。把 明天/后天/下周/下下周/下周二",
         "等相对日期换算为 ISO YYYY-MM-DD。绝对不要对相对日期输出 unspecified 或 null。",
+        "如果日期是模糊表达（如 X月初、暑假、国庆附近），请在 start_date 给出最合理的 ISO 近似日期，date_text 保留用户原文。",
+        "日期不确定时也必须继续解析 origin_city、destination_city、days、约束和 workflow_dag。",
         "Weather MCP 只接受 ISO 日期，不要把 下周、中秋节 等词传入 MCP 字段。",
         "",
         "不要输出 Markdown；只输出 JSON。",
@@ -1241,7 +1306,7 @@ def _normalize_travel_task(
         _resolve_task_dates(result, str(fallback.get("_raw_question") or ""))
         return result
     result = dict(fallback)
-    for key in ["origin_city", "destination_city", "budget_level", "transport_preference"]:
+    for key in ["origin_city", "destination_city", "budget_level", "transport_preference", "raw_constraints"]:
         if isinstance(value.get(key), str) and value[key].strip() and value[key] != "null":
             result[key] = value[key].strip()
     result["budget_level"] = normalize_budget_level(result.get("budget_level"))
@@ -1599,23 +1664,30 @@ def _as_clean_list(value: Any) -> list[str]:
 
 
 def _extract_origin_city(text: str) -> str | None:
-    # 从文本中提取出发城市
-    for city in ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]:
-        if f"从{city}" in text:
-            return city
+    # 兜底解析出发地。主路径由 LLM 完成。
+    match = re.search(r"从([\u4e00-\u9fa5]{2,12}?)(?:去|到|出发|$|[，,。；;\s])", text)
+    if match:
+        return match.group(1).strip()
     return None
 
 
 def _extract_destination_city(text: str, origin_city: str | None = None) -> str:
-    # 从文本中提取目的城市
-    cities = ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]
-    for city in cities:
-        if f"去{city}" in text or f"到{city}" in text:
-            return city
-    for city in cities:
-        if city in text and city != origin_city:
-            return city
-    return "北京"
+    # 兜底解析目的地。主路径由 LLM 完成，这里只避免 LLM 不可用时默认到错误城市。
+    generic_match = re.search(r"(?:去|到)([\u4e00-\u9fa5]{2,12}?)(?:玩|旅游|旅行|看看|看|住|$|[，,。；;\s])", text)
+    if generic_match:
+        destination = _clean_place_name(generic_match.group(1))
+        if destination != origin_city:
+            return destination
+    return "未指定"
+
+
+def _clean_place_name(value: str) -> str:
+    text = value.strip()
+    text = re.sub(r"(?:的)?(?:\d+|[一二两三四五六七八九十])天.*$", "", text)
+    text = re.sub(r"(?:的)?(?:低预算|高预算|穷游|省钱|经济|舒适|豪华).*$", "", text)
+    text = re.sub(r"(?:的)?(?:旅行|旅游|行程|计划).*$", "", text)
+    text = re.sub(r"\u7684$", "", text)
+    return text.strip()
 
 
 def _extract_days(text: str) -> int:
@@ -1736,8 +1808,17 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
     a late callback has already provided the missing data. The LLM can still be
     used in partial cases, but it never receives workflow/debug fields.
     """
+    status = snapshot.get("status")
     grounded_answer = _grounded_final_answer(question, snapshot)
-    if snapshot.get("status") != TASK_COMPLETED:
+    if status == TASK_PARTIAL:
+        failure_note = _format_partial_failure_note(snapshot)
+        if failure_note:
+            return _clean_final_answer_text(
+                f"{grounded_answer}\n\n当前缺失信息\n{failure_note}\n\n"
+                "说明：以上方案只基于已成功返回的数据生成，缺失模块恢复后可重新提交以补全。"
+            )
+        return grounded_answer
+    if status != TASK_COMPLETED:
         return _fallback_final_answer(question, snapshot, "")
     if _demo_fast_mode_enabled():
         return grounded_answer
@@ -2361,7 +2442,7 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
     """
     results = snapshot.get("results", {}) or {}
     plan = snapshot.get("plan", {}) or {}
-    travel_task = plan.get("travel_task", {}) or {}
+    travel_task = plan.get("travel_task", {}) or _travel_task_from_agent_results(results)
 
     weather = results.get("weather_agent", {}) if isinstance(results.get("weather_agent"), dict) else {}
     attraction = results.get("attraction_agent", {}) if isinstance(results.get("attraction_agent"), dict) else {}
@@ -2452,6 +2533,25 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
         "packing_list": packing_list,
         "user_visible_warnings": warnings,
     }
+
+
+def _travel_task_from_agent_results(results: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for agent_name in ["weather_agent", "attraction_agent", "hotel_agent", "traffic_agent", "packing_agent"]:
+        payload = results.get(agent_name)
+        if not isinstance(payload, dict):
+            continue
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        travel_task = metadata.get("travel_task")
+        if not isinstance(travel_task, dict):
+            continue
+        for key, value in travel_task.items():
+            if value in (None, "", [], {}, "未指定"):
+                continue
+            merged.setdefault(key, value)
+    return merged
 
 
 def _coordinator_summary_prompt(question: str, snapshot: dict[str, Any]) -> str:
@@ -2553,9 +2653,56 @@ def _short_agent_result(source: str, payload: dict[str, Any]) -> str:
     if source == "packing_agent":
         packing_list = structured.get("packing_list")
         if isinstance(packing_list, list) and packing_list:
-            return _short_text("、".join(map(str, packing_list[:5])))
+            return _short_text(_format_packing_summary(packing_list))
 
     return _short_text(payload.get("result") or "已返回结果")
+
+
+def _format_partial_failure_note(snapshot: dict[str, Any]) -> str:
+    results = snapshot.get("results", {}) or {}
+    dispatch_errors = snapshot.get("dispatch_errors", {}) or {}
+    pending_targets = snapshot.get("pending_targets", []) or []
+    targets = snapshot.get("targets", []) or []
+
+    lines: list[str] = []
+    for source in targets:
+        payload = results.get(source)
+        if isinstance(payload, dict) and payload.get("status") == RESULT_SUCCESS:
+            continue
+        label = _agent_display_name(str(source))
+        if isinstance(payload, dict):
+            lines.append(f"- {label}: {_user_friendly_error(payload.get('error') or '执行失败')}")
+
+    for source, err in dispatch_errors.items():
+        lines.append(f"- {_agent_display_name(str(source))}: {_user_friendly_error(err)}")
+
+    for source in pending_targets:
+        lines.append(f"- {_agent_display_name(str(source))}: 未返回结果")
+
+    return "\n".join(dict.fromkeys(lines))
+
+
+def _format_packing_summary(packing_list: list[Any], max_items: int = 5) -> str:
+    formatted: list[str] = []
+    for item in packing_list[:max_items]:
+        if isinstance(item, dict):
+            category = str(item.get("category") or "").strip()
+            raw_items = item.get("items")
+            if isinstance(raw_items, list):
+                item_text = "、".join(str(value).strip() for value in raw_items if str(value).strip())
+            else:
+                item_text = str(raw_items or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            main_text = f"{category}：{item_text}" if category and item_text else category or item_text
+            if reason:
+                main_text = f"{main_text}（{reason}）" if main_text else reason
+            if main_text:
+                formatted.append(main_text)
+            continue
+        text = str(item).strip()
+        if text:
+            formatted.append(text)
+    return "；".join(formatted)
 
 
 def _minimal_partial_answer(successful: list[str], failed: list[str]) -> str:

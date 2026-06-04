@@ -13,7 +13,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.request_parser import extract_travel_task_from_payload
 from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
@@ -35,7 +36,7 @@ class TrafficAgent(BaseAgent):
 
         try:
             context = task_payload.get("context") or {}
-            travel_task = _extract_travel_task(context)
+            travel_task = _extract_travel_task(task_payload)
             inputs = context.get("inputs") or {}
             upstream_results = inputs.get("upstream_results", {})
             daily_plan = _extract_daily_plan(inputs)
@@ -53,45 +54,7 @@ class TrafficAgent(BaseAgent):
             selected_route_ids: dict[str, str] = {}
             quality_source = "traffic_agent_rule_fallback"
 
-            try:
-                llm_json = llm.chat_json(
-                    _traffic_route_selector_prompt(
-                        city=city,
-                        days=int(travel_task.get("days") or max(1, len(daily_plan) or 1)),
-                        general_constraints=general_constraints,
-                        traffic_constraints=traffic_constraints,
-                        segments=segments_for_llm,
-                        upstream_results=upstream_results,
-                    ),
-                    max_tokens=300,
-                    temperature=0.2,
-                    timeout_seconds=45.0,
-                )
-                raw_selected = llm_json.get("selected_route_ids")
-                if not isinstance(raw_selected, dict):
-                    raise ValueError("selected_route_ids must be a JSON object")
-                llm_selected_route_ids = {str(key): str(value) for key, value in raw_selected.items()}
-                selected_route_ids, fallback_errors = _normalize_selected_route_ids(
-                    llm_selected_route_ids,
-                    segments=segments_for_llm,
-                    travel_task=travel_task,
-                )
-                traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
-                structured_result = {
-                    "traffic_plan": traffic_plan,
-                    "traffic_summary": _estimate_traffic_summary(traffic_plan),
-                    "intercity_transport": intercity_transport,
-                    "selected_route_ids": selected_route_ids,
-                    "llm_selected_route_ids": llm_selected_route_ids,
-                }
-                llm_used = True
-                if fallback_errors:
-                    llm_error = "; ".join(fallback_errors)
-                    quality_source = "traffic_agent_llm_route_selector_with_partial_fallback"
-                else:
-                    quality_source = "traffic_agent_llm_route_selector"
-            except Exception as exc:
-                llm_error = str(exc)
+            if _demo_fast_mode_enabled():
                 selected_route_ids = _fallback_selected_route_ids(segments_for_llm, travel_task)
                 traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
                 structured_result = {
@@ -101,7 +64,57 @@ class TrafficAgent(BaseAgent):
                     "selected_route_ids": selected_route_ids,
                     "llm_selected_route_ids": llm_selected_route_ids,
                 }
-                quality_source = "traffic_agent_rule_fallback"
+                quality_source = "traffic_agent_rule_fallback_demo_fast"
+            else:
+                try:
+                    llm_json = llm.chat_json(
+                        _traffic_route_selector_prompt(
+                            city=city,
+                            days=int(travel_task.get("days") or max(1, len(daily_plan) or 1)),
+                            general_constraints=general_constraints,
+                            traffic_constraints=traffic_constraints,
+                            segments=segments_for_llm,
+                            upstream_results=upstream_results,
+                        ),
+                        max_tokens=300,
+                        temperature=0.2,
+                        timeout_seconds=45.0,
+                    )
+                    raw_selected = llm_json.get("selected_route_ids")
+                    if not isinstance(raw_selected, dict):
+                        raise ValueError("selected_route_ids must be a JSON object")
+                    llm_selected_route_ids = {str(key): str(value) for key, value in raw_selected.items()}
+                    selected_route_ids, fallback_errors = _normalize_selected_route_ids(
+                        llm_selected_route_ids,
+                        segments=segments_for_llm,
+                        travel_task=travel_task,
+                    )
+                    traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
+                    structured_result = {
+                        "traffic_plan": traffic_plan,
+                        "traffic_summary": _estimate_traffic_summary(traffic_plan),
+                        "intercity_transport": intercity_transport,
+                        "selected_route_ids": selected_route_ids,
+                        "llm_selected_route_ids": llm_selected_route_ids,
+                    }
+                    llm_used = True
+                    if fallback_errors:
+                        llm_error = "; ".join(fallback_errors)
+                        quality_source = "traffic_agent_llm_route_selector_with_partial_fallback"
+                    else:
+                        quality_source = "traffic_agent_llm_route_selector"
+                except Exception as exc:
+                    llm_error = str(exc)
+                    selected_route_ids = _fallback_selected_route_ids(segments_for_llm, travel_task)
+                    traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
+                    structured_result = {
+                        "traffic_plan": traffic_plan,
+                        "traffic_summary": _estimate_traffic_summary(traffic_plan),
+                        "intercity_transport": intercity_transport,
+                        "selected_route_ids": selected_route_ids,
+                        "llm_selected_route_ids": llm_selected_route_ids,
+                    }
+                    quality_source = "traffic_agent_rule_fallback"
 
             elapsed_ms = (time.perf_counter() - started) * 1000
             result_payload = build_result_payload(
@@ -304,13 +317,8 @@ class TrafficAgent(BaseAgent):
         return "交通 Agent 已获得候选交通数据，并使用规则 fallback 完成选择。"
 
 
-def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(context.get("travel_task"), dict):
-        return dict(context["travel_task"])
-    inputs = context.get("inputs") or {}
-    if isinstance(inputs, dict) and isinstance(inputs.get("travel_task"), dict):
-        return dict(inputs["travel_task"])
-    return {}
+def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
+    return extract_travel_task_from_payload(task_payload, capability="traffic")
 
 
 def _extract_daily_plan(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -534,7 +542,7 @@ def _traffic_route_selector_prompt(
             "reason": "不超过20个中文字符",
         },
     }
-    pref = str(traffic_constraints.get("preference", travel_task.get("transport_preference", ""))).strip().lower()
+    pref = str(traffic_constraints.get("preference") or "").strip().lower()
     pref_guidance = _transport_preference_guidance(pref)
     return "\n".join(
         [

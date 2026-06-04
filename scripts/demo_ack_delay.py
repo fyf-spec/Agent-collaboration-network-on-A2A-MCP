@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -10,8 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from common.config import COORDINATOR_HOST, COORDINATOR_PORT
-from common.http_client import HttpJsonClientError, post_json
+from scripts.demo_utils import run_task_demo
 from scripts.start_all import run_services
 
 
@@ -23,9 +21,15 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
 def main() -> None:
-    # 让 weather_agent 在 TCP A2A 握手时强行睡眠 5 秒，触发 Coordinator 的 3 秒派发超时
+    demo_a2a_timeout = float(os.environ.get("A2A_DEMO_TCP_TIMEOUT_SECONDS", "3.0"))
+    demo_ack_delay = float(os.environ.get("A2A_DEMO_ACK_DELAY_SECONDS", "5.0"))
+    # 让 weather_agent 在 TCP A2A 握手时强行睡眠，触发 Coordinator 派发超时
     # 从而产生真实的 DISPATCH_ERROR
+    old_a2a_timeout = os.environ.get("A2A_TCP_TIMEOUT_SECONDS")
+    old_ack_delay = os.environ.get("A2A_DELAY_ACK_SECONDS")
+    os.environ["A2A_TCP_TIMEOUT_SECONDS"] = str(demo_a2a_timeout)
     os.environ["A2A_DELAY_ACK"] = "weather_agent"
+    os.environ["A2A_DELAY_ACK_SECONDS"] = str(demo_ack_delay)
     
     old_demo_fast = os.environ.get("A2A_DEMO_FAST")
     os.environ["A2A_DEMO_FAST"] = "1"
@@ -34,41 +38,20 @@ def main() -> None:
         with run_services():
             time.sleep(2)  # 等待服务完全启动
 
-            url = f"http://{COORDINATOR_HOST}:{COORDINATOR_PORT}/submit_task"
-            payload = {
-                "question": "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
-                "timeout": 600.0,
-            }
-
-            try:
-                response = post_json(url, payload, timeout=660.0)
-                print(f"====== Get Response (Time elapsed: {response.elapsed_ms:.2f}ms) ======")
-                print(f"HTTP Status Code: {response.status_code}")
-                
-                if response.ok and response.data:
-                    task = response.data.get("task", {})
-                    print(f"\nTask Status: {task.get('status')}")
-                    print(f"Final Answer:\n")
-                    print(task.get("final_answer", ""))
-                    
-                    print("\nAnswers of Agents:")
-                    results = task.get("results", {})
-                    errors = task.get("dispatch_errors", {})
-                    
-                    for agent, result in results.items():
-                        print(f"- {agent}: {result.get('status')}\n{result.get('error') or result.get('result')[:50] + '...'}")
-                    
-                    for agent, err in errors.items():
-                        print(f"- {agent} [DISPATCH_ERROR]: {err}")
-                else:
-                    print(f"Request Failed:\n{json.dumps(response.data, indent=2, ensure_ascii=False)}")
-
-            except HttpJsonClientError as exc:
-                print(f"HTTP Request Error: {exc}")
-            except Exception as e:
-                print(f"Unknown Error: {str(e)}")
+            run_task_demo(
+                "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
+                timeout=600.0,
+            )
     finally:
         os.environ.pop("A2A_DELAY_ACK", None)
+        if old_a2a_timeout is None:
+            os.environ.pop("A2A_TCP_TIMEOUT_SECONDS", None)
+        else:
+            os.environ["A2A_TCP_TIMEOUT_SECONDS"] = old_a2a_timeout
+        if old_ack_delay is None:
+            os.environ.pop("A2A_DELAY_ACK_SECONDS", None)
+        else:
+            os.environ["A2A_DELAY_ACK_SECONDS"] = old_ack_delay
         if old_demo_fast is None:
             os.environ.pop("A2A_DEMO_FAST", None)
         else:
