@@ -1334,6 +1334,12 @@ def _normalize_travel_task(
     # 关键词覆盖：用户明确说了"打车"等，覆盖 LLM 解析
     raw_q = str(fallback.get("_raw_question") or "")
     if raw_q:
+        origin_from_text = _extract_origin_city(raw_q)
+        destination_from_text = _extract_destination_city(raw_q, origin_from_text)
+        if origin_from_text:
+            result["origin_city"] = origin_from_text
+        if not is_unknown(destination_from_text):
+            result["destination_city"] = destination_from_text
         if any(kw in raw_q for kw in ["打车", "出租车", "专车", "taxi"]):
             result["transport_preference"] = "taxi"
         elif any(kw in raw_q for kw in ["地铁", "公交", "公共交通"]):
@@ -1663,11 +1669,39 @@ def _as_clean_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+KNOWN_TRAVEL_LOCATIONS = [
+    "北京",
+    "上海",
+    "广州",
+    "深圳",
+    "杭州",
+    "南京",
+    "成都",
+    "重庆",
+    "武汉",
+    "西安",
+    "苏州",
+    "天津",
+]
+
+
+def _clean_extracted_location(value: str) -> str:
+    # 清理“去云南玩3天”这类短语里跟在地点后的动作、时长和约束词。
+    text = str(value or "").strip(" \t\r\n，,。.!！？?；;、")
+    text = re.sub(r"(?:\d+\s*天|[一二两三四五六七八九十]+天).*$", "", text)
+    for marker in ["玩", "游玩", "旅游", "旅行", "自由行", "出差", "住宿", "住", "待", "逛", "看", "要求", "并且", "同时", "尽量", "必须"]:
+        index = text.find(marker)
+        if index > 0:
+            text = text[:index]
+    return text.strip(" \t\r\n，,。.!！？?；;、")
+
+
 def _extract_origin_city(text: str) -> str | None:
     # 兜底解析出发地。主路径由 LLM 完成。
     match = re.search(r"从([\u4e00-\u9fa5]{2,12}?)(?:去|到|出发|$|[，,。；;\s])", text)
     if match:
         return match.group(1).strip()
+
     return None
 
 
@@ -1688,6 +1722,8 @@ def _clean_place_name(value: str) -> str:
     text = re.sub(r"(?:的)?(?:旅行|旅游|行程|计划).*$", "", text)
     text = re.sub(r"\u7684$", "", text)
     return text.strip()
+
+
 
 
 def _extract_days(text: str) -> int:

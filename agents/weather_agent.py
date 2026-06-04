@@ -33,7 +33,7 @@ class WeatherAgent(BaseAgent):
             travel_task.get("destination_city")
             or travel_task.get("city")
             or super().build_mcp_params(task_payload).get("city")
-            or "北京"
+            or "未指定"
         ).strip()
         date = _normalize_date_label(str(travel_task.get("start_date") or "").strip())
         days = _safe_int(travel_task.get("days"), default=3)

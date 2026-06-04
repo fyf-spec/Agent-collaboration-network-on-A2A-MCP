@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
 from agents.request_parser import extract_travel_task_from_context
+
 from common.config import (
     AGENTS,
     COORDINATOR_NAME,
@@ -362,7 +363,7 @@ def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, 
     url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
     network_target = str(MCP_GATEWAY["name"])
     params = {
-        "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
+        "city": travel_task.get("destination_city") or travel_task.get("city") or "未指定",
         "days": travel_task.get("days", 3),
         "budget_level": _constraint_section(travel_task, "general").get("budget_level", travel_task.get("budget_level", "normal")),
         "must_visit": _attraction_must_visit(travel_task),
@@ -427,7 +428,7 @@ def _attraction_selection_prompt(
 ) -> str:
     must_visit_ids = _must_visit_spot_ids(grouped_spots, _attraction_must_visit(travel_task))
     payload = {
-        "city": travel_task.get("destination_city") or travel_task.get("city") or "北京",
+        "city": travel_task.get("destination_city") or travel_task.get("city") or "未指定",
         "days": travel_task.get("days", 3),
         "attraction_constraints": _constraint_section(travel_task, "attractions"),
         "general_constraints": _constraint_section(travel_task, "general"),
@@ -980,13 +981,7 @@ def _extract_origin_city(text: str) -> str | None:
 
 
 def _extract_destination_city(text: str) -> str:
-    for city in ["北京", "上海", "广州", "深圳", "杭州", "南京", "成都", "重庆", "武汉", "西安", "苏州", "天津"]:
-        if f"去{city}" in text or f"到{city}" in text:
-            return city
-    for city in ["北京", "上海", "广州"]:
-        if city in text:
-            return city
-    return "北京"
+    return extract_city_from_instruction(text, {})
 
 
 def _extract_days(text: str) -> int:
