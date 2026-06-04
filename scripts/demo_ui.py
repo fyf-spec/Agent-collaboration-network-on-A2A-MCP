@@ -93,6 +93,33 @@ MCP_SERVICE_LABELS = {
     "packing_mcp_server": "Packing MCP",
 }
 
+DEMO_PARAMETER_PRESETS = {
+    "正常链路对照": {
+        "a2a_timeout": 3.0,
+        "mcp_timeout": 3.0,
+        "task_timeout": 120.0,
+        "delays": {},
+        "purpose": "所有节点正常响应，用作成功路径基线。",
+        "steps": "应用后启动所有节点，直接提交旅行任务。",
+    },
+    "MCP HTTP 超时": {
+        "a2a_timeout": 3.0,
+        "mcp_timeout": 1.0,
+        "task_timeout": 60.0,
+        "delays": {"weather_mcp_server": 2.0},
+        "purpose": "Weather MCP 人为慢于 MCP HTTP Timeout，展示 HTTP 请求超时、错误传播和 partial 回答。",
+        "steps": "应用后停止 Weather MCP，再启动 Weather MCP 让 delay 生效，然后提交任务。",
+    },
+    "A2A 派发容错": {
+        "a2a_timeout": 1.0,
+        "mcp_timeout": 3.0,
+        "task_timeout": 60.0,
+        "delays": {},
+        "purpose": "缩短 A2A 等待窗口，用于配合关闭某个 Agent 展示 Coordinator 派发失败。",
+        "steps": "应用后关闭一个 Agent 节点，例如 Packing Agent，再提交任务。",
+    },
+}
+
 SERVICE_META = {
     "registry_center_primary": {"label": "Primary Registry", "port": "7000", "kind": "registry"},
     "registry_center_backup": {"label": "Backup Registry", "port": "7001", "kind": "registry"},
@@ -1568,6 +1595,24 @@ def _gateway_metric_delta_rows(before: dict[str, Any], after: dict[str, Any], me
     return rows
 
 
+def _wait_for_gateway_breaker_retry_window(method: str, *, max_wait_seconds: float = 12.0) -> None:
+    try:
+        metrics = _gateway_metrics_snapshot()
+    except Exception:
+        return
+    breakers = metrics.get("circuit_breakers", {})
+    breaker = breakers.get(method, {}) if isinstance(breakers, dict) else {}
+    if not isinstance(breaker, dict) or breaker.get("state") != "open":
+        return
+    retry_after_ms = breaker.get("retry_after_ms", 0.0)
+    try:
+        retry_after_seconds = float(retry_after_ms) / 1000.0
+    except (TypeError, ValueError):
+        retry_after_seconds = 0.0
+    if retry_after_seconds > 0:
+        time.sleep(min(max_wait_seconds, retry_after_seconds + 0.25))
+
+
 def _gateway_jsonrpc_call(method: str, params: dict[str, Any], request_id: str, *, timeout: float = 10.0) -> dict[str, Any]:
     payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": request_id}
     started = time.perf_counter()
@@ -1597,6 +1642,40 @@ def _gateway_jsonrpc_call(method: str, params: dict[str, Any], request_id: str, 
             "error_message": str(exc),
             "response": {},
         }
+
+
+def _run_gateway_single_scenario(
+    *,
+    label: str,
+    method: str,
+    params: dict[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    before = _gateway_metrics_snapshot()
+    started = time.perf_counter()
+    response = _gateway_jsonrpc_call(method, params, request_id)
+    after = _gateway_metrics_snapshot()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    return {
+        "label": label,
+        "request_count": 1,
+        "ok_count": 1 if response.get("ok") else 0,
+        "error_count": 0 if response.get("ok") else 1,
+        "elapsed_ms": elapsed_ms,
+        "avg_ms": response.get("elapsed_ms", elapsed_ms),
+        "p95_ms": response.get("elapsed_ms", elapsed_ms),
+        "max_ms": response.get("elapsed_ms", elapsed_ms),
+        "metric_delta": _gateway_metric_delta_rows(before, after, method),
+        "sample_errors": [
+            {
+                "status_code": response.get("status_code"),
+                "error_code": response.get("error_code"),
+                "error_message": response.get("error_message"),
+            }
+        ]
+        if not response.get("ok")
+        else [],
+    }
 
 
 def _latency_summary(responses: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1677,7 +1756,7 @@ def _run_gateway_cache_scenario(method: str, base_params: dict[str, Any], reques
     elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
     latencies = _latency_summary(responses)
     return {
-        "label": "Cache 热 key",
+        "label": "Hot key 高并发",
         "request_count": request_count + 1,
         "ok_count": (1 if warm.get("ok") else 0) + sum(1 for item in responses if item.get("ok")),
         "error_count": (0 if warm.get("ok") else 1) + sum(1 for item in responses if not item.get("ok")),
@@ -1713,6 +1792,25 @@ def run_gateway_ablation_experiment(
         return {"ok": False, "error": "MCP Gateway 未启动。"}
     if not is_service_running(service_name):
         return {"ok": False, "error": "Weather MCP 未启动，无法运行 cache/coalescing ablation。"}
+
+    _wait_for_gateway_breaker_retry_window(method)
+    lifecycle_params = {**base_params, "_demo_nonce": f"key-lifecycle-{nonce}"}
+    results.append(
+        _run_gateway_single_scenario(
+            label="Cold key 首次请求",
+            method=method,
+            params=lifecycle_params,
+            request_id=f"cold-key-{nonce}",
+        )
+    )
+    results.append(
+        _run_gateway_single_scenario(
+            label="Hot key 二次请求",
+            method=method,
+            params=lifecycle_params,
+            request_id=f"hot-key-{nonce}",
+        )
+    )
 
     results.append(
         _run_gateway_concurrent_scenario(
@@ -1843,6 +1941,7 @@ def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
 
     st.divider()
     st.markdown("#### 高并发 Ablation")
+    st.caption("先验证冷 key 首次 miss、热 key 二次 hit，再对比无复用基线、热 key 高并发、冷 key coalescing 和 circuit breaker。")
     request_count = int(
         st.number_input(
             "并发请求数",
@@ -2766,6 +2865,49 @@ def _html_icon(kind: str) -> str:
         "mcp_packing": "&#9635;",
     }.get(kind, "&#9679;")
 
+
+def _preset_delay_text(delays: dict[str, float]) -> str:
+    if not delays:
+        return "全部 0s"
+    return ", ".join(f"{MCP_SERVICE_LABELS.get(name, name)}={delay:g}s" for name, delay in delays.items())
+
+
+def _apply_demo_parameter_preset(name: str) -> None:
+    preset = DEMO_PARAMETER_PRESETS[name]
+    st.session_state["a2a_tcp_timeout_seconds"] = float(preset["a2a_timeout"])
+    st.session_state["mcp_http_timeout_seconds"] = float(preset["mcp_timeout"])
+    st.session_state["task_timeout_seconds"] = float(preset["task_timeout"])
+    preset_delays = preset.get("delays", {})
+    for srv_name in MCP_SERVICE_LABELS:
+        st.session_state[f"delay_{srv_name}"] = float(preset_delays.get(srv_name, 0.0))
+    st.session_state["applied_demo_parameter_preset"] = name
+
+
+def render_demo_parameter_presets() -> None:
+    with st.expander("Demo 参数组合", expanded=False):
+        preset_name = st.selectbox(
+            "演示目标",
+            list(DEMO_PARAMETER_PRESETS),
+            key="demo_parameter_preset",
+        )
+        preset = DEMO_PARAMETER_PRESETS[preset_name]
+        st.table(
+            [
+                {
+                    "A2A TCP Timeout": f"{preset['a2a_timeout']:g}s",
+                    "MCP HTTP Timeout": f"{preset['mcp_timeout']:g}s",
+                    "Task Timeout": f"{preset['task_timeout']:g}s",
+                    "MCP delay": _preset_delay_text(preset.get("delays", {})),
+                }
+            ]
+        )
+        st.caption(str(preset["purpose"]))
+        st.caption(str(preset["steps"]))
+        if st.button("应用该参数组合", use_container_width=True, key="apply_demo_parameter_preset"):
+            _apply_demo_parameter_preset(preset_name)
+            st.rerun()
+
+
 # 注册退出时的清理函数，防止 Streamlit 关闭时遗留僵尸进程
 atexit.register(lambda: stop_all_services(include_port_processes=False))
 
@@ -2776,11 +2918,13 @@ col_sidebar, col_main = st.columns([1, 1])
 
 with col_sidebar:
     st.header("⚙️ 节点管理与容错配置")
-    
+
+    render_demo_parameter_presets()
+
     st.markdown("### 全局超时参数")
-    a2a_tcp_timeout = st.number_input("A2A TCP Timeout (秒)", value=3.0, step=1.0)
-    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=3.0, step=1.0)
-    task_timeout = st.number_input("Task 整体 Timeout (秒)", value=120.0, step=10.0)
+    a2a_tcp_timeout = st.number_input("A2A TCP Timeout (秒)", value=3.0, step=1.0, key="a2a_tcp_timeout_seconds")
+    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=3.0, step=1.0, key="mcp_http_timeout_seconds")
+    task_timeout = st.number_input("Task 整体 Timeout (秒)", value=120.0, step=10.0, key="task_timeout_seconds")
     
     st.markdown("### 启停控制")
     col_btn1, col_btn2 = st.columns(2)
@@ -2826,9 +2970,6 @@ with col_sidebar:
                 step=1.0,
                 key=f"delay_{srv_name}",
             )
-
-    with st.expander("真实抓包设置", expanded=False):
-        render_packet_capture_settings()
 
     if recent_events:
         st.session_state.last_recent_network_events = recent_events
@@ -2884,7 +3025,7 @@ with col_main:
                 st.session_state.topology_node_pulses = {}
                 st.session_state.topology_seen_event_keys = []
                 capture = None
-                if st.session_state.get("pcap_capture_enabled", True):
+                if _packet_capture_capability().get("ok"):
                     capture = start_task_packet_capture(
                         max_seconds=int(task_timeout) + 20,
                         interface_name=st.session_state.get("pcap_capture_interface"),
