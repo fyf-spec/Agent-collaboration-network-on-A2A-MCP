@@ -19,7 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from agents.base_agent import BaseAgent, extract_city as extract_city_from_instruction
+from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.request_parser import extract_travel_task_from_context
+
 from common.config import (
     AGENTS,
     COORDINATOR_NAME,
@@ -181,38 +183,47 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
         llm_daily_spot_ids: dict[str, list[str]] = {}
         quality_source = "attraction_agent_rule_fallback"
 
-        try:
-            llm_json = llm.chat_json(
-                _attraction_selection_prompt(
-                    travel_task=travel_task,
-                    weather_constraints=weather_constraints,
-                    grouped_spots=grouped_spots,
-                    spot_relations=spot_relations,
-                ),
-                max_tokens=400,
-                temperature=0.2,
-                timeout_seconds=45.0,
-            )
-            llm_daily_spot_ids = normalize_daily_spot_ids(
-                llm_json.get("daily_spot_ids"),
-                compact_spots=compact_spots,
-                days=days,
-                must_visit=_attraction_must_visit(travel_task),
-                weather_constraints=weather_constraints,
-            )
-            if not any(llm_daily_spot_ids.values()):
-                raise ValueError("LLM daily_spot_ids is empty after validation")
-            llm_used = True
-            quality_source = "attraction_agent_llm_spot_selector"
-        except Exception as exc:
-            llm_error = str(exc)
+        if _demo_fast_mode_enabled():
             llm_daily_spot_ids = build_rule_daily_spot_ids(
                 compact_spots=compact_spots,
                 days=days,
                 must_visit=_attraction_must_visit(travel_task),
                 weather_constraints=weather_constraints,
             )
-            quality_source = "attraction_agent_rule_fallback"
+            quality_source = "attraction_agent_rule_fallback_demo_fast"
+        else:
+            try:
+                llm_json = llm.chat_json(
+                    _attraction_selection_prompt(
+                        travel_task=travel_task,
+                        weather_constraints=weather_constraints,
+                        grouped_spots=grouped_spots,
+                        spot_relations=spot_relations,
+                    ),
+                    max_tokens=400,
+                    temperature=0.2,
+                    timeout_seconds=45.0,
+                )
+                llm_daily_spot_ids = normalize_daily_spot_ids(
+                    llm_json.get("daily_spot_ids"),
+                    compact_spots=compact_spots,
+                    days=days,
+                    must_visit=_attraction_must_visit(travel_task),
+                    weather_constraints=weather_constraints,
+                )
+                if not any(llm_daily_spot_ids.values()):
+                    raise ValueError("LLM daily_spot_ids is empty after validation")
+                llm_used = True
+                quality_source = "attraction_agent_llm_spot_selector"
+            except Exception as exc:
+                llm_error = str(exc)
+                llm_daily_spot_ids = build_rule_daily_spot_ids(
+                    compact_spots=compact_spots,
+                    days=days,
+                    must_visit=_attraction_must_visit(travel_task),
+                    weather_constraints=weather_constraints,
+                )
+                quality_source = "attraction_agent_rule_fallback"
 
         daily_plan_skeleton = expand_daily_plan_skeleton(
             llm_daily_spot_ids,
@@ -951,32 +962,7 @@ def _dominant_area(areas: list[str]) -> str:
 
 
 def _extract_travel_task(instruction: str, context: dict[str, Any]) -> dict[str, Any]:
-    travel_task = dict(context.get("travel_task") or {})
-    inputs = context.get("inputs") or {}
-    if not travel_task and isinstance(inputs, dict):
-        travel_task = dict(inputs.get("travel_task") or {})
-    if "origin_city" not in travel_task:
-        origin = _extract_origin_city(instruction)
-        if origin:
-            travel_task["origin_city"] = origin
-    if "destination_city" not in travel_task:
-        travel_task["destination_city"] = _extract_destination_city(instruction)
-    if "days" not in travel_task:
-        travel_task["days"] = _extract_days(instruction)
-    if "budget_level" not in travel_task:
-        travel_task["budget_level"] = "low" if "低预算" in instruction or "省钱" in instruction else "normal"
-    if "transport_preference" not in travel_task and any(word in instruction for word in ["公共交通", "地铁", "公交"]):
-        travel_task["transport_preference"] = "public_transport"
-    if "must_visit" not in travel_task:
-        travel_task["must_visit"] = _extract_must_visit(instruction)
-    if "preferences" not in travel_task:
-        preferences = ["经典景点"]
-        if travel_task.get("budget_level") == "low":
-            preferences.append("低预算")
-        if travel_task.get("transport_preference") == "public_transport":
-            preferences.append("公共交通方便")
-        travel_task["preferences"] = preferences
-    return travel_task
+    return extract_travel_task_from_context(instruction, context, capability="attraction")
 
 # TODO.确认天气约束的来源
 def _extract_weather_constraints(inputs: dict[str, Any]) -> dict[str, Any]:

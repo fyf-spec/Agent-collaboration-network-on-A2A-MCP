@@ -67,6 +67,7 @@ MCP_GATEWAY = {
     "path": "/",
     "enabled": True,
     "cache_ttl_seconds": 300.0,  # 默认TTL，被 per_method_ttl 覆盖
+    "cache_max_entries": 512,
     "per_method_ttl_seconds": {
         # 天气数据每天变化，短TTL；其他数据稳定，长TTL
         "get_weather": 86400.0,       # 1天

@@ -12,7 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.request_parser import extract_travel_task_from_payload
 from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
@@ -35,7 +36,7 @@ class HotelAgent(BaseAgent):
 
         try:
             context = task_payload.get("context") or {}
-            travel_task = _extract_travel_task(context)
+            travel_task = _extract_travel_task(task_payload)
             # 为什么一定要weather_constraints呢？景点那个确实有道理，但是这个酒店选择并没有和天气有直接关系，不应该写死的我觉得，有种提前知道参考答案的感觉
             inputs = context.get("inputs") or {}
             upstream_results = inputs.get("upstream_results", {})
@@ -54,38 +55,46 @@ class HotelAgent(BaseAgent):
             hotel_options_for_llm = _build_hotel_options_for_llm(hotel_candidates)
             llm_hotel_selection: dict[str, Any] = {}
 
-            try:
-                llm_hotel_selection = llm.chat_json(
-                    _hotel_selector_prompt(
-                        travel_task=travel_task,
-                        upstream_results=upstream_results,
-                        area_options=area_options,
-                        hotel_options=hotel_options_for_llm,
-                    ),
-                    max_tokens=300,
-                    temperature=0.2,
-                    timeout_seconds=45.0,
-                )
-                selection, selection_errors = _normalize_hotel_selection(
-                    llm_hotel_selection,
-                    area_options=area_options,
-                    hotel_options=hotel_options_for_llm,
-                    travel_task=travel_task,
-                )
-                llm_used = True
-                if selection_errors:
-                    llm_error = "; ".join(selection_errors)
-                    quality_source = "hotel_agent_llm_area_hotel_selector_with_partial_fallback"
-                else:
-                    quality_source = "hotel_agent_llm_area_hotel_selector"
-            except Exception as exc:
-                llm_error = str(exc)
+            if _demo_fast_mode_enabled():
                 selection = _fallback_hotel_selection(
                     area_options=area_options,
                     hotel_options=hotel_options_for_llm,
                     travel_task=travel_task,
                 )
-                quality_source = "hotel_agent_rule_fallback"
+                quality_source = "hotel_agent_rule_fallback_demo_fast"
+            else:
+                try:
+                    llm_hotel_selection = llm.chat_json(
+                        _hotel_selector_prompt(
+                            travel_task=travel_task,
+                            upstream_results=upstream_results,
+                            area_options=area_options,
+                            hotel_options=hotel_options_for_llm,
+                        ),
+                        max_tokens=300,
+                        temperature=0.2,
+                        timeout_seconds=45.0,
+                    )
+                    selection, selection_errors = _normalize_hotel_selection(
+                        llm_hotel_selection,
+                        area_options=area_options,
+                        hotel_options=hotel_options_for_llm,
+                        travel_task=travel_task,
+                    )
+                    llm_used = True
+                    if selection_errors:
+                        llm_error = "; ".join(selection_errors)
+                        quality_source = "hotel_agent_llm_area_hotel_selector_with_partial_fallback"
+                    else:
+                        quality_source = "hotel_agent_llm_area_hotel_selector"
+                except Exception as exc:
+                    llm_error = str(exc)
+                    selection = _fallback_hotel_selection(
+                        area_options=area_options,
+                        hotel_options=hotel_options_for_llm,
+                        travel_task=travel_task,
+                    )
+                    quality_source = "hotel_agent_rule_fallback"
 
             hotel_plan = _expand_hotel_plan(
                 selection,
@@ -294,13 +303,8 @@ class HotelAgent(BaseAgent):
         return "酒店 Agent 已获得候选酒店数据，并使用规则 fallback 完成住宿选择。"
 
 
-def _extract_travel_task(context: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(context.get("travel_task"), dict):
-        return dict(context["travel_task"])
-    inputs = context.get("inputs") or {}
-    if isinstance(inputs, dict) and isinstance(inputs.get("travel_task"), dict):
-        return dict(inputs["travel_task"])
-    return {}
+def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
+    return extract_travel_task_from_payload(task_payload, capability="hotel")
 
 
 

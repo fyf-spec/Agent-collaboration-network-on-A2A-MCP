@@ -52,6 +52,7 @@ from common.tcp_a2a import (
     tcp_url,
     validate_envelope,
 )
+from agents.request_parser import city_from_request
 from llm_client import LLMClientError, llm
 
 
@@ -250,7 +251,7 @@ class AgentA2ATCPRequestHandler(BaseRequestHandler):
             worker.start()
 
             if os.environ.get("A2A_DELAY_ACK") == self.server.agent.agent_name:
-                time.sleep(5.0)
+                time.sleep(float(os.environ.get("A2A_DELAY_ACK_SECONDS", "5.0")))
 
             ack = build_envelope(
                 message_type=TYPE_TASK_ACK,
@@ -341,8 +342,10 @@ class BaseAgent:
 
     def _heartbeat_loop(self) -> None:
         # 心跳循环，向主备注册中心上报状态
+        primary_url = f"http://{REGISTRY_HOST}:{REGISTRY_PORT}/heartbeat"
         backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/heartbeat"
         payload = json.dumps({"agent_name": self.agent_name}, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json", "Connection": "close"}
         
         while True:
             # 尝试向主注册中心发送心跳
@@ -350,11 +353,11 @@ class BaseAgent:
                 req = request.Request(
                     primary_url,
                     data=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     method="POST",
                 )
                 with request.urlopen(req, timeout=1.0) as response:
-                    pass
+                    response.read()
             except Exception as exc:
                 logger.debug(f"{self.agent_name} failed to send heartbeat to primary registry: {exc}")
         
@@ -363,11 +366,11 @@ class BaseAgent:
                 req = request.Request(
                     backup_url,
                     data=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     method="POST",
                 )
                 with request.urlopen(req, timeout=1.0) as response:
-                    pass
+                    response.read()
             except Exception as exc:
                 logger.error(f"{self.agent_name} failed to send heartbeat to backup registry: {exc}")
                 
@@ -379,20 +382,23 @@ class BaseAgent:
         backup_url = f"http://{BACKUP_REGISTRY_HOST}:{BACKUP_REGISTRY_PORT}/register"
         payload = self.registration_payload()
         payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json", "Connection": "close"}
         
         # 尝试注册主节点
         try:
             req = request.Request(
                 primary_url,
                 data=payload_bytes,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with request.urlopen(req, timeout=3.0) as response:
-                if response.status == 200:
+                status = response.status
+                response.read()
+                if status == 200:
                     logger.info(f"{self.agent_name} successfully registered to {primary_url}")
                 else:
-                    logger.warning(f"{self.agent_name} primary registry warning: {response.status}")
+                    logger.warning(f"{self.agent_name} primary registry warning: {status}")
         except Exception as exc:
             logger.warning(f"{self.agent_name} failed to register to primary: {exc}")
             
@@ -401,14 +407,16 @@ class BaseAgent:
             req = request.Request(
                 backup_url,
                 data=payload_bytes,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with request.urlopen(req, timeout=3.0) as response:
-                if response.status == 200:
+                status = response.status
+                response.read()
+                if status == 200:
                     logger.info(f"{self.agent_name} successfully registered to {backup_url}")
                 else:
-                    logger.warning(f"{self.agent_name} backup registry warning: {response.status}")
+                    logger.warning(f"{self.agent_name} backup registry warning: {status}")
         except Exception as exc:
             logger.error(f"{self.agent_name} failed to register to backup: {exc}")
 
@@ -734,17 +742,10 @@ def _extract_destination_from_text(text: str) -> str:
 
 
 def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str:
-    # 从上下文优先提取目的地；没有上下文时再从“去/到/前往X”短语中提取。
-    context = context or {}
-    inputs = context.get("inputs") if isinstance(context.get("inputs"), dict) else {}
-    travel_task = context.get("travel_task") if isinstance(context.get("travel_task"), dict) else {}
-    if not travel_task and isinstance(inputs, dict) and isinstance(inputs.get("travel_task"), dict):
-        travel_task = inputs.get("travel_task") or {}
-    if isinstance(travel_task, dict):
-        for key in ("destination_city", "city", "destination_region"):
-            location = _known_location(travel_task.get(key))
-            if location:
-                return location
+    # 从指令和上下文中提取目标城市
+    parsed_city = city_from_request(instruction, context or {})
+    if parsed_city and parsed_city != "未指定":
+        return parsed_city
 
     context_text = json.dumps(context or {}, ensure_ascii=False)
     full_text = instruction + "\n" + context_text

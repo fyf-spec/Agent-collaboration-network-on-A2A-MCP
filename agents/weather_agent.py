@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from agents.base_agent import BaseAgent
+from agents.request_parser import extract_travel_task_from_payload
 from common.config import AGENTS, COORDINATOR_NAME, MCP_SERVERS
 from common.internal_values import iso_date_or_empty
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
@@ -118,14 +119,7 @@ class WeatherAgent(BaseAgent):
 
 
 def _extract_travel_task(task_payload: dict[str, Any]) -> dict[str, Any]:
-    '''返回payload里面的task'''
-    context = task_payload.get("context") or {}
-    if isinstance(context.get("travel_task"), dict):
-        return dict(context["travel_task"])
-    inputs = context.get("inputs") or {}
-    if isinstance(inputs, dict) and isinstance(inputs.get("travel_task"), dict):
-        return dict(inputs["travel_task"])
-    return {}
+    return extract_travel_task_from_payload(task_payload, capability="weather")
 
 
 def _fallback_clothing_advice(temp: str) -> str:

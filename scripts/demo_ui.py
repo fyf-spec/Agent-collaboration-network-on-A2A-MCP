@@ -6,6 +6,9 @@ import subprocess
 import os
 import signal
 import json
+import shutil
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
 from math import atan2, degrees, hypot
 from textwrap import dedent
@@ -18,31 +21,33 @@ from urllib.parse import urlparse
 st.set_page_config(page_title="A2A 旅行工作流 Agent", page_icon="✈️", layout="wide")
 
 COORDINATOR_URL = "http://127.0.0.1:9000/submit_task"
+MCP_GATEWAY_URL = "http://127.0.0.1:8100"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from common.config import (
+    A2A_REALTIME_MCP_ENABLED as DEFAULT_REALTIME_MCP_ENABLED,
+    A2A_TCP_TIMEOUT_SECONDS as DEFAULT_A2A_TCP_TIMEOUT_SECONDS,
+    AMAP_API_BASE_URL as DEFAULT_AMAP_API_BASE_URL,
+    AMAP_WEB_KEY as DEFAULT_AMAP_WEB_KEY,
+    DEFAULT_TASK_TIMEOUT_SECONDS as DEFAULT_TASK_TIMEOUT_SECONDS_CONFIG,
+    MCP_GATEWAY as DEFAULT_MCP_GATEWAY_CONFIG,
+    MCP_HTTP_TIMEOUT_SECONDS as DEFAULT_MCP_HTTP_TIMEOUT_SECONDS,
+    MCP_REALTIME_FALLBACK_TO_MOCK as DEFAULT_MCP_REALTIME_FALLBACK_TO_MOCK,
+    MCP_REALTIME_TIMEOUT_SECONDS as DEFAULT_MCP_REALTIME_TIMEOUT_SECONDS,
+)
+
 LOG_FILE = PROJECT_ROOT / "logs" / "demo_log.jsonl"
 TOPOLOGY_COMPONENT_DIR = PROJECT_ROOT / "scripts" / "topology_component"
 topology_component = components.declare_component("topology_control", path=str(TOPOLOGY_COMPONENT_DIR))
 PACKET_COMPONENT_DIR = PROJECT_ROOT / "scripts" / "packet_component"
 packet_component = components.declare_component("packet_inspector", path=str(PACKET_COMPONENT_DIR))
+CAPTURE_DIR = PROJECT_ROOT / "logs" / "captures"
 TOPOLOGY_REFRESH_SECONDS = 0.35
 TRANSFER_HISTORY_SECONDS = 30.0
 TRANSFER_PULSE_SECONDS = 1.6
-GENERATED_CONTENT_STATE_KEYS = [
-    "current_task_id",
-    "task_start_time",
-    "task_transfer_active",
-    "task_highlight_cleared_for",
-    "last_recent_network_events",
-    "selected_packet_event_key",
-    "selected_packet_event_index",
-    "last_packet_click_nonce",
-    "topology_edge_pulses",
-    "topology_failed_edge_pulses",
-    "topology_node_pulses",
-    "topology_seen_event_keys",
-]
 
-import sys
 import atexit
 
 
@@ -109,6 +114,82 @@ MCP_SERVICE_LABELS = {
     "packing_mcp_server": "Packing MCP",
 }
 
+REALTIME_MCP_SOURCE_ROWS = [
+    {
+        "MCP": "Weather",
+        "实时来源": "Open-Meteo 5 天预报 + 高德地理编码",
+        "UI 可观察字段": "provider, forecast_days, fallback_used",
+    },
+    {
+        "MCP": "Attraction",
+        "实时来源": "高德 POI + 本地画像补齐",
+        "UI 可观察字段": "provider, missing_fields, field_sources",
+    },
+    {
+        "MCP": "Hotel",
+        "实时来源": "高德 POI，按预算档搜索并围绕景点重心",
+        "UI 可观察字段": "provider, field_sources, fallback_used",
+    },
+    {
+        "MCP": "Traffic",
+        "实时来源": "高德路线；城际交通按驾车距离推算高铁/飞机",
+        "UI 可观察字段": "provider, preference, fallback_used",
+    },
+    {
+        "MCP": "Packing",
+        "实时来源": "规则引擎，依赖天气结果",
+        "UI 可观察字段": "provider, fallback_used",
+    },
+]
+
+MCP_GATEWAY_CACHE_ROWS = [
+    {"方法": "get_weather", "缓存 TTL": "1 天", "缓存 key": "业务参数"},
+    {"方法": "get_packing_list", "缓存 TTL": "1 天", "缓存 key": "业务参数"},
+    {"方法": "get_routes", "缓存 TTL": "30 天", "缓存 key": "业务参数"},
+    {"方法": "search_hotels", "缓存 TTL": "30 天", "缓存 key": "业务参数"},
+    {"方法": "search_attractions", "缓存 TTL": "30 天", "缓存 key": "业务参数"},
+    {"方法": "get_intercity_transport", "缓存 TTL": "30 天", "缓存 key": "业务参数"},
+]
+
+DATA_PROVIDER_LABELS = {
+    "amap": "高德地图",
+    "amap+local_profile": "高德地图 + 本地画像",
+    "amap+mock": "高德地图 + Mock",
+    "open-meteo": "Open-Meteo",
+    "mock": "本地 Mock",
+}
+
+DEMO_PARAMETER_PRESETS = {
+    "正常链路对照": {
+        "a2a_timeout": 3.0,
+        "mcp_timeout": 10.0,
+        "realtime_timeout": 5.0,
+        "task_timeout": 120.0,
+        "delays": {},
+        "purpose": "所有节点正常响应，用作成功路径基线。",
+        "steps": "应用后启动所有节点，直接提交旅行任务。",
+    },
+    "MCP HTTP 超时": {
+        "a2a_timeout": 3.0,
+        "mcp_timeout": 1.0,
+        "realtime_timeout": 1.0,
+        "task_timeout": 60.0,
+        "delays": {"weather_mcp_server": 2.0},
+        "purpose": "Weather MCP 人为慢于 MCP HTTP Timeout，展示 HTTP 请求超时、错误传播和 partial 回答。",
+        "steps": "应用后停止 Weather MCP，再启动 Weather MCP 让 delay 生效，然后提交任务。",
+    },
+    "A2A 派发容错": {
+        "a2a_timeout": 1.0,
+        "mcp_timeout": 3.0,
+        "realtime_timeout": 5.0,
+        "task_timeout": 60.0,
+        "delays": {},
+        "purpose": "缩短 A2A 等待窗口，用于配合关闭某个 Agent 展示 Coordinator 派发失败。",
+        "steps": "应用后关闭一个 Agent 节点，例如 Packing Agent，再提交任务。",
+    },
+}
+CUSTOM_DEMO_PARAMETER_OPTION = "自定义参数"
+
 SERVICE_META = {
     "registry_center_primary": {"label": "Primary Registry", "port": "7000", "kind": "registry"},
     "registry_center_backup": {"label": "Backup Registry", "port": "7001", "kind": "registry"},
@@ -138,6 +219,22 @@ TOPOLOGY_LABELS = {
     "hotel_mcp_server": "Hotel",
     "packing_mcp_server": "Packing",
 }
+
+
+def _display_value(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) or "-"
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _provider_label(provider: Any) -> str:
+    provider_text = str(provider or "-")
+    return DATA_PROVIDER_LABELS.get(provider_text, provider_text)
+
 
 def start_service(name: str, env_vars: Dict[str, str], delay: float = 0.0):
     if is_service_running(name):
@@ -272,8 +369,7 @@ def toggle_service_node(node_name: str, env_vars: Dict[str, str]) -> None:
     if is_service_running(node_name):
         stop_service(node_name)
     else:
-        delay = float(st.session_state.get(f"delay_{node_name}", 0.0) or 0.0)
-        start_service(node_name, env_vars, delay=delay)
+        start_service(node_name, env_vars, delay=_service_delay(node_name))
 
 
 def handle_topology_toggle(env_vars: Dict[str, str]) -> None:
@@ -475,7 +571,6 @@ def _packet_for_display(event: dict[str, Any]) -> dict[str, Any]:
             "protocol": _network_protocol_label(event),
             "operation": _network_operation_label(event),
             "transport": "TCP",
-            "note": _network_protocol_note(event),
         },
         "layers": _protocol_layer_rows(event),
         "wire_message": _format_full_protocol_message(event),
@@ -483,16 +578,7 @@ def _packet_for_display(event: dict[str, Any]) -> dict[str, Any]:
         "raw_event": dict(event),
     }
 
-
-def _network_protocol_note(event: dict[str, Any]) -> str:
-    endpoints = {str(event.get("source", "")), str(event.get("target", ""))}
-    if any(endpoint.startswith("registry_center") for endpoint in endpoints):
-        return "Coordinator queries Registry over HTTP GET /discover; response body is JSON."
-    return "Derived from method/url fields in the network event log."
-
-
 def render_packet_inspector(events: list[dict[str, Any]]) -> None:
-    st.caption("每一行对应一条网络事件。单击任意小条目查看完整协议内容。")
     selected = packet_component(
         html=build_packet_inspector_html(events),
         default=None,
@@ -516,12 +602,6 @@ def render_packet_inspector(events: list[dict[str, Any]]) -> None:
 
 @st.dialog("完整协议内容")
 def show_packet_dialog(packet: dict[str, Any]) -> None:
-    event = packet.get("event", "event")
-    source = packet.get("source", "?")
-    target = packet.get("target", "?")
-    protocol = _network_protocol_label(packet)
-    operation = _network_operation_label(packet)
-    st.caption(f"{protocol} | {operation} | {source} -> {target} | {event}")
     packet_view = _packet_for_display(packet)
     if _is_failed_network_event(packet):
         error_text = packet.get("error") or packet.get("error_type") or "request failed"
@@ -536,7 +616,7 @@ def show_packet_dialog(packet: dict[str, Any]) -> None:
     with tab_payload:
         payload = packet_view["payload"]
         if payload is None:
-            st.info("该事件日志中没有记录 payload。")
+            st.code("null", language="json")
         else:
             st.json(payload, expanded=True)
     with tab_raw:
@@ -638,7 +718,7 @@ def _format_a2a_tcp_message(event: dict[str, Any]) -> str:
     payload = event.get("payload")
     payload_text = _format_json_block(payload) if payload is not None else "(payload not captured)"
     size = event.get("payload_size")
-    size_text = str(size) if size not in (None, "") else "derived from JSON body"
+    size_text = str(size) if size not in (None, "") else "not recorded"
     lines = [
         "A2A TCP over TCP",
         "Frame format: [4-byte big-endian length][UTF-8 JSON envelope]",
@@ -722,8 +802,9 @@ def _is_http_response_event(event: dict[str, Any]) -> bool:
 def _format_internal_protocol_message(event: dict[str, Any]) -> str:
     return "\n".join(
         [
-            "Internal workflow event",
-            "This row is not a wire packet. It records Coordinator workflow state.",
+            f"Event: {event.get('event', 'event')}",
+            f"Source: {event.get('source', '?')}",
+            f"Target: {event.get('target', '?')}",
             "",
             _format_json_block(event),
         ]
@@ -764,6 +845,1990 @@ def _format_json_block(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
+def _creationflags_no_window(*, new_process_group: bool = False) -> dict[str, int]:
+    if os.name != "nt":
+        return {}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if new_process_group:
+        flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return {"creationflags": flags}
+
+
+def _run_cli_no_window(args: list[str], *, timeout: int = 10) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        **_creationflags_no_window(),
+    )
+
+
+@st.cache_data(ttl=300)
+def _find_wireshark_tool(tool_name: str) -> str:
+    found = shutil.which(tool_name)
+    if found:
+        return found
+
+    candidates = [
+        Path("D:/Wireshark") / tool_name,
+        Path("C:/Program Files/Wireshark") / tool_name,
+        Path("C:/Program Files (x86)/Wireshark") / tool_name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+@st.cache_data(ttl=120)
+def _dumpcap_interfaces(dumpcap_path: str) -> dict[str, Any]:
+    if not dumpcap_path:
+        return {"ok": False, "interfaces": [], "error": "dumpcap.exe not found"}
+    try:
+        result = _run_cli_no_window([dumpcap_path, "-D"], timeout=10)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "interfaces": [], "error": "dumpcap -D timed out"}
+    except OSError as exc:
+        return {"ok": False, "interfaces": [], "error": _capture_os_error_message(exc)}
+
+    output = (result.stdout or "") + "\n" + (result.stderr or "")
+    interfaces: list[dict[str, str]] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or "." not in line:
+            continue
+        number, rest = line.split(".", 1)
+        if not number.isdigit():
+            continue
+        rest = rest.strip()
+        name = rest
+        description = rest
+        if " (" in rest and rest.endswith(")"):
+            name, description = rest.rsplit(" (", 1)
+            description = description[:-1]
+        interfaces.append({"name": name.strip(), "description": description.strip(), "label": rest})
+
+    return {
+        "ok": result.returncode == 0 and bool(interfaces),
+        "interfaces": interfaces,
+        "error": output.strip() if result.returncode != 0 else "",
+    }
+
+
+def _capture_os_error_message(exc: OSError) -> str:
+    winerror = getattr(exc, "winerror", None)
+    if winerror == 740:
+        return "当前 Wireshark/Npcap 配置要求管理员权限。UI 已阻止弹出 UAC，请改用普通用户可抓包的 Npcap 配置或以管理员启动 UI。"
+    return str(exc)
+
+
+def _default_capture_interface(interfaces: list[dict[str, str]]) -> str:
+    for item in interfaces:
+        if item.get("name") == r"\Device\NPF_Loopback":
+            return item["name"]
+    return interfaces[0]["name"] if interfaces else ""
+
+
+def _format_capture_interface(name: str, interfaces: list[dict[str, str]]) -> str:
+    for item in interfaces:
+        if item.get("name") == name:
+            return item.get("label") or name
+    return name
+
+
+def _project_capture_ports() -> list[int]:
+    ports = {port for service_ports in SERVICE_PORTS.values() for port in service_ports}
+    return sorted(ports)
+
+
+def _pcap_capture_filter() -> str:
+    return " or ".join(f"tcp port {port}" for port in _project_capture_ports())
+
+
+def _packet_capture_capability() -> dict[str, Any]:
+    dumpcap = _find_wireshark_tool("dumpcap.exe")
+    tshark = _find_wireshark_tool("tshark.exe")
+    capinfos = _find_wireshark_tool("capinfos.exe")
+    interfaces_result = _dumpcap_interfaces(dumpcap) if dumpcap else {"ok": False, "interfaces": [], "error": ""}
+    interfaces = interfaces_result.get("interfaces", [])
+    return {
+        "ok": bool(dumpcap and interfaces_result.get("ok")),
+        "dumpcap": dumpcap,
+        "tshark": tshark,
+        "capinfos": capinfos,
+        "interfaces": interfaces,
+        "default_interface": _default_capture_interface(interfaces),
+        "error": interfaces_result.get("error") or ("dumpcap.exe not found" if not dumpcap else ""),
+    }
+
+
+def start_task_packet_capture(*, max_seconds: int, interface_name: str | None = None) -> dict[str, Any]:
+    capability = _packet_capture_capability()
+    if not capability["ok"]:
+        return {"ok": False, "status": "error", "error": capability.get("error") or "packet capture unavailable"}
+
+    interface = interface_name or capability["default_interface"]
+    if not interface:
+        return {"ok": False, "status": "error", "error": "no capture interface available"}
+
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    pcap_path = CAPTURE_DIR / f"a2a_task_{timestamp}.pcapng"
+    capture_filter = _pcap_capture_filter()
+    args = [
+        capability["dumpcap"],
+        "-q",
+        "-i",
+        interface,
+        "-a",
+        f"duration:{max(3, int(max_seconds))}",
+        "-f",
+        capture_filter,
+        "-w",
+        str(pcap_path),
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            **_creationflags_no_window(new_process_group=True),
+        )
+    except OSError as exc:
+        return {"ok": False, "status": "error", "error": _capture_os_error_message(exc), "command": args}
+
+    time.sleep(0.6)
+    if proc.poll() is not None:
+        stdout, stderr = _communicate_process(proc)
+        return {
+            "ok": False,
+            "status": "error",
+            "error": (stderr or stdout or f"dumpcap exited with code {proc.returncode}").strip(),
+            "command": args,
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": proc.returncode,
+        }
+
+    return {
+        "ok": True,
+        "status": "capturing",
+        "process": proc,
+        "pcap_path": str(pcap_path),
+        "interface": interface,
+        "interface_label": _format_capture_interface(interface, capability["interfaces"]),
+        "filter": capture_filter,
+        "command": args,
+        "started_at": time.time(),
+        "max_seconds": max_seconds,
+        "tshark": capability.get("tshark", ""),
+        "capinfos": capability.get("capinfos", ""),
+    }
+
+
+def _communicate_process(proc: subprocess.Popen[str], *, timeout: float = 2.0) -> tuple[str, str]:
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return "", ""
+    return stdout or "", stderr or ""
+
+
+def refresh_task_packet_capture() -> None:
+    capture = st.session_state.get("active_pcap_capture")
+    proc = capture.get("process") if isinstance(capture, dict) else None
+    if proc is not None and proc.poll() is not None:
+        finalize_task_packet_capture(reason="capture_timeout_or_exit")
+
+
+def finalize_task_packet_capture(*, reason: str) -> dict[str, Any] | None:
+    capture = st.session_state.get("active_pcap_capture")
+    if not isinstance(capture, dict):
+        return None
+
+    proc = capture.get("process")
+    if proc is not None and proc.poll() is None:
+        try:
+            if os.name == "nt":
+                proc.send_signal(signal.CTRL_BREAK_EVENT)
+            else:
+                proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+
+    stdout, stderr = _communicate_process(proc) if proc is not None else ("", "")
+    capture["stdout"] = stdout
+    capture["stderr"] = stderr
+    capture["returncode"] = proc.returncode if proc is not None else capture.get("returncode")
+    capture["status"] = "complete"
+    capture["reason"] = reason
+    capture["stopped_at"] = time.time()
+    capture.update(_parse_pcap_capture(capture))
+
+    finished = dict(capture)
+    finished.pop("process", None)
+    st.session_state.last_pcap_capture = finished
+    st.session_state.active_pcap_capture = None
+    return finished
+
+
+def _parse_pcap_capture(capture: dict[str, Any]) -> dict[str, Any]:
+    pcap_path = Path(str(capture.get("pcap_path", "")))
+    if not pcap_path.exists():
+        return {"ok": False, "packet_rows": [], "packet_count": 0, "error": "pcap file was not created"}
+
+    parsed: dict[str, Any] = {"ok": True, "pcap_size": pcap_path.stat().st_size}
+    capinfos = capture.get("capinfos") or _find_wireshark_tool("capinfos.exe")
+    if capinfos:
+        try:
+            info_result = _run_cli_no_window([capinfos, str(pcap_path)], timeout=10)
+            parsed["capinfos"] = ((info_result.stdout or "") + (info_result.stderr or "")).strip()
+        except Exception as exc:
+            parsed["capinfos_error"] = str(exc)
+
+    tshark = capture.get("tshark") or _find_wireshark_tool("tshark.exe")
+    if not tshark:
+        parsed.update({"packet_rows": [], "packet_count": 0, "parse_error": "tshark.exe not found"})
+        return parsed
+
+    fields = [
+        ("frame", "frame.number"),
+        ("stream", "tcp.stream"),
+        ("time_s", "frame.time_relative"),
+        ("frame_len", "frame.len"),
+        ("src_ip", "ip.src"),
+        ("src_port", "tcp.srcport"),
+        ("dst_ip", "ip.dst"),
+        ("dst_port", "tcp.dstport"),
+        ("flags_hex", "tcp.flags"),
+        ("flag_syn", "tcp.flags.syn"),
+        ("flag_ack", "tcp.flags.ack"),
+        ("flag_psh", "tcp.flags.push"),
+        ("flag_fin", "tcp.flags.fin"),
+        ("flag_rst", "tcp.flags.reset"),
+        ("seq", "tcp.seq"),
+        ("ack", "tcp.ack"),
+        ("window", "tcp.window_size_value"),
+        ("tcp_len", "tcp.len"),
+        ("segment_count", "tcp.segment.count"),
+        ("reassembled_len", "tcp.reassembled.length"),
+        ("retransmission", "tcp.analysis.retransmission"),
+        ("lost_segment", "tcp.analysis.lost_segment"),
+        ("http_method", "http.request.method"),
+        ("http_uri", "http.request.uri"),
+        ("http_status", "http.response.code"),
+        ("payload_hex", "tcp.payload"),
+    ]
+    args = [
+        tshark,
+        "-r",
+        str(pcap_path),
+        "-o",
+        "tcp.desegment_tcp_streams:TRUE",
+        "-Y",
+        "tcp",
+        "-T",
+        "fields",
+        "-E",
+        "separator=\t",
+        "-E",
+        "occurrence=f",
+    ]
+    for _, field_name in fields:
+        args.extend(["-e", field_name])
+
+    try:
+        result = _run_cli_no_window(args, timeout=20)
+    except Exception as exc:
+        parsed.update({"packet_rows": [], "packet_count": 0, "parse_error": str(exc)})
+        return parsed
+
+    rows: list[dict[str, Any]] = []
+    keys = [key for key, _ in fields]
+    for line in (result.stdout or "").splitlines():
+        values = line.split("\t")
+        values.extend([""] * (len(keys) - len(values)))
+        raw = dict(zip(keys, values[: len(keys)]))
+        rows.append(_pcap_row_for_display(raw))
+
+    parsed["packet_rows"] = rows
+    parsed["packet_count"] = len(rows)
+    parsed["tshark_stderr"] = (result.stderr or "").strip()
+    if result.returncode != 0 and not rows:
+        parsed["parse_error"] = parsed["tshark_stderr"] or f"tshark exited with code {result.returncode}"
+    return parsed
+
+
+@st.cache_data(ttl=15)
+def _latest_finished_capture_from_disk() -> dict[str, Any] | None:
+    if not CAPTURE_DIR.exists():
+        return None
+    pcaps = sorted(
+        [item for item in CAPTURE_DIR.glob("*.pcapng") if "_filtered_protocols" not in item.stem],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
+    if not pcaps:
+        return None
+    capture = {
+        "ok": True,
+        "status": "complete",
+        "reason": "latest_pcap",
+        "pcap_path": str(pcaps[0]),
+        "tshark": _find_wireshark_tool("tshark.exe"),
+        "capinfos": _find_wireshark_tool("capinfos.exe"),
+    }
+    capture.update(_parse_pcap_capture(capture))
+    return capture
+
+
+def _pcap_row_for_display(raw: dict[str, str]) -> dict[str, Any]:
+    payload_hex = raw.get("payload_hex", "")
+    http = ""
+    if raw.get("http_method"):
+        http = f"{raw.get('http_method')} {raw.get('http_uri', '')}".strip()
+    elif raw.get("http_status"):
+        http = f"HTTP {raw.get('http_status')}"
+
+    analysis = []
+    if raw.get("retransmission"):
+        analysis.append("retransmission")
+    if raw.get("lost_segment"):
+        analysis.append("lost_segment")
+    if raw.get("segment_count"):
+        analysis.append(f"segments={raw.get('segment_count')}")
+    if raw.get("reassembled_len"):
+        analysis.append(f"reassembled={raw.get('reassembled_len')}")
+
+    return {
+        "frame": raw.get("frame"),
+        "stream": raw.get("stream"),
+        "time_s": _short_decimal(raw.get("time_s")),
+        "src_port": raw.get("src_port"),
+        "dst_port": raw.get("dst_port"),
+        "src": _pcap_endpoint_label(raw.get("src_ip", ""), raw.get("src_port", "")),
+        "dst": _pcap_endpoint_label(raw.get("dst_ip", ""), raw.get("dst_port", "")),
+        "direction": _coordinator_agent_direction(raw.get("src_port", ""), raw.get("dst_port", "")),
+        "flags": _tcp_flags_label(raw),
+        "seq": raw.get("seq"),
+        "ack": raw.get("ack"),
+        "win": raw.get("window"),
+        "tcp_len": raw.get("tcp_len"),
+        "frame_len": raw.get("frame_len"),
+        "http": http,
+        "analysis": ", ".join(analysis),
+        "payload_hex": _hex_preview(payload_hex),
+        "payload_hex_full": payload_hex,
+        "payload_text": _payload_text_preview(payload_hex),
+    }
+
+
+AGENT_TCP_PORTS = {9010, 9020, 9030, 9040, 9060}
+COORDINATOR_CALLBACK_PORT = 9001
+COORDINATOR_HTTP_PORT = 9000
+REGISTRY_PORTS = {7000, 7001}
+GATEWAY_PORT = 8100
+MCP_SERVER_PORTS = {8001, 8002, 8003, 8004, 8005}
+
+
+def _port_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_coordinator_agent_tcp_row(row: dict[str, Any]) -> bool:
+    src_port = _port_int(row.get("src_port"))
+    dst_port = _port_int(row.get("dst_port"))
+    if src_port is None or dst_port is None:
+        return False
+    return (
+        src_port in AGENT_TCP_PORTS
+        or dst_port in AGENT_TCP_PORTS
+        or src_port == COORDINATOR_CALLBACK_PORT
+        or dst_port == COORDINATOR_CALLBACK_PORT
+    )
+
+
+def _row_ports(row: dict[str, Any]) -> set[int]:
+    return {
+        port
+        for port in (_port_int(row.get("src_port")), _port_int(row.get("dst_port")))
+        if port is not None
+    }
+
+
+def _row_has_any_port(row: dict[str, Any], ports: set[int]) -> bool:
+    return bool(_row_ports(row) & ports)
+
+
+def _row_tcp_len(row: dict[str, Any]) -> int:
+    try:
+        return int(str(row.get("tcp_len") or "0"))
+    except ValueError:
+        return 0
+
+
+def _row_payload_text(row: dict[str, Any]) -> str:
+    return str(row.get("payload_text", "") or "")
+
+
+def _row_contains(row: dict[str, Any], *needles: str) -> bool:
+    haystack = " ".join(
+        [
+            str(row.get("http", "")),
+            str(row.get("analysis", "")),
+            _row_payload_text(row),
+        ]
+    ).lower()
+    return any(needle.lower() in haystack for needle in needles)
+
+
+def _is_user_coordinator_http_row(row: dict[str, Any]) -> bool:
+    if not _row_has_any_port(row, {COORDINATOR_HTTP_PORT}):
+        return False
+    http = str(row.get("http", ""))
+    return (
+        "submit_task" in http
+        or _row_contains(row, "submit_task", "task_id", '"question"', "question")
+    )
+
+
+def _is_registry_discover_request_row(row: dict[str, Any]) -> bool:
+    if not _row_has_any_port(row, REGISTRY_PORTS):
+        return False
+    return _row_contains(row, "discover")
+
+
+def _registry_discover_rows(rows: list[dict[str, Any]], *, limit: int = 16) -> list[dict[str, Any]]:
+    discover_streams: set[int] = set()
+    discover_frames: set[str] = set()
+    for row in rows:
+        if not _is_registry_discover_request_row(row):
+            continue
+        stream = row.get("stream")
+        try:
+            discover_streams.add(int(str(stream)))
+        except (TypeError, ValueError):
+            frame = str(row.get("frame") or "")
+            if frame:
+                discover_frames.add(frame)
+
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        if not _row_has_any_port(row, REGISTRY_PORTS):
+            continue
+        stream = row.get("stream")
+        frame = str(row.get("frame") or "")
+        try:
+            stream_match = int(str(stream)) in discover_streams
+        except (TypeError, ValueError):
+            stream_match = False
+        if stream_match or frame in discover_frames:
+            selected.append(row)
+            if len(selected) >= limit:
+                break
+    return selected
+
+
+def _is_agent_gateway_jsonrpc_row(row: dict[str, Any]) -> bool:
+    if not _row_has_any_port(row, {GATEWAY_PORT}):
+        return False
+    return bool(row.get("http")) or _row_contains(row, "jsonrpc", "method", "params", "result", "error", "circuit_open", "-32001")
+
+
+def _is_gateway_mcp_jsonrpc_row(row: dict[str, Any]) -> bool:
+    if not _row_has_any_port(row, MCP_SERVER_PORTS):
+        return False
+    return bool(row.get("http")) or _row_contains(row, "jsonrpc", "method", "params", "result", "error")
+
+
+def _is_failure_pcap_row(row: dict[str, Any]) -> bool:
+    flags = {part.strip().upper() for part in str(row.get("flags", "")).split(",") if part.strip()}
+    if "RST" in flags:
+        return True
+    if _row_contains(row, "retransmission", "lost_segment", "circuit_open", "-32001", '"error"', "error"):
+        return True
+    http = str(row.get("http", ""))
+    if http.startswith("HTTP "):
+        try:
+            return int(http.split(maxsplit=1)[1]) >= 400
+        except (IndexError, ValueError):
+            return False
+    return False
+
+
+def _a2a_message_type(row: dict[str, Any]) -> str:
+    for message_type in ("TASK_REQUEST", "TASK_ACK", "TASK_RESULT", "RESULT_ACK"):
+        if _row_contains(row, message_type):
+            return message_type
+    return ""
+
+
+def _pcap_group_rows(rows: list[dict[str, Any]], predicate, *, limit: int = 16) -> list[dict[str, Any]]:
+    return [row for row in rows if predicate(row)][:limit]
+
+
+def _coordinator_agent_direction(src_port_value: Any, dst_port_value: Any) -> str:
+    src_port = _port_int(src_port_value)
+    dst_port = _port_int(dst_port_value)
+    if dst_port in AGENT_TCP_PORTS:
+        return f"Coordinator -> {_service_label_for_port(str(dst_port)).strip('()')}"
+    if src_port in AGENT_TCP_PORTS:
+        return f"{_service_label_for_port(str(src_port)).strip('()')} -> Coordinator"
+    if dst_port == COORDINATOR_CALLBACK_PORT:
+        return "Agent callback -> Coordinator"
+    if src_port == COORDINATOR_CALLBACK_PORT:
+        return "Coordinator -> Agent ACK"
+    return ""
+
+
+def _pcap_endpoint_label(ip: str, port: str) -> str:
+    label = _service_label_for_port(port)
+    endpoint = f"{ip}:{port}" if ip or port else ""
+    return f"{endpoint} {label}".strip()
+
+
+def _tcp_flags_label(raw: dict[str, str]) -> str:
+    names = []
+    flag_fields = [
+        ("SYN", "flag_syn"),
+        ("ACK", "flag_ack"),
+        ("PSH", "flag_psh"),
+        ("FIN", "flag_fin"),
+        ("RST", "flag_rst"),
+    ]
+    for label, key in flag_fields:
+        value = str(raw.get(key, "")).strip()
+        if value in {"1", "True", "true"}:
+            names.append(label)
+    if names:
+        return ",".join(names)
+    return raw.get("flags_hex", "")
+
+
+def _service_label_for_port(port: str) -> str:
+    try:
+        port_int = int(port)
+    except (TypeError, ValueError):
+        return ""
+    for service_name, ports in SERVICE_PORTS.items():
+        if port_int in ports:
+            meta = SERVICE_META.get(service_name, {})
+            return f"({meta.get('label', service_name)})"
+    return ""
+
+
+def _hex_preview(value: str, max_chars: int = 96) -> str:
+    if not value:
+        return ""
+    return value if len(value) <= max_chars else value[:max_chars] + "..."
+
+
+def _payload_text_preview(value: str, max_chars: int = 120) -> str:
+    payload = str(value or "").replace(":", "").strip()
+    if not payload:
+        return ""
+    try:
+        text = bytes.fromhex(payload).decode("utf-8", errors="replace")
+    except ValueError:
+        return ""
+    text = "".join(ch if ch in "\r\n\t" or ord(ch) >= 32 else "." for ch in text)
+    text = " ".join(text.split())
+    return text if len(text) <= max_chars else text[:max_chars] + "..."
+
+
+def _short_decimal(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return f"{float(value):.6f}"
+    except (TypeError, ValueError):
+        return value
+
+
+def _payload_hex_clean(row: dict[str, Any]) -> str:
+    return str(row.get("payload_hex_full") or row.get("payload_hex") or "").replace(":", "").strip()
+
+
+def _payload_byte_len(row: dict[str, Any]) -> int:
+    payload = _payload_hex_clean(row)
+    return len(payload) // 2 if payload else 0
+
+
+def _a2a_frame_total_bytes(row: dict[str, Any]) -> int | None:
+    payload = _payload_hex_clean(row)
+    if len(payload) < 10:
+        return None
+    try:
+        body_len = int(payload[:8], 16)
+    except ValueError:
+        return None
+    if body_len <= 0 or body_len > 2_000_000:
+        return None
+    if payload[8:10].lower() != "7b":
+        return None
+    return body_len + 4
+
+
+def _direction_flow_key(row: dict[str, Any]) -> tuple[str, str]:
+    return (str(row.get("src", "")), str(row.get("dst", "")))
+
+
+def _find_fragmented_a2a_example(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for index, row in enumerate(rows):
+        expected_total = _a2a_frame_total_bytes(row)
+        first_payload_len = _payload_byte_len(row)
+        if expected_total is None or first_payload_len <= 0 or first_payload_len >= expected_total:
+            continue
+
+        flow_key = _direction_flow_key(row)
+        parts = [row]
+        captured_total = first_payload_len
+        for next_row in rows[index + 1 :]:
+            if _direction_flow_key(next_row) != flow_key:
+                continue
+            next_payload_len = _payload_byte_len(next_row)
+            if next_payload_len <= 0:
+                continue
+            parts.append(next_row)
+            captured_total += next_payload_len
+            if captured_total >= expected_total:
+                return {
+                    "expected_total": expected_total,
+                    "captured_total": captured_total,
+                    "rows": parts[:6],
+                }
+        if len(parts) > 1:
+            return {"expected_total": expected_total, "captured_total": captured_total, "rows": parts[:6]}
+    return None
+
+
+def _find_single_frame_a2a_example(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for row in rows:
+        expected_total = _a2a_frame_total_bytes(row)
+        payload_len = _payload_byte_len(row)
+        if expected_total is not None and payload_len == expected_total:
+            return {"expected_total": expected_total, "captured_total": payload_len, "rows": [row]}
+    return None
+
+
+def _has_tcp_flag(row: dict[str, Any], flag: str) -> bool:
+    flags = {part.strip().upper() for part in str(row.get("flags", "")).split(",") if part.strip()}
+    return flag.upper() in flags
+
+
+def _is_zero_payload_ack(row: dict[str, Any]) -> bool:
+    try:
+        tcp_len = int(str(row.get("tcp_len") or "0"))
+    except ValueError:
+        return False
+    return tcp_len == 0 and _has_tcp_flag(row, "ACK") and not _has_tcp_flag(row, "SYN")
+
+
+def _find_three_way_handshake_example(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for index, syn in enumerate(rows):
+        if not _has_tcp_flag(syn, "SYN") or _has_tcp_flag(syn, "ACK"):
+            continue
+
+        client = str(syn.get("src", ""))
+        server = str(syn.get("dst", ""))
+        syn_ack = None
+        final_ack = None
+
+        for candidate in rows[index + 1 : index + 12]:
+            if str(candidate.get("src", "")) == server and str(candidate.get("dst", "")) == client:
+                if _has_tcp_flag(candidate, "SYN") and _has_tcp_flag(candidate, "ACK"):
+                    syn_ack = candidate
+                    break
+        if syn_ack is None:
+            continue
+
+        for candidate in rows[index + 1 : index + 16]:
+            if str(candidate.get("src", "")) == client and str(candidate.get("dst", "")) == server:
+                if _is_zero_payload_ack(candidate):
+                    final_ack = candidate
+                    break
+        if final_ack is None:
+            continue
+
+        return {"rows": [syn, syn_ack, final_ack]}
+    return None
+
+
+def _brief_pcap_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    brief_rows = []
+    for row in rows:
+        brief_rows.append(
+            {
+                "frame": row.get("frame"),
+                "stream": row.get("stream"),
+                "time_s": row.get("time_s"),
+                "direction": row.get("direction"),
+                "src": row.get("src"),
+                "dst": row.get("dst"),
+                "flags": row.get("flags"),
+                "seq": row.get("seq"),
+                "ack": row.get("ack"),
+                "tcp_len": row.get("tcp_len"),
+                "http": row.get("http"),
+                "analysis": row.get("analysis"),
+                "message": _a2a_message_type(row),
+                "payload_text": row.get("payload_text"),
+                "payload_head": row.get("payload_hex"),
+            }
+        )
+    return brief_rows
+
+
+def _example_caption(example: dict[str, Any]) -> str:
+    rows = example.get("rows", [])
+    frame_ids = ", ".join(str(row.get("frame")) for row in rows)
+    return (
+        f"frames: {frame_ids}; "
+        f"A2A frame bytes: {example.get('captured_total')} / {example.get('expected_total')}"
+    )
+
+
+def _pcap_demo_groups(all_rows: list[dict[str, Any]], a2a_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    handshake_example = _find_three_way_handshake_example(a2a_rows)
+    fragment_example = _find_fragmented_a2a_example(a2a_rows)
+    single_frame_example = _find_single_frame_a2a_example(a2a_rows)
+
+    groups: list[dict[str, Any]] = [
+        {
+            "title": "User -> Coordinator: HTTP POST /submit_task",
+            "rows": _pcap_group_rows(all_rows, _is_user_coordinator_http_row),
+            "empty": "本次 pcap 没有抓到 User -> Coordinator 的 HTTP submit_task。",
+        },
+        {
+            "title": "Coordinator -> Registry: HTTP/REST GET /discover",
+            "rows": _registry_discover_rows(all_rows),
+            "empty": "本次 pcap 没有抓到注册中心 discover 报文。",
+        },
+        {
+            "title": "Coordinator -> Agent: TCP 三次握手",
+            "rows": handshake_example["rows"] if handshake_example else [],
+            "caption": "SYN -> SYN/ACK -> ACK",
+            "empty": "本次 pcap 没有发现 Coordinator 与 Agent 之间完整的三次握手。",
+        },
+        {
+            "title": "Coordinator -> Agent: A2A TCP 拆分/重组 frame",
+            "rows": fragment_example["rows"] if fragment_example else [],
+            "caption": _example_caption(fragment_example) if fragment_example else "",
+            "empty": "本次 pcap 没有发现一个 A2A frame 被拆成多个 TCP frame 的例子。",
+        },
+        {
+            "title": "Coordinator -> Agent: A2A TCP 独立完整 frame",
+            "rows": single_frame_example["rows"] if single_frame_example else [],
+            "caption": _example_caption(single_frame_example) if single_frame_example else "",
+            "empty": "本次 pcap 没有发现完整 A2A frame 单独落在一个 TCP frame 内的例子。",
+        },
+        {
+            "title": "Agent -> Gateway: HTTP/JSON-RPC",
+            "rows": _pcap_group_rows(all_rows, _is_agent_gateway_jsonrpc_row),
+            "empty": "本次 pcap 没有抓到 Agent -> Gateway 的 JSON-RPC 报文。",
+        },
+        {
+            "title": "Gateway -> MCP: HTTP/JSON-RPC",
+            "rows": _pcap_group_rows(all_rows, _is_gateway_mcp_jsonrpc_row),
+            "empty": "本次 pcap 没有抓到 Gateway -> MCP 的 JSON-RPC 报文。",
+        },
+    ]
+    return groups
+
+
+def _group_frame_numbers(groups: list[dict[str, Any]]) -> list[int]:
+    frame_numbers: set[int] = set()
+    for group in groups:
+        for row in group.get("rows", []):
+            try:
+                frame_numbers.add(int(str(row.get("frame"))))
+            except (TypeError, ValueError):
+                continue
+    return sorted(frame_numbers)
+
+
+def _group_tcp_streams(groups: list[dict[str, Any]]) -> list[int]:
+    streams: set[int] = set()
+    for group in groups:
+        for row in group.get("rows", []):
+            try:
+                streams.add(int(str(row.get("stream"))))
+            except (TypeError, ValueError):
+                continue
+    return sorted(streams)
+
+
+def _pcap_demo_filter(streams: list[int], frame_numbers: list[int]) -> str:
+    parts = []
+    if streams:
+        parts.append("tcp.stream in {" + ",".join(str(stream) for stream in streams) + "}")
+    if frame_numbers:
+        parts.append("frame.number in {" + ",".join(str(number) for number in frame_numbers) + "}")
+    return " || ".join(parts)
+
+
+def _filtered_pcap_download(capture: dict[str, Any], groups: list[dict[str, Any]]) -> dict[str, Any]:
+    pcap_path = Path(str(capture.get("pcap_path", "")))
+    if not pcap_path.exists():
+        return {"ok": False, "error": "pcap file not found"}
+    streams = _group_tcp_streams(groups)
+    frame_numbers = _group_frame_numbers(groups)
+    if not streams and not frame_numbers:
+        return {"ok": False, "error": "没有可筛选的真实抓包 frame"}
+
+    tshark = capture.get("tshark") or _find_wireshark_tool("tshark.exe")
+    if not tshark:
+        return {"ok": False, "error": "tshark.exe not found"}
+
+    filtered_path = pcap_path.with_name(f"{pcap_path.stem}_filtered_protocols.pcapng")
+    source_mtime = pcap_path.stat().st_mtime
+    if filtered_path.exists() and filtered_path.stat().st_mtime >= source_mtime:
+        return {
+            "ok": True,
+            "path": filtered_path,
+            "frame_count": len(frame_numbers),
+            "stream_count": len(streams),
+            "filter": _pcap_demo_filter(streams, frame_numbers),
+        }
+
+    filter_expr = _pcap_demo_filter(streams, frame_numbers)
+    try:
+        result = _run_cli_no_window(
+            [tshark, "-r", str(pcap_path), "-Y", filter_expr, "-w", str(filtered_path)],
+            timeout=30,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "filter": filter_expr}
+
+    if result.returncode != 0 or not filtered_path.exists():
+        return {
+            "ok": False,
+            "error": ((result.stderr or "") + (result.stdout or "")).strip() or f"tshark exited with code {result.returncode}",
+            "filter": filter_expr,
+        }
+    return {
+        "ok": True,
+        "path": filtered_path,
+        "frame_count": len(frame_numbers),
+        "stream_count": len(streams),
+        "filter": filter_expr,
+    }
+
+
+def _render_pcap_group(group: dict[str, Any]) -> None:
+    st.markdown(f"#### {group['title']}")
+    caption = group.get("caption")
+    if caption:
+        st.caption(str(caption))
+    rows = group.get("rows", [])
+    if rows:
+        st.dataframe(_brief_pcap_rows(rows), hide_index=True, use_container_width=True)
+    else:
+        st.warning(str(group.get("empty", "本次 pcap 没有该分组报文。")))
+
+
+def render_packet_capture_settings() -> None:
+    capability = _packet_capture_capability()
+    interfaces = capability.get("interfaces", [])
+    st.checkbox(
+        "提交任务时同步真实抓包",
+        value=bool(capability.get("ok")),
+        key="pcap_capture_enabled",
+        disabled=not capability.get("ok"),
+    )
+    if not capability.get("ok"):
+        st.warning(capability.get("error") or "未检测到可用抓包工具。")
+        return
+
+    interface_names = [item["name"] for item in interfaces]
+    default_interface = capability.get("default_interface") or (interface_names[0] if interface_names else "")
+    default_index = interface_names.index(default_interface) if default_interface in interface_names else 0
+    st.selectbox(
+        "抓包接口",
+        interface_names,
+        index=default_index,
+        key="pcap_capture_interface",
+        format_func=lambda value: _format_capture_interface(value, interfaces),
+    )
+    st.text_input("BPF Filter", value=_pcap_capture_filter(), disabled=True)
+    st.caption(f"dumpcap: {capability.get('dumpcap')}")
+
+
+def render_task_packet_capture_panel() -> None:
+    refresh_task_packet_capture()
+    active = st.session_state.get("active_pcap_capture")
+    capture = active if isinstance(active, dict) else st.session_state.get("last_pcap_capture")
+
+    if not isinstance(capture, dict):
+        st.info("提交任务后会显示本次任务同步抓到的 pcap frame。")
+        return
+
+    if capture.get("status") == "capturing":
+        elapsed = time.time() - float(capture.get("started_at", time.time()))
+        st.info(f"正在抓包：{elapsed:.1f}s，接口 {capture.get('interface_label', capture.get('interface', ''))}")
+        st.code(str(capture.get("pcap_path", "")), language="text")
+        return
+
+    if not capture.get("ok", True):
+        st.error(capture.get("error") or "抓包失败")
+        return
+
+    all_rows = list(capture.get("packet_rows", []))
+    rows = [row for row in all_rows if _is_coordinator_agent_tcp_row(row)]
+    groups = _pcap_demo_groups(all_rows, rows)
+    filtered_download = _filtered_pcap_download(capture, groups)
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Coordinator-Agent TCP", str(len(rows)))
+    metric_cols[1].metric("pcap Size", f"{int(capture.get('pcap_size', 0))} B")
+    metric_cols[2].metric("Reason", str(capture.get("reason", "")))
+
+    for group in groups:
+        _render_pcap_group(group)
+
+    if not rows:
+        st.warning("pcap 中没有解析到 Coordinator 与 Agent 之间的 TCP frame。")
+
+    if filtered_download.get("ok"):
+        filtered_path = Path(str(filtered_download["path"]))
+        st.caption(
+            f"下载文件已按上面分组筛选：{filtered_download.get('stream_count', 0)} TCP streams，"
+            f"{filtered_download.get('frame_count', 0)} seed frames"
+        )
+        st.download_button(
+            "下载筛选后的 pcapng",
+            data=filtered_path.read_bytes(),
+            file_name=filtered_path.name,
+            mime="application/vnd.tcpdump.pcap",
+            use_container_width=True,
+        )
+    else:
+        st.warning(f"筛选 pcapng 失败：{filtered_download.get('error', 'unknown error')}")
+        pcap_path = Path(str(capture.get("pcap_path", "")))
+        if pcap_path.exists():
+            st.download_button(
+                "下载原始 pcapng",
+                data=pcap_path.read_bytes(),
+                file_name=pcap_path.name,
+                mime="application/vnd.tcpdump.pcap",
+                use_container_width=True,
+            )
+
+    if capture.get("parse_error"):
+        st.error(capture["parse_error"])
+
+
+def has_task_packet_capture() -> bool:
+    refresh_task_packet_capture()
+    return isinstance(st.session_state.get("active_pcap_capture"), dict) or isinstance(
+        st.session_state.get("last_pcap_capture"), dict
+    )
+
+
+def clear_task_display_state() -> None:
+    if isinstance(st.session_state.get("active_pcap_capture"), dict):
+        finalize_task_packet_capture(reason="new_task_submit")
+    for key in (
+        "current_task_id",
+        "task_start_time",
+        "last_recent_network_events",
+        "selected_packet_event_key",
+        "selected_packet_event_index",
+        "active_pcap_capture",
+        "last_pcap_capture",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state.task_transfer_active = False
+    st.session_state.task_highlight_cleared_for = None
+    st.session_state.topology_edge_pulses = {}
+    st.session_state.topology_failed_edge_pulses = {}
+    st.session_state.topology_node_pulses = {}
+    st.session_state.topology_seen_event_keys = []
+
+
+def _gateway_demo_cases() -> dict[str, dict[str, Any]]:
+    return {
+        "Weather MCP / get_weather": {
+            "method": "get_weather",
+            "params": {"city": "北京", "date": "未指定", "days": 5},
+        },
+        "Traffic MCP / get_route": {
+            "method": "get_route",
+            "params": {
+                "city": "北京",
+                "origin": "王府井青年旅舍",
+                "destination": "故宫",
+                "preference": "public_transport",
+            },
+        },
+        "Traffic MCP / get_intercity_transport": {
+            "method": "get_intercity_transport",
+            "params": {
+                "origin_city": "北京",
+                "destination_city": "广州",
+                "budget_level": "high",
+                "transport_preference": "taxi",
+            },
+        },
+        "Attraction MCP / search_attractions": {
+            "method": "search_attractions",
+            "params": {"city": "北京", "days": 3, "budget_level": "low", "must_visit": ["故宫"]},
+        },
+        "Hotel MCP / search_hotels": {
+            "method": "search_hotels",
+            "params": {"city": "北京", "target_area": "天安门-故宫区域", "budget_level": "low"},
+        },
+        "Packing MCP / get_packing_list": {
+            "method": "get_packing_list",
+            "params": {"city": "北京", "days": 3, "temperature": "15°C", "condition": "晴"},
+        },
+    }
+
+
+GATEWAY_DEMO_METHOD_SERVICE = {
+    "get_weather": "weather_mcp_server",
+    "get_route": "traffic_mcp_server",
+    "get_routes": "traffic_mcp_server",
+    "get_intercity_transport": "traffic_mcp_server",
+    "search_attractions": "attraction_mcp_server",
+    "search_hotels": "hotel_mcp_server",
+    "get_packing_list": "packing_mcp_server",
+}
+
+
+def _gateway_response_result(response: Any) -> dict[str, Any] | None:
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    return result if isinstance(result, dict) else None
+
+
+def _data_source_row(path: str, source: dict[str, Any]) -> dict[str, str]:
+    return {
+        "位置": path,
+        "Provider": _provider_label(source.get("provider")),
+        "实时": "是" if source.get("realtime") else "否",
+        "Fallback": "是" if source.get("fallback_used") else "否",
+        "原因": _display_value(source.get("fallback_reason") or source.get("forecast_unavailable_reason")),
+        "缺失/补齐字段": _display_value(source.get("missing_fields") or source.get("field_sources")),
+    }
+
+
+def _legacy_fallback_row(path: str, payload: dict[str, Any]) -> dict[str, str]:
+    fallback_used = bool(payload.get("fallback_used"))
+    provider = "高德距离推算" if fallback_used else "本地距离表"
+    return {
+        "位置": path,
+        "Provider": provider,
+        "实时": "是" if fallback_used else "否",
+        "Fallback": "是" if fallback_used else "否",
+        "原因": _display_value(payload.get("fallback_reason") or payload.get("cost_note")),
+        "缺失/补齐字段": "-",
+    }
+
+
+def _collect_data_source_rows(payload: Any, path: str = "result", rows: list[dict[str, str]] | None = None) -> list[dict[str, str]]:
+    if rows is None:
+        rows = []
+    if len(rows) >= 16:
+        return rows
+
+    if isinstance(payload, dict):
+        source = payload.get("data_source")
+        if isinstance(source, dict):
+            rows.append(_data_source_row(path, source))
+        elif "fallback_used" in payload and any(key in payload for key in ("recommended_option", "alternatives", "cost_note")):
+            rows.append(_legacy_fallback_row(path, payload))
+
+        for key, value in payload.items():
+            if key == "data_source" or not isinstance(value, (dict, list)):
+                continue
+            _collect_data_source_rows(value, f"{path}.{key}", rows)
+            if len(rows) >= 16:
+                break
+    elif isinstance(payload, list):
+        for index, item in enumerate(payload[:8]):
+            _collect_data_source_rows(item, f"{path}[{index}]", rows)
+            if len(rows) >= 16:
+                break
+    return rows
+
+
+def _gateway_data_source_rows(response: Any) -> list[dict[str, str]]:
+    result = _gateway_response_result(response)
+    if result is None:
+        return []
+    return _collect_data_source_rows(result)
+
+
+def run_gateway_demo(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    request_payload = {
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": f"ui-gateway-demo-{int(time.time() * 1000)}",
+    }
+    started = time.time()
+    result: dict[str, Any] = {
+        "gateway": MCP_GATEWAY_URL,
+        "request": request_payload,
+        "ok": False,
+    }
+    try:
+        health_resp = requests.get(f"{MCP_GATEWAY_URL}/health", timeout=3)
+        result["health_status"] = health_resp.status_code
+        result["health"] = health_resp.json()
+
+        methods_resp = requests.get(f"{MCP_GATEWAY_URL}/methods", timeout=3)
+        result["methods_status"] = methods_resp.status_code
+        result["methods"] = methods_resp.json()
+
+        request_timeout = max(12.0, _gateway_upstream_timeout_seconds() + 2.0)
+        response = requests.post(MCP_GATEWAY_URL, json=request_payload, timeout=request_timeout)
+        result["response_status"] = response.status_code
+        result["response"] = response.json()
+
+        metrics_resp = requests.get(f"{MCP_GATEWAY_URL}/metrics", timeout=3)
+        result["metrics_status"] = metrics_resp.status_code
+        result["metrics"] = metrics_resp.json()
+
+        result["ok"] = response.ok and "result" in result["response"]
+    except Exception as exc:
+        result["error"] = str(exc)
+    result["elapsed_ms"] = round((time.time() - started) * 1000, 2)
+    return result
+
+
+def _gateway_metrics_snapshot() -> dict[str, Any]:
+    response = requests.get(f"{MCP_GATEWAY_URL}/metrics", timeout=4)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("metrics", data)
+
+
+def _gateway_cache_snapshot() -> dict[str, Any]:
+    response = requests.get(f"{MCP_GATEWAY_URL}/cache", timeout=4)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("cache", data)
+
+
+def _gateway_cache_clear(method: str | None = None, key: str | None = None) -> dict[str, Any]:
+    payload = {}
+    if method:
+        payload["method"] = method
+    if key:
+        payload["key"] = key
+    response = requests.post(f"{MCP_GATEWAY_URL}/cache/clear", json=payload, timeout=4)
+    response.raise_for_status()
+    return response.json()
+
+
+def _gateway_cache_policy_rows() -> list[dict[str, Any]]:
+    per_method_ttl = DEFAULT_MCP_GATEWAY_CONFIG.get("per_method_ttl_seconds", {})
+    rows = [
+        {
+            "method": method,
+            "ttl": _format_seconds(float(ttl)),
+            "说明": "按方法覆盖 TTL",
+        }
+        for method, ttl in sorted(per_method_ttl.items())
+    ]
+    rows.append(
+        {
+            "method": "default",
+            "ttl": _format_seconds(float(DEFAULT_MCP_GATEWAY_CONFIG.get("cache_ttl_seconds", 0))),
+            "说明": "未配置方法的默认 TTL",
+        }
+    )
+    return rows
+
+
+def _gateway_cache_method_rows(cache: dict[str, Any]) -> list[dict[str, Any]]:
+    method_counts = cache.get("method_counts", {})
+    if not isinstance(method_counts, dict):
+        method_counts = {}
+    per_method_ttl = DEFAULT_MCP_GATEWAY_CONFIG.get("per_method_ttl_seconds", {})
+    methods = sorted(set(method_counts) | set(per_method_ttl))
+    return [
+        {
+            "method": method,
+            "entries": int(method_counts.get(method, 0) or 0),
+            "ttl": _format_seconds(float(per_method_ttl.get(method, DEFAULT_MCP_GATEWAY_CONFIG.get("cache_ttl_seconds", 0)))),
+        }
+        for method in methods
+    ]
+
+
+def _gateway_cache_entry_rows(cache: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    entries = cache.get("entries", [])
+    if not isinstance(entries, list):
+        return rows
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        params = entry.get("semantic_params", {})
+        try:
+            params_preview = json.dumps(params, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            params_preview = str(params)
+        if len(params_preview) > 140:
+            params_preview = params_preview[:137] + "..."
+        rows.append(
+            {
+                "method": entry.get("method"),
+                "key_hash": entry.get("key_hash"),
+                "ttl_left_s": round(float(entry.get("ttl_remaining_ms", 0) or 0) / 1000, 2),
+                "age_s": round(float(entry.get("age_ms", 0) or 0) / 1000, 2),
+                "hits": int(entry.get("hit_count", 0) or 0),
+                "bytes": int(entry.get("payload_size_bytes", 0) or 0),
+                "params": params_preview,
+                "key": entry.get("key"),
+            }
+        )
+    return rows
+
+
+def _format_seconds(value: float) -> str:
+    if value >= 86400 and value % 86400 == 0:
+        return f"{int(value / 86400)}d"
+    if value >= 3600 and value % 3600 == 0:
+        return f"{int(value / 3600)}h"
+    if value >= 60 and value % 60 == 0:
+        return f"{int(value / 60)}min"
+    return f"{value:g}s"
+
+
+def _numeric_metric(metrics: dict[str, Any], key: str) -> float:
+    value = metrics.get(key, 0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _method_metric(metrics: dict[str, Any], method: str, key: str) -> float:
+    method_stats = metrics.get("method_stats", {})
+    if not isinstance(method_stats, dict):
+        return 0.0
+    stats = method_stats.get(method, {})
+    if not isinstance(stats, dict):
+        return 0.0
+    value = stats.get(key, 0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _gateway_metric_delta_rows(before: dict[str, Any], after: dict[str, Any], method: str) -> list[dict[str, Any]]:
+    metric_pairs = [
+        ("requests", "total_requests", "requests"),
+        ("upstream_calls", "upstream_calls", "upstream_calls"),
+        ("cache_hits", "cache_hits", "cache_hits"),
+        ("cache_misses", "cache_misses", "cache_misses"),
+        ("coalesced_requests", "coalesced_requests", "coalesced_requests"),
+        ("rate_limited", "rate_limited", "rate_limited"),
+        ("circuit_open", "circuit_open", "circuit_open"),
+        ("errors", "error_count", "error_count"),
+    ]
+    rows = []
+    for label, global_key, method_key in metric_pairs:
+        global_before = _numeric_metric(before, global_key)
+        global_after = _numeric_metric(after, global_key)
+        method_before = _method_metric(before, method, method_key)
+        method_after = _method_metric(after, method, method_key)
+        rows.append(
+            {
+                "metric": label,
+                "global_delta": int(global_after - global_before),
+                "method_delta": int(method_after - method_before),
+                "method_after": int(method_after),
+            }
+        )
+    rows.append(
+        {
+            "metric": "cache_size",
+            "global_delta": int(_numeric_metric(after, "cache_size") - _numeric_metric(before, "cache_size")),
+            "method_delta": 0,
+            "method_after": 0,
+        }
+    )
+    return rows
+
+
+def _wait_for_gateway_breaker_retry_window(method: str, *, max_wait_seconds: float = 12.0) -> None:
+    try:
+        metrics = _gateway_metrics_snapshot()
+    except Exception:
+        return
+    breakers = metrics.get("circuit_breakers", {})
+    breaker = breakers.get(method, {}) if isinstance(breakers, dict) else {}
+    if not isinstance(breaker, dict) or breaker.get("state") != "open":
+        return
+    retry_after_ms = breaker.get("retry_after_ms", 0.0)
+    try:
+        retry_after_seconds = float(retry_after_ms) / 1000.0
+    except (TypeError, ValueError):
+        retry_after_seconds = 0.0
+    if retry_after_seconds > 0:
+        time.sleep(min(max_wait_seconds, retry_after_seconds + 0.25))
+
+
+def _gateway_jsonrpc_call(method: str, params: dict[str, Any], request_id: str, *, timeout: float | None = None) -> dict[str, Any]:
+    payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": request_id}
+    started = time.perf_counter()
+    request_timeout = timeout if timeout is not None else max(12.0, _gateway_upstream_timeout_seconds() + 2.0)
+    try:
+        response = requests.post(MCP_GATEWAY_URL, json=payload, timeout=request_timeout)
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"raw": response.text}
+        error_body = body.get("error") if isinstance(body, dict) else None
+        return {
+            "ok": response.ok and isinstance(body, dict) and "result" in body,
+            "status_code": response.status_code,
+            "elapsed_ms": round(elapsed_ms, 2),
+            "error_code": error_body.get("code") if isinstance(error_body, dict) else "",
+            "error_message": error_body.get("message") if isinstance(error_body, dict) else "",
+            "response": body,
+        }
+    except Exception as exc:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        return {
+            "ok": False,
+            "status_code": "",
+            "elapsed_ms": round(elapsed_ms, 2),
+            "error_code": "client_error",
+            "error_message": str(exc),
+            "response": {},
+        }
+
+
+def _run_gateway_single_scenario(
+    *,
+    label: str,
+    method: str,
+    params: dict[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    before = _gateway_metrics_snapshot()
+    started = time.perf_counter()
+    response = _gateway_jsonrpc_call(method, params, request_id)
+    after = _gateway_metrics_snapshot()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    return {
+        "label": label,
+        "request_count": 1,
+        "ok_count": 1 if response.get("ok") else 0,
+        "error_count": 0 if response.get("ok") else 1,
+        "elapsed_ms": elapsed_ms,
+        "avg_ms": response.get("elapsed_ms", elapsed_ms),
+        "p95_ms": response.get("elapsed_ms", elapsed_ms),
+        "max_ms": response.get("elapsed_ms", elapsed_ms),
+        "metric_delta": _gateway_metric_delta_rows(before, after, method),
+        "sample_errors": [
+            {
+                "status_code": response.get("status_code"),
+                "error_code": response.get("error_code"),
+                "error_message": response.get("error_message"),
+            }
+        ]
+        if not response.get("ok")
+        else [],
+    }
+
+
+def _latency_summary(responses: list[dict[str, Any]]) -> dict[str, Any]:
+    latencies = sorted(float(item.get("elapsed_ms", 0.0) or 0.0) for item in responses)
+    if not latencies:
+        return {"avg_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0}
+    p95_index = min(len(latencies) - 1, int(len(latencies) * 0.95))
+    return {
+        "avg_ms": round(sum(latencies) / len(latencies), 2),
+        "p95_ms": round(latencies[p95_index], 2),
+        "max_ms": round(latencies[-1], 2),
+    }
+
+
+def _run_gateway_concurrent_scenario(
+    *,
+    label: str,
+    method: str,
+    params_factory,
+    request_count: int,
+    max_workers: int,
+    request_id_prefix: str,
+) -> dict[str, Any]:
+    before = _gateway_metrics_snapshot()
+    started = time.perf_counter()
+    responses: list[dict[str, Any]] = []
+    workers = max(1, min(max_workers, request_count))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(
+                _gateway_jsonrpc_call,
+                method,
+                params_factory(index),
+                f"{request_id_prefix}-{index}",
+            )
+            for index in range(request_count)
+        ]
+        for future in as_completed(futures):
+            responses.append(future.result())
+    after = _gateway_metrics_snapshot()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    latencies = _latency_summary(responses)
+    return {
+        "label": label,
+        "request_count": request_count,
+        "ok_count": sum(1 for item in responses if item.get("ok")),
+        "error_count": sum(1 for item in responses if not item.get("ok")),
+        "elapsed_ms": elapsed_ms,
+        **latencies,
+        "metric_delta": _gateway_metric_delta_rows(before, after, method),
+        "sample_errors": [
+            {
+                "status_code": item.get("status_code"),
+                "error_code": item.get("error_code"),
+                "error_message": item.get("error_message"),
+            }
+            for item in responses
+            if not item.get("ok")
+        ][:3],
+    }
+
+
+def _run_gateway_cache_scenario(method: str, base_params: dict[str, Any], request_count: int, max_workers: int, nonce: str) -> dict[str, Any]:
+    params = {**base_params, "_demo_nonce": f"cache-{nonce}"}
+    before = _gateway_metrics_snapshot()
+    warm = _gateway_jsonrpc_call(method, params, f"cache-warm-{nonce}")
+    started = time.perf_counter()
+    responses: list[dict[str, Any]] = []
+    workers = max(1, min(max_workers, request_count))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(_gateway_jsonrpc_call, method, params, f"cache-hot-{nonce}-{index}")
+            for index in range(request_count)
+        ]
+        for future in as_completed(futures):
+            responses.append(future.result())
+    after = _gateway_metrics_snapshot()
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+    latencies = _latency_summary(responses)
+    return {
+        "label": "Hot key 高并发",
+        "request_count": request_count + 1,
+        "ok_count": (1 if warm.get("ok") else 0) + sum(1 for item in responses if item.get("ok")),
+        "error_count": (0 if warm.get("ok") else 1) + sum(1 for item in responses if not item.get("ok")),
+        "elapsed_ms": elapsed_ms,
+        **latencies,
+        "metric_delta": _gateway_metric_delta_rows(before, after, method),
+        "sample_errors": [
+            {
+                "status_code": item.get("status_code"),
+                "error_code": item.get("error_code"),
+                "error_message": item.get("error_message"),
+            }
+            for item in [warm, *responses]
+            if not item.get("ok")
+        ][:3],
+    }
+
+
+def run_gateway_ablation_experiment(
+    *,
+    request_count: int,
+    max_workers: int,
+    include_circuit: bool,
+    include_rate_limit: bool,
+    env_config: dict[str, str],
+) -> dict[str, Any]:
+    method = "get_weather"
+    service_name = "weather_mcp_server"
+    base_params = {"city": "北京", "date": "未指定"}
+    nonce = str(int(time.time() * 1000))
+    results: list[dict[str, Any]] = []
+
+    if not is_service_running("mcp_gateway"):
+        return {"ok": False, "error": "MCP Gateway 未启动。"}
+    if not is_service_running(service_name):
+        return {"ok": False, "error": "Weather MCP 未启动，无法运行 cache/coalescing ablation。"}
+
+    _wait_for_gateway_breaker_retry_window(method)
+    try:
+        cache_reset = _gateway_cache_clear()
+    except Exception as exc:
+        cache_reset = {"ok": False, "error": str(exc)}
+    try:
+        cache_before = _gateway_cache_snapshot()
+    except Exception:
+        cache_before = {}
+
+    lifecycle_params = {**base_params, "_demo_nonce": f"key-lifecycle-{nonce}"}
+    results.append(
+        _run_gateway_single_scenario(
+            label="Cold key 首次请求",
+            method=method,
+            params=lifecycle_params,
+            request_id=f"cold-key-{nonce}",
+        )
+    )
+    results.append(
+        _run_gateway_single_scenario(
+            label="Hot key 二次请求",
+            method=method,
+            params=lifecycle_params,
+            request_id=f"hot-key-{nonce}",
+        )
+    )
+
+    results.append(
+        _run_gateway_concurrent_scenario(
+            label="Cold key churn / 无缓存复用",
+            method=method,
+            params_factory=lambda index: {**base_params, "_demo_nonce": f"baseline-{nonce}-{index}"},
+            request_count=request_count,
+            max_workers=max_workers,
+            request_id_prefix=f"baseline-{nonce}",
+        )
+    )
+    results.append(_run_gateway_cache_scenario(method, base_params, request_count, max_workers, nonce))
+    results.append(
+        _run_gateway_concurrent_scenario(
+            label="Coalescing 冷 key",
+            method=method,
+            params_factory=lambda _index: {**base_params, "_demo_nonce": f"coalesce-{nonce}"},
+            request_count=request_count,
+            max_workers=max_workers,
+            request_id_prefix=f"coalesce-{nonce}",
+        )
+    )
+
+    if include_rate_limit:
+        was_running = is_service_running(service_name)
+        try:
+            if was_running:
+                stop_service(service_name)
+                time.sleep(0.8)
+            start_service(service_name, env_config, delay=2.0)
+            time.sleep(1.0)
+            _wait_for_gateway_breaker_retry_window(method)
+            results.append(
+                _run_gateway_concurrent_scenario(
+                    label="Rate Limit 压力（慢上游 + 冷 key）",
+                    method=method,
+                    params_factory=lambda index: {**base_params, "_demo_nonce": f"rate-limit-{nonce}-{index}"},
+                    request_count=max(request_count, max_workers),
+                    max_workers=max_workers,
+                    request_id_prefix=f"rate-limit-{nonce}",
+                )
+            )
+        finally:
+            stop_service(service_name)
+            if was_running:
+                start_service(service_name, env_config, delay=_service_delay(service_name))
+                time.sleep(1.0)
+
+    if include_circuit:
+        was_running = is_service_running(service_name)
+        circuit_before = _gateway_metrics_snapshot()
+        try:
+            stop_service(service_name)
+            time.sleep(0.8)
+            for index in range(4):
+                _gateway_jsonrpc_call(
+                    method,
+                    {**base_params, "_demo_nonce": f"circuit-prime-{nonce}-{index}"},
+                    f"circuit-prime-{nonce}-{index}",
+                    timeout=4,
+                )
+            circuit_scenario = _run_gateway_concurrent_scenario(
+                label="Circuit Breaker 打开后",
+                method=method,
+                params_factory=lambda index: {**base_params, "_demo_nonce": f"circuit-open-{nonce}-{index}"},
+                request_count=request_count,
+                max_workers=max_workers,
+                request_id_prefix=f"circuit-open-{nonce}",
+            )
+            circuit_after = _gateway_metrics_snapshot()
+            circuit_scenario["metric_delta"] = _gateway_metric_delta_rows(circuit_before, circuit_after, method)
+            results.append(circuit_scenario)
+        finally:
+            if was_running:
+                start_service(service_name, env_config, delay=_service_delay(service_name))
+                time.sleep(1.0)
+        if was_running:
+            _wait_for_gateway_breaker_retry_window(method)
+            results.append(
+                _run_gateway_single_scenario(
+                    label="Circuit Breaker 恢复探测",
+                    method=method,
+                    params={**base_params, "_demo_nonce": f"circuit-recovery-{nonce}"},
+                    request_id=f"circuit-recovery-{nonce}",
+                )
+            )
+
+    try:
+        cache_after = _gateway_cache_snapshot()
+    except Exception:
+        cache_after = {}
+
+    return {
+        "ok": True,
+        "method": method,
+        "request_count": request_count,
+        "max_workers": max_workers,
+        "cache_reset": cache_reset,
+        "cache_before": cache_before,
+        "cache_after": cache_after,
+        "results": results,
+        "final_metrics": _gateway_metrics_snapshot(),
+    }
+
+
+def _gateway_ablation_summary_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for scenario in result.get("results", []):
+        deltas = {
+            item["metric"]: item.get("method_delta")
+            for item in scenario.get("metric_delta", [])
+        }
+        rows.append(
+            {
+                "scenario": scenario.get("label"),
+                "requests": scenario.get("request_count"),
+                "ok": scenario.get("ok_count"),
+                "errors": scenario.get("error_count"),
+                "elapsed_ms": scenario.get("elapsed_ms"),
+                "avg_ms": scenario.get("avg_ms"),
+                "p95_ms": scenario.get("p95_ms"),
+                "upstream": deltas.get("upstream_calls"),
+                "cache_hits": deltas.get("cache_hits"),
+                "cache_hit_rate": _gateway_percent(
+                    deltas.get("cache_hits", 0),
+                    int(deltas.get("cache_hits", 0) or 0) + int(deltas.get("cache_misses", 0) or 0),
+                ),
+                "coalesced": deltas.get("coalesced_requests"),
+                "upstream_saved": max(
+                    0,
+                    int(scenario.get("request_count") or 0) - int(deltas.get("upstream_calls", 0) or 0),
+                ),
+                "circuit_open": deltas.get("circuit_open"),
+                "rate_limited": deltas.get("rate_limited"),
+            }
+        )
+    return rows
+
+
+def _gateway_percent(numerator: Any, denominator: Any) -> str:
+    try:
+        denominator_value = float(denominator)
+        if denominator_value <= 0:
+            return "0%"
+        return f"{float(numerator) / denominator_value * 100:.1f}%"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "0%"
+
+
+def _gateway_metric_value(row: dict[str, Any], key: str) -> float:
+    value = row.get(key, 0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _gateway_metric_bars(rows: list[dict[str, Any]], metric: str, title: str, *, color: str) -> str:
+    max_value = max((_gateway_metric_value(row, metric) for row in rows), default=0.0)
+    max_value = max(max_value, 1.0)
+    parts = [
+        '<div class="gateway-bars">',
+        f'<div class="gateway-bars-title">{escape(title)}</div>',
+    ]
+    for row in rows:
+        label = escape(str(row.get("scenario", "")))
+        value = _gateway_metric_value(row, metric)
+        width = min(100.0, max(3.0 if value > 0 else 0.0, value / max_value * 100.0))
+        parts.append(
+            '<div class="gateway-bar-row">'
+            f'<div class="gateway-bar-label">{label}</div>'
+            '<div class="gateway-bar-track">'
+            f'<div class="gateway-bar-fill" style="width:{width:.1f}%;background:{color};"></div>'
+            '</div>'
+            f'<div class="gateway-bar-value">{value:g}</div>'
+            '</div>'
+        )
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _render_gateway_ablation_visuals(rows: list[dict[str, Any]]) -> None:
+    st.markdown(
+        """
+        <style>
+        .gateway-bars {
+            border: 1px solid rgba(148, 163, 184, .28);
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0 14px;
+            background: rgba(15, 23, 42, .18);
+        }
+        .gateway-bars-title {
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .gateway-bar-row {
+            display: grid;
+            grid-template-columns: minmax(150px, 230px) 1fr 64px;
+            align-items: center;
+            gap: 10px;
+            margin: 7px 0;
+            font-size: 13px;
+        }
+        .gateway-bar-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: rgba(226, 232, 240, .94);
+        }
+        .gateway-bar-track {
+            height: 12px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(148, 163, 184, .18);
+        }
+        .gateway-bar-fill {
+            height: 100%;
+            border-radius: 999px;
+        }
+        .gateway-bar-value {
+            text-align: right;
+            color: rgba(226, 232, 240, .9);
+            font-variant-numeric: tabular-nums;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(3)
+    total_requests = sum(int(row.get("requests") or 0) for row in rows)
+    total_upstream = sum(int(row.get("upstream") or 0) for row in rows)
+    total_saved = sum(int(row.get("upstream_saved") or 0) for row in rows)
+    total_guard = sum(int(row.get("circuit_open") or 0) + int(row.get("rate_limited") or 0) for row in rows)
+    cols[0].metric("总请求", total_requests)
+    cols[1].metric("上游调用", total_upstream, delta=f"节省 {total_saved}")
+    cols[2].metric("保护事件", total_guard)
+    st.markdown(_gateway_metric_bars(rows, "upstream", "上游调用对比", color="#38bdf8"), unsafe_allow_html=True)
+    st.markdown(_gateway_metric_bars(rows, "cache_hits", "Cache hit 对比", color="#22c55e"), unsafe_allow_html=True)
+    st.markdown(_gateway_metric_bars(rows, "coalesced", "Coalescing 合并请求对比", color="#f59e0b"), unsafe_allow_html=True)
+    st.markdown(_gateway_metric_bars(rows, "rate_limited", "Rate limit 拒绝对比", color="#f97316"), unsafe_allow_html=True)
+    st.markdown(_gateway_metric_bars(rows, "circuit_open", "Circuit open 拒绝对比", color="#ef4444"), unsafe_allow_html=True)
+
+
+def render_gateway_cache_panel() -> None:
+    st.markdown("#### Gateway Cache 管理")
+    policy_tab, live_tab = st.tabs(["TTL 策略", "实时缓存"])
+    with policy_tab:
+        st.dataframe(_gateway_cache_policy_rows(), hide_index=True, use_container_width=True)
+        st.caption(
+            f"容量上限：{int(DEFAULT_MCP_GATEWAY_CONFIG.get('cache_max_entries', 512))} entries；"
+            "缓存 key 只使用业务语义参数，不使用 id、task_id、instruction 等一次性字段。"
+        )
+
+    with live_tab:
+        if not is_service_running("mcp_gateway"):
+            st.info("MCP Gateway 未启动，无法读取实时缓存。")
+            return
+        try:
+            cache = _gateway_cache_snapshot()
+        except Exception as exc:
+            st.warning(f"无法读取 /cache 接口：{exc}。请重启 MCP Gateway 以启用新的缓存管理接口。")
+            return
+
+        stats_cols = st.columns(4)
+        stats_cols[0].metric("Cache entries", int(cache.get("size", 0) or 0))
+        stats_cols[1].metric("Capacity", int(cache.get("max_entries", 0) or 0))
+        stats_cols[2].metric("Evictions", int(cache.get("evictions", 0) or 0))
+        stats_cols[3].metric("Expired", int(cache.get("expired_removals", 0) or 0))
+
+        method_rows = _gateway_cache_method_rows(cache)
+        if method_rows:
+            st.dataframe(method_rows, hide_index=True, use_container_width=True)
+
+        entry_rows = _gateway_cache_entry_rows(cache)
+        clear_cols = st.columns([1, 1, 2])
+        if clear_cols[0].button("清空全部缓存", use_container_width=True, key="gateway_cache_clear_all"):
+            _gateway_cache_clear()
+            st.rerun()
+
+        method_options = [""] + sorted({str(row.get("method")) for row in entry_rows if row.get("method")})
+        selected_method = clear_cols[1].selectbox("按 method 清理", method_options, key="gateway_cache_clear_method")
+        if clear_cols[2].button("清理选中 method", use_container_width=True, key="gateway_cache_clear_method_btn"):
+            if selected_method:
+                _gateway_cache_clear(method=selected_method)
+                st.rerun()
+
+        if not entry_rows:
+            st.info("当前没有缓存条目。先运行一次 Gateway Demo 或 ablation 后再查看。")
+            return
+
+        display_rows = [
+            {key: value for key, value in row.items() if key != "key"}
+            for row in entry_rows
+        ]
+        st.dataframe(display_rows, hide_index=True, use_container_width=True)
+
+        key_options = {
+            f"{row.get('method')} / {row.get('key_hash')}": row.get("key")
+            for row in entry_rows
+            if row.get("key")
+        }
+        if key_options:
+            selected_key_label = st.selectbox("按 key 清理", list(key_options), key="gateway_cache_clear_key")
+            if st.button("清理选中 key", use_container_width=True, key="gateway_cache_clear_key_btn"):
+                _gateway_cache_clear(key=key_options[selected_key_label])
+                st.rerun()
+
+
+def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
+    cases = _gateway_demo_cases()
+    case_label = st.selectbox("Gateway JSON-RPC 方法", list(cases), key="gateway_demo_case")
+    case = cases[case_label]
+    st.code(_format_json_block({"method": case["method"], "params": case["params"]}), language="json")
+
+    if st.button("运行 Gateway Demo", use_container_width=True, key="run_gateway_demo"):
+        if not is_service_running("mcp_gateway"):
+            st.session_state.gateway_demo_result = {
+                "ok": False,
+                "error": "MCP Gateway 未启动，请先启动所有节点或单独启动 Gateway。",
+            }
+        else:
+            with st.spinner("正在请求 MCP Gateway..."):
+                st.session_state.gateway_demo_result = run_gateway_demo(case["method"], case["params"])
+
+    result = st.session_state.get("gateway_demo_result")
+    if isinstance(result, dict):
+        if result.get("ok"):
+            st.success(f"Gateway Demo 成功，耗时 {result.get('elapsed_ms')} ms")
+        else:
+            st.error(result.get("error") or "Gateway Demo 失败")
+
+        summary = {
+            "gateway": result.get("gateway", MCP_GATEWAY_URL),
+            "health_status": result.get("health_status"),
+            "methods_status": result.get("methods_status"),
+            "response_status": result.get("response_status"),
+            "elapsed_ms": result.get("elapsed_ms"),
+        }
+        st.table([summary])
+
+        data_source_rows = _gateway_data_source_rows(result.get("response"))
+        if data_source_rows:
+            st.markdown("##### MCP 数据源")
+            st.dataframe(data_source_rows, hide_index=True, use_container_width=True)
+
+        tab_request, tab_response, tab_metrics = st.tabs(["Request", "Response", "Metrics"])
+        with tab_request:
+            st.json(result.get("request", {}), expanded=True)
+        with tab_response:
+            st.json(result.get("response", result.get("health", {})), expanded=True)
+        with tab_metrics:
+            st.json(result.get("metrics", {}), expanded=True)
+
+    render_gateway_cache_panel()
+
+    st.divider()
+    st.markdown("#### 高并发 Ablation")
+    st.caption(
+        "覆盖冷/热 key、无复用基线、热 key 高并发、冷 key coalescing、rate limit、"
+        "circuit breaker open 与恢复探测。"
+    )
+    request_count = int(
+        st.number_input(
+            "并发请求数",
+            min_value=4,
+            max_value=80,
+            value=24,
+            step=4,
+            key="gateway_ablation_request_count",
+        )
+    )
+    max_workers = int(
+        st.number_input(
+            "客户端并发 worker",
+            min_value=2,
+            max_value=80,
+            value=24,
+            step=2,
+            key="gateway_ablation_workers",
+        )
+    )
+    include_circuit = st.checkbox(
+        "包含 Circuit Breaker 实验（会临时停止 Weather MCP 后自动重启）",
+        value=True,
+        key="gateway_ablation_include_circuit",
+    )
+    include_rate_limit = st.checkbox(
+        "包含 Rate Limit 压力实验（会临时以 2s delay 重启 Weather MCP 后恢复）",
+        value=True,
+        key="gateway_ablation_include_rate_limit",
+    )
+
+    if st.button("运行高并发 Gateway Ablation", use_container_width=True, key="run_gateway_ablation"):
+        with st.spinner("正在运行 Gateway 高并发 ablation..."):
+            st.session_state.gateway_ablation_result = run_gateway_ablation_experiment(
+                request_count=request_count,
+                max_workers=max_workers,
+                include_circuit=include_circuit,
+                include_rate_limit=include_rate_limit,
+                env_config=env_config,
+            )
+
+    ablation = st.session_state.get("gateway_ablation_result")
+    if not isinstance(ablation, dict):
+        return
+    if not ablation.get("ok"):
+        st.error(ablation.get("error") or "Gateway ablation 失败")
+        return
+
+    st.success("Gateway ablation 完成")
+    summary_rows = _gateway_ablation_summary_rows(ablation)
+    tab_overview, tab_table, tab_cache, tab_delta = st.tabs(["可视化总览", "结果表", "Cache after", "Metric delta"])
+    with tab_overview:
+        _render_gateway_ablation_visuals(summary_rows)
+    with tab_table:
+        st.dataframe(summary_rows, hide_index=True, use_container_width=True)
+    with tab_cache:
+        cache_after = ablation.get("cache_after", {})
+        if isinstance(cache_after, dict) and cache_after:
+            st.dataframe(_gateway_cache_method_rows(cache_after), hide_index=True, use_container_width=True)
+            st.dataframe(
+                [{key: value for key, value in row.items() if key != "key"} for row in _gateway_cache_entry_rows(cache_after)],
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info("本次没有读取到 Gateway cache 快照。")
+
+    with tab_delta:
+        for scenario in ablation.get("results", []):
+            st.markdown(f"##### {scenario.get('label')}")
+            st.dataframe(scenario.get("metric_delta", []), hide_index=True, use_container_width=True)
+            if scenario.get("sample_errors"):
+                st.json(scenario["sample_errors"], expanded=False)
+
+
 def build_packet_inspector_html(events: list[dict[str, Any]]) -> str:
     rows: list[str] = []
     for index, event in enumerate(events):
@@ -782,7 +2847,7 @@ def build_packet_inspector_html(events: list[dict[str, Any]]) -> str:
         event_key = escape(_network_event_key(event), quote=True)
         rows.append(
             f'<button class="packet-row" type="button" data-packet-index="{index}" '
-            f'data-packet-key="{event_key}" title="Click to inspect packet">'
+            f'data-packet-key="{event_key}">'
             f'<span class="packet-main"><strong>{index + 1}. {event_name}</strong>'
             f'<span>{protocol} · {operation} · {source} -> {target}</span></span>'
             f'<span class="packet-meta">{escape(meta) if meta else "event"}</span>'
@@ -1635,6 +3700,172 @@ def _html_icon(kind: str) -> str:
         "mcp_packing": "&#9635;",
     }.get(kind, "&#9679;")
 
+
+def _preset_delay_text(delays: dict[str, float]) -> str:
+    if not delays:
+        return "全部 0s"
+    return ", ".join(f"{MCP_SERVICE_LABELS.get(name, name)}={delay:g}s" for name, delay in delays.items())
+
+
+def _service_delay(name: str) -> float:
+    if not name.endswith("_mcp_server"):
+        return 0.0
+    return float(st.session_state.get(f"delay_{name}", 0.0) or 0.0)
+
+
+def _gateway_upstream_timeout_seconds() -> float:
+    return float(st.session_state.get("mcp_http_timeout_seconds", DEFAULT_MCP_HTTP_TIMEOUT_SECONDS))
+
+
+def _apply_demo_parameter_preset(name: str) -> None:
+    preset = DEMO_PARAMETER_PRESETS[name]
+    st.session_state["a2a_tcp_timeout_seconds"] = float(preset["a2a_timeout"])
+    st.session_state["mcp_http_timeout_seconds"] = float(preset["mcp_timeout"])
+    st.session_state["mcp_realtime_timeout_seconds"] = float(preset.get("realtime_timeout", DEFAULT_MCP_REALTIME_TIMEOUT_SECONDS))
+    st.session_state["task_timeout_seconds"] = float(preset["task_timeout"])
+    preset_delays = preset.get("delays", {})
+    for srv_name in MCP_SERVICE_LABELS:
+        st.session_state[f"delay_{srv_name}"] = float(preset_delays.get(srv_name, 0.0))
+    st.session_state["applied_demo_parameter_preset"] = name
+
+
+def render_demo_parameter_presets() -> None:
+    with st.expander("Demo 参数组合", expanded=False):
+        preset_name = st.selectbox(
+            "演示目标",
+            list(DEMO_PARAMETER_PRESETS) + [CUSTOM_DEMO_PARAMETER_OPTION],
+            key="demo_parameter_preset",
+        )
+        if preset_name == CUSTOM_DEMO_PARAMETER_OPTION:
+            timeout_cols = st.columns(4)
+            with timeout_cols[0]:
+                st.number_input(
+                    "A2A TCP Timeout (秒)",
+                    min_value=0.5,
+                    step=1.0,
+                    key="a2a_tcp_timeout_seconds",
+                )
+            with timeout_cols[1]:
+                st.number_input(
+                    "MCP HTTP Timeout (秒)",
+                    min_value=1.0,
+                    step=1.0,
+                    key="mcp_http_timeout_seconds",
+                )
+            with timeout_cols[2]:
+                st.number_input(
+                    "Realtime API Timeout (秒)",
+                    min_value=1.0,
+                    step=1.0,
+                    key="mcp_realtime_timeout_seconds",
+                )
+            with timeout_cols[3]:
+                st.number_input(
+                    "Task Timeout (秒)",
+                    min_value=10.0,
+                    step=10.0,
+                    key="task_timeout_seconds",
+                )
+            st.caption("MCP HTTP Timeout 同时作用于 Agent -> Gateway 和 Gateway -> MCP。自定义参数会用于后续节点启动和任务提交。")
+            return
+
+        preset = DEMO_PARAMETER_PRESETS[preset_name]
+        st.table(
+            [
+                {
+                    "A2A TCP Timeout": f"{preset['a2a_timeout']:g}s",
+                    "MCP HTTP Timeout": f"{preset['mcp_timeout']:g}s",
+                    "Gateway Upstream Timeout": f"{preset['mcp_timeout']:g}s",
+                    "Realtime API Timeout": f"{preset.get('realtime_timeout', DEFAULT_MCP_REALTIME_TIMEOUT_SECONDS):g}s",
+                    "Task Timeout": f"{preset['task_timeout']:g}s",
+                    "MCP delay": _preset_delay_text(preset.get("delays", {})),
+                }
+            ]
+        )
+        st.caption(str(preset["purpose"]))
+        st.caption(str(preset["steps"]))
+        if st.button("应用该参数组合", use_container_width=True, key="apply_demo_parameter_preset"):
+            _apply_demo_parameter_preset(preset_name)
+            st.rerun()
+
+
+def initialize_runtime_control_defaults() -> None:
+    defaults = {
+        "a2a_tcp_timeout_seconds": float(DEFAULT_A2A_TCP_TIMEOUT_SECONDS),
+        "mcp_http_timeout_seconds": float(DEFAULT_MCP_HTTP_TIMEOUT_SECONDS),
+        "mcp_realtime_timeout_seconds": float(DEFAULT_MCP_REALTIME_TIMEOUT_SECONDS),
+        "task_timeout_seconds": float(DEFAULT_TASK_TIMEOUT_SECONDS_CONFIG),
+        "a2a_realtime_mcp_enabled": bool(DEFAULT_REALTIME_MCP_ENABLED),
+        "mcp_realtime_fallback_to_mock": bool(DEFAULT_MCP_REALTIME_FALLBACK_TO_MOCK),
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def render_realtime_mcp_panel() -> None:
+    with st.expander("实时 MCP 数据源", expanded=True):
+        control_cols = st.columns(3)
+        with control_cols[0]:
+            st.toggle("实时 MCP", key="a2a_realtime_mcp_enabled")
+        with control_cols[1]:
+            st.toggle("Mock 回退", key="mcp_realtime_fallback_to_mock")
+        with control_cols[2]:
+            st.number_input(
+                "Realtime API Timeout (秒)",
+                min_value=1.0,
+                step=1.0,
+                key="mcp_realtime_timeout_seconds",
+            )
+
+        realtime_enabled = bool(st.session_state.get("a2a_realtime_mcp_enabled", DEFAULT_REALTIME_MCP_ENABLED))
+        fallback_enabled = bool(st.session_state.get("mcp_realtime_fallback_to_mock", DEFAULT_MCP_REALTIME_FALLBACK_TO_MOCK))
+        realtime_timeout = float(st.session_state.get("mcp_realtime_timeout_seconds", DEFAULT_MCP_REALTIME_TIMEOUT_SECONDS))
+        gateway_upstream_timeout = _gateway_upstream_timeout_seconds()
+        status_rows = [
+            {
+                "配置": "实时 MCP",
+                "当前值": "开启" if realtime_enabled else "关闭",
+                "来源": "UI -> A2A_REALTIME_MCP_ENABLED",
+            },
+            {
+                "配置": "高德 Key",
+                "当前值": "已配置" if DEFAULT_AMAP_WEB_KEY else "未配置",
+                "来源": "AMAP_WEB_KEY",
+            },
+            {
+                "配置": "高德 API",
+                "当前值": DEFAULT_AMAP_API_BASE_URL,
+                "来源": "AMAP_API_BASE_URL",
+            },
+            {
+                "配置": "Mock 回退",
+                "当前值": "开启" if fallback_enabled else "关闭",
+                "来源": "UI -> MCP_REALTIME_FALLBACK_TO_MOCK",
+            },
+            {
+                "配置": "Realtime API 超时",
+                "当前值": f"{realtime_timeout:g}s",
+                "来源": "UI -> MCP_REALTIME_TIMEOUT_SECONDS",
+            },
+            {
+                "配置": "Gateway 上游超时",
+                "当前值": f"{gateway_upstream_timeout:g}s",
+                "来源": "UI MCP HTTP Timeout -> MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS",
+            },
+        ]
+        st.dataframe(status_rows, hide_index=True, use_container_width=True)
+
+        source_tab, cache_tab = st.tabs(["数据源", "Gateway 缓存"])
+        with source_tab:
+            st.dataframe(REALTIME_MCP_SOURCE_ROWS, hide_index=True, use_container_width=True)
+        with cache_tab:
+            st.dataframe(MCP_GATEWAY_CACHE_ROWS, hide_index=True, use_container_width=True)
+
+        if realtime_enabled and not DEFAULT_AMAP_WEB_KEY:
+            st.warning("实时 MCP 已开启，但 AMAP_WEB_KEY 未配置；高德相关 MCP 会走 Mock 回退。")
+        st.caption("这些参数会进入后续启动的节点进程；已经运行的节点需要重启后才会读取新值。")
+
+
 # 注册退出时的清理函数，防止 Streamlit 关闭时遗留僵尸进程
 atexit.register(lambda: stop_all_services(include_port_processes=False))
 
@@ -1645,11 +3876,15 @@ col_sidebar, col_main = st.columns([1, 1])
 
 with col_sidebar:
     st.header("⚙️ 节点管理与容错配置")
-    
-    st.markdown("### 全局超时参数")
-    a2a_tcp_timeout = st.number_input("A2A TCP Timeout (秒)", value=3.0, step=1.0)
-    mcp_http_timeout = st.number_input("MCP HTTP Timeout (秒)", value=10.0, step=1.0)
-    task_timeout = st.number_input("Task 整体 Timeout (秒)", value=120.0, step=10.0)
+    initialize_runtime_control_defaults()
+
+    render_demo_parameter_presets()
+
+    a2a_tcp_timeout = float(st.session_state["a2a_tcp_timeout_seconds"])
+    mcp_http_timeout = float(st.session_state["mcp_http_timeout_seconds"])
+    mcp_realtime_timeout = float(st.session_state["mcp_realtime_timeout_seconds"])
+    task_timeout = float(st.session_state["task_timeout_seconds"])
+    render_realtime_mcp_panel()
     
     st.markdown("### 启停控制")
     col_btn1, col_btn2 = st.columns(2)
@@ -1657,11 +3892,14 @@ with col_sidebar:
     env_config = {
         "A2A_TCP_TIMEOUT_SECONDS": str(a2a_tcp_timeout),
         "MCP_HTTP_TIMEOUT_SECONDS": str(mcp_http_timeout),
+        "MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS": str(_gateway_upstream_timeout_seconds()),
+        "MCP_REALTIME_TIMEOUT_SECONDS": str(mcp_realtime_timeout),
+        "A2A_REALTIME_MCP_ENABLED": "1" if bool(st.session_state.get("a2a_realtime_mcp_enabled")) else "0",
+        "MCP_REALTIME_FALLBACK_TO_MOCK": "1" if bool(st.session_state.get("mcp_realtime_fallback_to_mock")) else "0",
         "DEFAULT_TASK_TIMEOUT_SECONDS": str(task_timeout),
         "MAX_TASK_TIMEOUT_SECONDS": str(task_timeout),
         "PYTHONIOENCODING": "utf-8"
     }
-    
     # 将系统环境变量中的 API_KEY 也传过去，防止丢失
     for k, v in os.environ.items():
         if k not in env_config:
@@ -1670,7 +3908,7 @@ with col_sidebar:
     if col_btn1.button("▶️ 启动所有节点", use_container_width=True):
         with st.spinner("正在启动所有服务..."):
             for srv in SERVICES.keys():
-                start_service(srv, env_config)
+                start_service(srv, env_config, delay=_service_delay(srv))
             time.sleep(3)
         st.rerun()
         
@@ -1701,23 +3939,12 @@ with col_sidebar:
     display_events = recent_events or st.session_state.get("last_recent_network_events", [])
 
     if display_events:
-        with st.expander("最近网络事件", expanded=False):
-            compact_events = [
-                {
-                    "event": item.get("event"),
-                    "protocol": _network_protocol_label(item),
-                    "operation": _network_operation_label(item),
-                    "source": item.get("source"),
-                    "target": item.get("target"),
-                    "method": item.get("method", ""),
-                    "url": item.get("url", ""),
-                }
-                for item in display_events
-            ]
-            st.dataframe(compact_events, hide_index=True, use_container_width=True)
-
         with st.expander("网络报文", expanded=False):
             render_packet_inspector(display_events)
+
+    if has_task_packet_capture():
+        with st.expander("真实抓包 Frame", expanded=False):
+            render_task_packet_capture_panel()
 
 with col_main:
     st.header("💬 旅行任务交互")
@@ -1728,22 +3955,14 @@ with col_main:
         value="中秋节假期从上海去北京玩3天，要求穷游并且尽量乘坐地铁，必须去故宫看看。"
     )
 
-    submit_col, clear_col = st.columns([2, 1])
-    has_generated_content = bool(
-        st.session_state.get("current_task_id")
-        or st.session_state.get("last_recent_network_events")
-        or st.session_state.get("selected_packet_event_key")
-    )
-    clear_requested = clear_col.button(
-        "清空生成内容 / Clear",
-        use_container_width=True,
-        disabled=not has_generated_content,
-    )
-    if clear_requested:
-        clear_generated_content_state()
-        st.rerun()
+    with st.expander("MCP Gateway Demo 测试", expanded=False):
+        render_gateway_demo_panel(env_config)
 
-    if submit_col.button("提交任务 / Submit", type="primary", use_container_width=True):
+    submit_clicked = st.button("提交任务 / Submit", type="primary", on_click=clear_task_display_state)
+    task_output_slot = st.empty()
+
+    if submit_clicked:
+
         is_coordinator_running = is_service_running("coordinator")
         
         if not is_coordinator_running:
@@ -1755,90 +3974,107 @@ with col_main:
                 st.session_state.pop("generated_content_cleared_at", None)
                 st.session_state.task_start_time = time.time()
                 st.session_state.task_transfer_active = True
-                st.session_state.task_highlight_cleared_for = None
-                st.session_state.topology_edge_pulses = {}
-                st.session_state.topology_node_pulses = {}
-                st.session_state.topology_seen_event_keys = []
-                with st.status("正在提交任务，Coordinator 正在进行总体规划...", expanded=True, state="running") as submit_status:
-                    st.write("已收到你的问题，正在发送给 Coordinator。")
-                    st.write("正在生成总体规划与工作流 DAG，请稍等...")
-                    response = requests.post(
-                        COORDINATOR_URL,
-                        json={"question": query, "timeout": task_timeout, "async": True},
-                        timeout=task_timeout + 1
+                capture = None
+                if _packet_capture_capability().get("ok"):
+                    capture = start_task_packet_capture(
+                        max_seconds=int(task_timeout) + 20,
+                        interface_name=st.session_state.get("pcap_capture_interface"),
                     )
-                    response.raise_for_status()
-                    data = response.json()
-                    st.session_state.current_task_id = data.get("task", {}).get("task_id")
-                    st.session_state.task_transfer_active = bool(st.session_state.current_task_id)
-                    submit_status.update(
-                        label=f"任务已提交成功，耗时 {time.time() - st.session_state.task_start_time:.1f} 秒",
-                        state="complete",
-                        expanded=False,
-                    )
+                    if capture.get("ok"):
+                        st.session_state.active_pcap_capture = capture
+                    else:
+                        st.session_state.active_pcap_capture = None
+                        st.session_state.last_pcap_capture = capture
+                with task_output_slot.container():
+                    st.info("已清空上一轮回答，正在提交新任务。")
+                    with st.status("正在提交任务，Coordinator 正在进行总体规划...", expanded=True, state="running") as submit_status:
+                        st.write("已收到你的问题，正在发送给 Coordinator。")
+                        if capture:
+                            if capture.get("ok"):
+                                st.write(f"真实抓包已启动：{capture.get('interface_label', capture.get('interface', ''))}")
+                            else:
+                                st.warning(f"真实抓包未启动：{capture.get('error', 'unknown error')}")
+                        st.write("正在生成总体规划与工作流 DAG，请稍等...")
+                        response = requests.post(
+                            COORDINATOR_URL,
+                            json={"question": query, "timeout": task_timeout, "async": True},
+                            timeout=task_timeout + 1
+                        )
+                        response.raise_for_status()
+                        data = response.json()
+                        st.session_state.current_task_id = data.get("task", {}).get("task_id")
+                        st.session_state.task_transfer_active = bool(st.session_state.current_task_id)
+                        submit_status.update(
+                            label=f"任务已提交成功，耗时 {time.time() - st.session_state.task_start_time:.1f} 秒",
+                            state="complete",
+                            expanded=False,
+                        )
                 st.rerun() # 触发页面重载以脱离按钮作用域渲染任务状态
             except Exception as e:
+                finalize_task_packet_capture(reason="submit_failed")
                 st.error(f"启动任务失败: {e}")
 
     task_id = st.session_state.get("current_task_id")
     if task_id:
-        try:
-            start_time = st.session_state.get("task_start_time", time.time())
-            poll_resp = requests.get(f"http://127.0.0.1:9000/tasks?task_id={task_id}", timeout=5)
-            poll_resp.raise_for_status()
-            task = poll_resp.json().get("task", {})
+        with task_output_slot.container():
+            try:
+                start_time = st.session_state.get("task_start_time", time.time())
+                poll_resp = requests.get(f"http://127.0.0.1:9000/tasks?task_id={task_id}", timeout=5)
+                poll_resp.raise_for_status()
+                task = poll_resp.json().get("task", {})
 
-            is_completed = task.get("status") in ["completed", "failed", "partial"]
-            if is_completed and st.session_state.get("task_highlight_cleared_for") != task_id:
-                st.session_state.task_transfer_active = False
-                st.session_state.task_highlight_cleared_for = task_id
-                st.rerun()
-            elapsed = time.time() - start_time
-            status_label = (
-                f"整个工作流执行结束！总耗时: {elapsed:.1f} 秒"
-                if is_completed
-                else f"正在调度多 Agent 工作流，请稍等... 当前耗时: {elapsed:.1f} 秒"
-            )
-            status_state = "complete" if is_completed else "running"
+                is_completed = task.get("status") in ["completed", "failed", "partial"]
+                if is_completed and st.session_state.get("task_highlight_cleared_for") != task_id:
+                    finalize_task_packet_capture(reason=f"task_{task.get('status')}")
+                    st.session_state.task_transfer_active = False
+                    st.session_state.task_highlight_cleared_for = task_id
+                    st.rerun()
+                elapsed = time.time() - start_time
+                status_label = (
+                    f"整个工作流执行结束！总耗时: {elapsed:.1f} 秒"
+                    if is_completed
+                    else f"正在调度多 Agent 工作流，请稍等... 当前耗时: {elapsed:.1f} 秒"
+                )
+                status_state = "complete" if is_completed else "running"
 
-            with st.status(status_label, expanded=True, state=status_state):
+                with st.status(status_label, expanded=True, state=status_state):
+                    if not is_completed:
+                        st.write("已将您的描述发送到 Coordinator...")
+
+                    st.write("✅ Coordinator 已完成初始调度网络规划！")
+                    plan = task.get("plan", {})
+                    if plan:
+                        with st.expander("📝 阶段 1：Coordinator 动态规划的工作流和分配情况 (DAG)", expanded=False):
+                            st.json(plan, expanded=True)
+
+                    st.markdown("### 🤖 阶段 2：各个 Worker Agent 执行动态")
+                    results = task.get("results", {})
+                    errors = task.get("dispatch_errors", {})
+
+                    if not results and not errors:
+                        st.info("当前还没有 Agent 返回结果。")
+
+                    for agent_name, result_data in results.items():
+                        status_emoji = "✅" if result_data.get("status") == "success" else "❌"
+                        with st.expander(f"{status_emoji} {agent_name} 的执行报告", expanded=False):
+                            st.json(result_data, expanded=True)
+
+                    for agent_name, err_msg in errors.items():
+                        with st.expander(f"💀 {agent_name} [DISPATCH_ERROR]", expanded=True):
+                            st.error(err_msg)
+
+                final_answer = task.get("final_answer")
+                if final_answer:
+                    st.markdown("---")
+                    st.markdown(f"### 🌟 阶段 3：最终旅行方案 (状态: {task.get('status')})")
+                    st.success("多智能体系统已组合生成了这一份行程报告！", icon="🎉")
+                    st.markdown(final_answer)
+                elif is_completed:
+                    st.warning("任务已结束，但未生成最终结果。")
+
                 if not is_completed:
-                    st.write("已将您的描述发送到 Coordinator...")
+                    time.sleep(0.8)
+                    st.rerun()
 
-                st.write("✅ Coordinator 已完成初始调度网络规划！")
-                plan = task.get("plan", {})
-                if plan:
-                    with st.expander("📝 阶段 1：Coordinator 动态规划的工作流和分配情况 (DAG)", expanded=False):
-                        st.json(plan, expanded=True)
-
-                st.markdown("### 🤖 阶段 2：各个 Worker Agent 执行动态")
-                results = task.get("results", {})
-                errors = task.get("dispatch_errors", {})
-
-                if not results and not errors:
-                    st.info("当前还没有 Agent 返回结果。")
-
-                for agent_name, result_data in results.items():
-                    status_emoji = "✅" if result_data.get("status") == "success" else "❌"
-                    with st.expander(f"{status_emoji} {agent_name} 的执行报告", expanded=False):
-                        st.json(result_data, expanded=True)
-
-                for agent_name, err_msg in errors.items():
-                    with st.expander(f"💀 {agent_name} [DISPATCH_ERROR]", expanded=True):
-                        st.error(err_msg)
-
-            final_answer = task.get("final_answer")
-            if final_answer:
-                st.markdown("---")
-                st.markdown(f"### 🌟 阶段 3：最终旅行方案 (状态: {task.get('status')})")
-                st.success("多智能体系统已组合生成了这一份行程报告！", icon="🎉")
-                st.markdown(final_answer)
-            elif is_completed:
-                st.warning("任务已结束，但未生成最终结果。")
-
-            if not is_completed:
-                time.sleep(0.8)
-                st.rerun()
-
-        except Exception as e:
-            st.error(f"获取任务状态失败: {e}")
+            except Exception as e:
+                st.error(f"获取任务状态失败: {e}")

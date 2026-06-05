@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -11,6 +12,7 @@ import logging
 import threading
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import common.logger
 from common.config import MCP_GATEWAY, MCP_SERVERS
@@ -32,8 +34,15 @@ JSONRPC_UPSTREAM_ERROR = -32003
 
 @dataclass
 class CacheEntry:
+    method: str
+    semantic_params: dict[str, Any]
     result: dict[str, Any]
+    created_at: float
     expires_at: float
+    ttl_seconds: float
+    hit_count: int = 0
+    last_accessed_at: float = 0.0
+    payload_size_bytes: int = 0
 
 
 @dataclass
@@ -44,14 +53,15 @@ class InflightCall:
 
 
 class TTLCache:
-    def __init__(self, ttl_seconds: float) -> None:
-        # 初始化
+    def __init__(self, ttl_seconds: float, *, max_entries: int = 512) -> None:
         self.ttl_seconds = ttl_seconds
+        self.max_entries = max(1, max_entries)
         self._items: dict[str, CacheEntry] = {}
         self._lock = threading.RLock()
+        self._evictions = 0
+        self._expired_removals = 0
 
     def get(self, key: str) -> dict[str, Any] | None:
-        # 获取缓存项
         now = time.monotonic()
         with self._lock:
             item = self._items.get(key)
@@ -59,25 +69,109 @@ class TTLCache:
                 return None
             if item.expires_at <= now:
                 self._items.pop(key, None)
+                self._expired_removals += 1
                 return None
+            item.hit_count += 1
+            item.last_accessed_at = now
             return dict(item.result)
 
-    def set(self, key: str, result: dict[str, Any], ttl: float | None = None) -> None:
-        # 设置缓存项
-        with self._lock:
-            self._items[key] = CacheEntry(
-                result=dict(result),
-                expires_at=time.monotonic() + (ttl if ttl is not None else self.ttl_seconds),
-            )
-
-    def size(self) -> int:
-        # 返回有效缓存项数量
+    def set(
+        self,
+        key: str,
+        *,
+        method: str,
+        semantic_params: dict[str, Any],
+        result: dict[str, Any],
+        ttl: float | None = None,
+    ) -> None:
+        ttl_seconds = float(ttl if ttl is not None else self.ttl_seconds)
         now = time.monotonic()
         with self._lock:
-            expired = [key for key, item in self._items.items() if item.expires_at <= now]
-            for key in expired:
-                self._items.pop(key, None)
+            self._prune_expired(now)
+            self._items[key] = CacheEntry(
+                method=method,
+                semantic_params=dict(semantic_params),
+                result=dict(result),
+                created_at=now,
+                expires_at=now + ttl_seconds,
+                ttl_seconds=ttl_seconds,
+                last_accessed_at=now,
+                payload_size_bytes=_json_size_bytes(result),
+            )
+            self._enforce_capacity()
+
+    def size(self) -> int:
+        now = time.monotonic()
+        with self._lock:
+            self._prune_expired(now)
             return len(self._items)
+
+    def clear(self, *, method: str | None = None, key: str | None = None) -> int:
+        with self._lock:
+            if key:
+                existed = key in self._items
+                self._items.pop(key, None)
+                return 1 if existed else 0
+            if method:
+                keys = [item_key for item_key, item in self._items.items() if item.method == method]
+                for item_key in keys:
+                    self._items.pop(item_key, None)
+                return len(keys)
+            removed = len(self._items)
+            self._items.clear()
+            return removed
+
+    def snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        now = time.monotonic()
+        with self._lock:
+            self._prune_expired(now)
+            entries = sorted(
+                self._items.items(),
+                key=lambda item: item[1].last_accessed_at,
+                reverse=True,
+            )
+            method_counts: dict[str, int] = {}
+            rows: list[dict[str, Any]] = []
+            for key, item in entries:
+                method_counts[item.method] = method_counts.get(item.method, 0) + 1
+                if len(rows) >= limit:
+                    continue
+                rows.append(
+                    {
+                        "key": key,
+                        "key_hash": hashlib.sha1(key.encode("utf-8")).hexdigest()[:12],
+                        "method": item.method,
+                        "semantic_params": dict(item.semantic_params),
+                        "ttl_seconds": round(item.ttl_seconds, 3),
+                        "ttl_remaining_ms": round(max(0.0, item.expires_at - now) * 1000, 2),
+                        "age_ms": round(max(0.0, now - item.created_at) * 1000, 2),
+                        "hit_count": item.hit_count,
+                        "payload_size_bytes": item.payload_size_bytes,
+                    }
+                )
+            return {
+                "size": len(self._items),
+                "max_entries": self.max_entries,
+                "method_counts": method_counts,
+                "evictions": self._evictions,
+                "expired_removals": self._expired_removals,
+                "entries": rows,
+            }
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [key for key, item in self._items.items() if item.expires_at <= now]
+        for key in expired:
+            self._items.pop(key, None)
+        self._expired_removals += len(expired)
+
+    def _enforce_capacity(self) -> None:
+        while len(self._items) > self.max_entries:
+            oldest_key = min(
+                self._items,
+                key=lambda item_key: self._items[item_key].last_accessed_at,
+            )
+            self._items.pop(oldest_key, None)
+            self._evictions += 1
 
 
 class RateLimiter:
@@ -202,16 +296,20 @@ class GatewayMetrics:
             for method, stats in self.method_stats.items():
                 requests = int(stats.get("requests", 0))
                 total_latency = float(stats.get("total_latency_ms", 0.0))
+                cache_lookups = int(stats.get("cache_hits", 0)) + int(stats.get("cache_misses", 0))
                 view = dict(stats)
                 view["avg_latency_ms"] = round(total_latency / requests, 2) if requests else 0.0
+                view["cache_hit_rate"] = round(float(stats.get("cache_hits", 0)) / cache_lookups, 4) if cache_lookups else 0.0
                 view.pop("total_latency_ms", None)
                 method_stats[method] = view
 
+            cache_lookups = self.cache_hits + self.cache_misses
             return {
                 "total_requests": self.total_requests,
                 "upstream_calls": self.upstream_calls,
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
+                "cache_hit_rate": round(self.cache_hits / cache_lookups, 4) if cache_lookups else 0.0,
                 "coalesced_requests": self.coalesced_requests,
                 "rate_limited": self.rate_limited,
                 "circuit_open": self.circuit_open,
@@ -250,7 +348,10 @@ class MCPGatewayState:
         for server_key, server in MCP_SERVERS.items():
             for method in server.get("extra_methods", []):
                 self.routes[str(method)] = server_key
-        self.cache = TTLCache(float(MCP_GATEWAY["cache_ttl_seconds"]))
+        self.cache = TTLCache(
+            float(MCP_GATEWAY["cache_ttl_seconds"]),
+            max_entries=int(MCP_GATEWAY.get("cache_max_entries", 512)),
+        )
         self._method_ttl: dict[str, float] = {
             str(method): float(ttl)
             for method, ttl in MCP_GATEWAY.get("per_method_ttl_seconds", {}).items()
@@ -306,11 +407,19 @@ class MCPGatewayState:
 
     def metrics_view(self) -> dict[str, Any]:
         # 获取指标视图
+        cache = self.cache.snapshot(limit=20)
         return {
             **self.metrics.snapshot(),
-            "cache_size": self.cache.size(),
+            "cache_size": cache["size"],
+            "cache": cache,
             "circuit_breakers": self.breaker_view(),
         }
+
+    def cache_view(self) -> dict[str, Any]:
+        return self.cache.snapshot()
+
+    def clear_cache(self, *, method: str | None = None, key: str | None = None) -> int:
+        return self.cache.clear(method=method, key=key)
 
     def handle_json_rpc(self, payload: dict[str, Any]) -> tuple[HTTPStatus, dict[str, Any]]:
         # 处理JSON-RPC请求
@@ -347,7 +456,8 @@ class MCPGatewayState:
             )
 
         self.metrics.record_request(method)
-        cache_key = _cache_key(method, params)
+        semantic_params = _semantic_cache_params(params)
+        cache_key = _cache_key_from_semantic(method, semantic_params)
         cached_result = self.cache.get(cache_key)
         if cached_result is not None:
             self.metrics.increment(method, "cache_hits")
@@ -370,7 +480,13 @@ class MCPGatewayState:
         try:
             result, rpc_error = self._call_upstream(method, payload)
             if result is not None:
-                self.cache.set(cache_key, result, ttl=self._method_ttl.get(method))
+                self.cache.set(
+                    cache_key,
+                    method=method,
+                    semantic_params=semantic_params,
+                    result=result,
+                    ttl=self._method_ttl.get(method),
+                )
                 inflight.result = result
                 response = _json_rpc_result(request_id, result)
             else:
@@ -581,20 +697,45 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         # 处理GET请求
-        if self.path == "/health":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/health":
             self._send_json(HTTPStatus.OK, {"ok": True, **self.server.state.health()})
             return
-        if self.path == "/metrics":
+        if path == "/metrics":
             self._send_json(HTTPStatus.OK, {"ok": True, "metrics": self.server.state.metrics_view()})
             return
-        if self.path == "/methods":
+        if path == "/methods":
             self._send_json(HTTPStatus.OK, {"ok": True, "methods": self.server.state.route_view()})
+            return
+        if path == "/cache":
+            self._send_json(HTTPStatus.OK, {"ok": True, "cache": self.server.state.cache_view()})
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
 
     def do_POST(self) -> None:
         # 处理POST请求
-        if self.path != str(MCP_GATEWAY.get("path", "/")):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/cache/clear":
+            try:
+                payload, _ = self._read_json_with_size()
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": f"Parse error: {exc}"})
+                return
+            method = payload.get("method")
+            key = payload.get("key")
+            removed = self.server.state.clear_cache(
+                method=str(method) if method else None,
+                key=str(key) if key else None,
+            )
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "removed": removed, "cache": self.server.state.cache_view()},
+            )
+            return
+
+        if path != str(MCP_GATEWAY.get("path", "/")):
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
             return
 
@@ -624,6 +765,20 @@ class MCPGatewayRequestHandler(BaseHTTPRequestHandler):
             response = _json_rpc_error(request_id, JSONRPC_INTERNAL_ERROR, str(exc))
 
         self._send_json(status, response)
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        if parsed.path != "/cache":
+            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": f"unknown path: {self.path}"})
+            return
+        query = parse_qs(parsed.query)
+        method = query.get("method", [None])[0]
+        key = query.get("key", [None])[0]
+        removed = self.server.state.clear_cache(method=method, key=key)
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "removed": removed, "cache": self.server.state.cache_view()},
+        )
 
     def log_message(self, format: str, *args: Any) -> None:
         # 禁止默认日志输出
@@ -660,7 +815,7 @@ def run(host: str | None = None, port: int | None = None) -> None:
     port = port or int(MCP_GATEWAY["port"])
     server = MCPGatewayHTTPServer((host, port), MCPGatewayRequestHandler)
     logger.info(f"{MCP_GATEWAY['name']} listening on http://{host}:{port}")
-    logger.info("Endpoints: POST /, GET /health, GET /methods, GET /metrics")
+    logger.info("Endpoints: POST /, GET /health, GET /methods, GET /metrics, GET /cache, POST /cache/clear")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -684,9 +839,33 @@ def _server_url(server: dict[str, Any]) -> str:
 
 
 def _cache_key(method: str, params: dict[str, Any]) -> str:
+    semantic = _semantic_cache_params(params)
+    return _cache_key_from_semantic(method, semantic)
+
+
+def _semantic_cache_params(params: dict[str, Any]) -> dict[str, Any]:
     # 排除 id、task_id 等唯一标识符，只保留业务参数做缓存 key
-    semantic = {k: v for k, v in params.items() if k not in ("id", "task_id", "instruction", "daily_plan", "upstream_results", "area_selection")}
+    excluded = {
+        "id",
+        "task_id",
+        "instruction",
+        "daily_plan",
+        "upstream_results",
+        "area_selection",
+    }
+    semantic = {k: v for k, v in params.items() if k not in excluded}
+    return semantic
+
+
+def _cache_key_from_semantic(method: str, semantic: dict[str, Any]) -> str:
     return method + ":" + json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _json_size_bytes(payload: Any) -> int:
+    try:
+        return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _elapsed_ms(started: float) -> float:
