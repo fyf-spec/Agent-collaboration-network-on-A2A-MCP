@@ -31,11 +31,8 @@ def main() -> None:
     os.environ["A2A_DELAY_ACK"] = "weather_agent"
     os.environ["A2A_DELAY_ACK_SECONDS"] = str(demo_ack_delay)
     
-    old_demo_fast = os.environ.get("A2A_DEMO_FAST")
-    os.environ["A2A_DEMO_FAST"] = "1"
-
     try:
-        with run_services():
+        with run_services(mode="no-llm"):
             time.sleep(2)  # 等待服务完全启动
 
             run_task_demo(
@@ -52,10 +49,6 @@ def main() -> None:
             os.environ.pop("A2A_DELAY_ACK_SECONDS", None)
         else:
             os.environ["A2A_DELAY_ACK_SECONDS"] = old_ack_delay
-        if old_demo_fast is None:
-            os.environ.pop("A2A_DEMO_FAST", None)
-        else:
-            os.environ["A2A_DEMO_FAST"] = old_demo_fast
 
 
 

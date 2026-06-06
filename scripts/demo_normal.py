@@ -16,21 +16,13 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
 def main() -> None:
-    old_demo_fast = os.environ.get("A2A_DEMO_FAST")
-    os.environ["A2A_DEMO_FAST"] = "1"
-    try:
-        with run_services():
-            time.sleep(2.0)  # 等待所有服务完全启动就绪
+    with run_services(mode="no-llm"):
+        time.sleep(2.0)  # 等待所有服务完全启动就绪
 
-            run_task_demo(
-                "请帮我规划从上海去北京的五天低预算旅行计划，尽量公共交通，故宫和天安门一定要去。",
-                timeout=600.0,
-            )
-    finally:
-        if old_demo_fast is None:
-            os.environ.pop("A2A_DEMO_FAST", None)
-        else:
-            os.environ["A2A_DEMO_FAST"] = old_demo_fast
+        run_task_demo(
+            "请帮我规划从上海去北京的五天低预算旅行计划，尽量公共交通，故宫和天安门一定要去。",
+            timeout=600.0,
+        )
 
 
 if __name__ == "__main__":

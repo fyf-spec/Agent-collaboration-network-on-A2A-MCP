@@ -17,6 +17,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from common.runtime import llm_enabled, runtime_mode_name
 
 
 load_dotenv()
@@ -34,7 +35,7 @@ class LLMClientError(RuntimeError):
 class LLMClient:
     base_url: str = field(default_factory=lambda: os.getenv("A2A_LLM_BASE_URL", DEFAULT_BASE_URL))
     model: str = field(default_factory=lambda: os.getenv("A2A_LLM_MODEL", DEFAULT_MODEL))
-    api_key: str | None = field(default_factory=lambda: os.getenv("MODELSCOPE_API_KEY"))
+    api_key: str | None = field(default_factory=lambda: _llm_api_key())
     timeout_seconds: float = field(default_factory=lambda: float(os.getenv("A2A_LLM_TIMEOUT_SECONDS", "60")))
 
     def __post_init__(self) -> None:
@@ -112,8 +113,10 @@ class LLMClient:
     ) -> str:
         # 非流式发送消息并获取完整回复
         _validate_messages(messages)
+        if not llm_enabled():
+            raise LLMClientError("LLM is disabled by A2A_USE_LLM=0")
         if not self.api_key:
-            raise LLMClientError("MODELSCOPE_API_KEY is required")
+            raise LLMClientError("A2A_LLM_API_KEY, DEEPSEEK_API_KEY, or MODELSCOPE_API_KEY is required")
 
         client = OpenAI(base_url=self.base_url, api_key=self.api_key, max_retries=0)
         request_kwargs: dict[str, Any] = {
@@ -153,8 +156,10 @@ class LLMClient:
     ) -> Iterator[str]:
         # 流式发送多轮消息
         _validate_messages(messages)
+        if not llm_enabled():
+            raise LLMClientError("LLM is disabled by A2A_USE_LLM=0")
         if not self.api_key:
-            raise LLMClientError("MODELSCOPE_API_KEY is required")
+            raise LLMClientError("A2A_LLM_API_KEY, DEEPSEEK_API_KEY, or MODELSCOPE_API_KEY is required")
 
         client = OpenAI(base_url=self.base_url, api_key=self.api_key, max_retries=0)
         request_kwargs: dict[str, Any] = {
@@ -184,10 +189,29 @@ class LLMClient:
     def info(self) -> dict[str, str]:
         # 获取LLM客户端配置信息
         return {
-            "provider": "modelscope",
+            "provider": _infer_provider(self.base_url),
             "model": self.model,
             "base_url": self.base_url,
+            "enabled": "true" if llm_enabled() else "false",
+            "mode": runtime_mode_name(),
         }
+
+
+def _llm_api_key() -> str | None:
+    for name in ("A2A_LLM_API_KEY", "DEEPSEEK_API_KEY", "MODELSCOPE_API_KEY"):
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return None
+
+
+def _infer_provider(base_url: str) -> str:
+    normalized = base_url.lower()
+    if "deepseek" in normalized:
+        return "deepseek"
+    if "modelscope" in normalized:
+        return "modelscope"
+    return "openai-compatible"
 
 
 def _validate_messages(messages: list[dict[str, Any]]) -> None:

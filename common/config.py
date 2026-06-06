@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from common.runtime import env_bool as _env_bool
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,13 +31,6 @@ REGISTRY_PORT = 7000
 # 备用注册中心
 BACKUP_REGISTRY_HOST = "127.0.0.1"
 BACKUP_REGISTRY_PORT = 7001
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    # 从环境变量读取布尔值，支持 1/true/yes/on
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 DEFAULT_TASK_TIMEOUT_SECONDS = float(os.environ.get("DEFAULT_TASK_TIMEOUT_SECONDS", 120.0))

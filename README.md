@@ -12,13 +12,69 @@
 - Coordinator 汇总各 Agent 结果，生成完整或 partial 的最终回答。
 - Streamlit UI 实时展示拓扑、节点启停、传输流动、失败链路、最近网络事件和完整协议内容。
 
+## 一键启动所有后端服务
+
+推荐使用 `start_all.bat` 作为 Windows 下的统一启动入口。它会启动完整后端链路：主/备 Registry、全部 MCP Server、MCP Gateway、全部 Agent 和 Coordinator。停止时在该窗口按 `Ctrl+C`。
+
+首次运行前安装依赖：
+
+```powershell
+uv sync
+```
+
+### 方式一：使用 LLM
+
+```powershell
+.\start_all.bat llm
+```
+
+使用 LLM 模式时，请在本地 `.env` 中配置：
+
+```text
+A2A_LLM_BASE_URL=https://api-inference.modelscope.cn/v1
+A2A_LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
+A2A_LLM_API_KEY=your_api_key_here
+```
+
+如果使用 DeepSeek OpenAI-compatible API，可配置为：
+
+```text
+A2A_LLM_BASE_URL=https://api.deepseek.com
+A2A_LLM_MODEL=deepseek-v4-flash
+A2A_LLM_API_KEY=your_deepseek_api_key_here
+```
+
+`MODELSCOPE_API_KEY` 和 `DEEPSEEK_API_KEY` 仍兼容，但推荐统一使用 `A2A_LLM_API_KEY`。
+
+也可以直接运行 Python 编排器：
+
+```powershell
+uv run python scripts/start_all.py --mode llm
+```
+
+### 方式二：不使用 LLM
+
+```powershell
+.\start_all.bat no-llm
+```
+
+no-LLM 模式不需要 `MODELSCOPE_API_KEY`，会设置 `A2A_USE_LLM=0`，Coordinator 和各 Agent 使用规则解析、规则选择和确定性汇总，适合课堂演示、离线调试和不希望访问外部 API 的场景。
+
+也可以直接运行 Python 编排器：
+
+```powershell
+uv run python scripts/start_all.py --mode no-llm
+```
+
+双击 `start_all.bat` 时会出现模式选择菜单。旧环境变量 `A2A_DEMO_FAST=1` 仍兼容，但推荐新代码和文档统一使用 `A2A_USE_LLM=0/1`。
+
 ## 快速启动 UI Demo
 
 推荐使用 `uv` 管理环境。
 
 ```powershell
 uv sync
-$env:A2A_DEMO_FAST="1"
+$env:A2A_USE_LLM="0"
 $env:PYTHONIOENCODING="utf-8"
 uv run streamlit run scripts/demo_ui.py --server.port 8504
 ```
@@ -31,12 +87,10 @@ http://localhost:8504
 
 如果不指定端口，Streamlit 会使用默认端口。演示时建议固定使用 `8504`，避免和其他 Streamlit 页面混淆。
 
-如果需要模型能力，请在本地 `.env` 中配置：
+如果需要在 UI 启动的节点中使用模型能力，请先配置 `.env`，并在启动 UI 前设置：
 
-```text
-A2A_LLM_BASE_URL=https://api-inference.modelscope.cn/v1
-A2A_LLM_MODEL=deepseek-ai/DeepSeek-V4-Flash
-MODELSCOPE_API_KEY=your_api_key_here
+```powershell
+$env:A2A_USE_LLM="1"
 ```
 
 不要把真实 API Key 提交到仓库。
@@ -156,10 +210,14 @@ uv run streamlit run scripts/ablation_ui.py --server.port 8505 --server.headless
 除了 UI，也可以运行脚本复现实验场景。
 
 ```powershell
-uv run python scripts/start_all.py
+uv run python scripts/start_all.py --mode no-llm
 ```
 
-启动全部本地服务，按 `Ctrl+C` 停止。
+不使用 LLM 启动全部本地服务，按 `Ctrl+C` 停止。若需要模型能力，改为：
+
+```powershell
+uv run python scripts/start_all.py --mode llm
+```
 
 ```powershell
 uv run python scripts/demo_normal.py
@@ -255,9 +313,9 @@ Agent-A2A/
 │   ├── config.py
 │   ├── http_client.py
 │   ├── logger.py
+│   ├── runtime.py
 │   ├── schemas.py
-│   ├── tcp_a2a.py
-│   └── prompt_templtes.py
+│   └── tcp_a2a.py
 ├── scripts/
 │   ├── demo_ui.py
 │   ├── start_all.py
@@ -283,7 +341,7 @@ Agent-A2A/
 │   └── test_a2a_tcp_protocol.py
 ├── logs/
 │   └── demo_log.jsonl
-├── start_all.bat
+├── start_all.bat       Windows 一键启动入口，支持 llm/no-llm
 ├── requirements.txt
 ├── pyproject.toml
 ├── uv.lock

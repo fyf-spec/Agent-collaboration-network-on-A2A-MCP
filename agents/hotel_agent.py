@@ -12,11 +12,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
 from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.runtime import no_llm_mode_enabled
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
 from llm_client import llm_small as llm
 
@@ -55,13 +56,13 @@ class HotelAgent(BaseAgent):
             hotel_options_for_llm = _build_hotel_options_for_llm(hotel_candidates)
             llm_hotel_selection: dict[str, Any] = {}
 
-            if _demo_fast_mode_enabled():
+            if no_llm_mode_enabled():
                 selection = _fallback_hotel_selection(
                     area_options=area_options,
                     hotel_options=hotel_options_for_llm,
                     travel_task=travel_task,
                 )
-                quality_source = "hotel_agent_rule_fallback_demo_fast"
+                quality_source = "hotel_agent_rule_fallback_no_llm"
             else:
                 try:
                     llm_hotel_selection = llm.chat_json(

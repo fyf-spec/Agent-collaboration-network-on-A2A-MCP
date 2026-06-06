@@ -14,11 +14,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
 from common.config import COORDINATOR_NAME, MCP_SERVERS, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.runtime import no_llm_mode_enabled
 from common.schemas import (
     RESULT_ERROR,
     RESULT_SUCCESS,
@@ -91,9 +92,9 @@ class PackingAgent(BaseAgent):
             llm_error = None
             quality_source = "packing_agent_mcp_rule_summary"
 
-            if _demo_fast_mode_enabled():
+            if no_llm_mode_enabled():
                 summary = _packing_summary_from_list(packing_list)
-                quality_source = "packing_agent_mcp_rule_summary_demo_fast"
+                quality_source = "packing_agent_mcp_rule_summary_no_llm"
             else:
                 try:
                     llm_json = llm.chat_json(
