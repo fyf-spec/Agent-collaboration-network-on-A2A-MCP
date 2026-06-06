@@ -19,22 +19,13 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 def main() -> None:
     # 不启动 Weather MCP Server
-    old_demo_fast = os.environ.get("A2A_DEMO_FAST")
-    os.environ["A2A_DEMO_FAST"] = "1"
+    with run_services(exclude=["weather_mcp_server"], mode="no-llm"):
+        time.sleep(1) # 等待端口释放和系统稳定
 
-    try:
-        with run_services(exclude=["weather_mcp_server"]):
-            time.sleep(1) # 等待端口释放和系统稳定
-
-            run_task_demo(
-                "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
-                timeout=20.0,
-            )
-    finally:
-        if old_demo_fast is None:
-            os.environ.pop("A2A_DEMO_FAST", None)
-        else:
-            os.environ["A2A_DEMO_FAST"] = old_demo_fast
+        run_task_demo(
+            "帮我规划明天去广州的旅行方案，分别考虑天气情况和交通路线，并给出合理的出行建议。",
+            timeout=20.0,
+        )
 
 
 if __name__ == "__main__":

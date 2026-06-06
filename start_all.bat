@@ -1,13 +1,49 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 
 cd /d "%~dp0"
 
-echo ========================================
-echo Starting Agent-A2A local demo services...
-echo Project directory: %CD%
-echo ========================================
+set "MODE=%~1"
+if "%MODE%"=="" goto MENU
+if /I "%MODE%"=="llm" goto START
+if /I "%MODE%"=="--llm" (
+    set "MODE=llm"
+    goto START
+)
+if /I "%MODE%"=="no-llm" goto START
+if /I "%MODE%"=="no_llm" (
+    set "MODE=no-llm"
+    goto START
+)
+if /I "%MODE%"=="nollm" (
+    set "MODE=no-llm"
+    goto START
+)
+if /I "%MODE%"=="--no-llm" (
+    set "MODE=no-llm"
+    goto START
+)
+if /I "%MODE%"=="help" goto HELP
+if /I "%MODE%"=="--help" goto HELP
+echo [ERROR] Unknown mode: %MODE%
+goto BAD_USAGE
 
+:MENU
+echo ========================================
+echo Agent-A2A local services
+echo ========================================
+echo 1. Use LLM
+echo 2. No LLM
+echo.
+choice /C 12 /N /M "Select mode [1=LLM, 2=No LLM]: "
+if errorlevel 2 (
+    set "MODE=no-llm"
+) else (
+    set "MODE=llm"
+)
+goto START
+
+:START
 where uv >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] uv is not found. Please install uv first.
@@ -15,41 +51,42 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo.
-echo [1/5] Starting Weather MCP Server on 127.0.0.1:8001...
-start "Weather MCP Server :8001" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath '%CD%'; uv run python mcp_servers/weather_mcp_server.py"
-
-timeout /t 1 /nobreak >nul
-
-echo [2/5] Starting Traffic MCP Server on 127.0.0.1:8002...
-start "Traffic MCP Server :8002" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath '%CD%'; uv run python mcp_servers/traffic_mcp_server.py"
-
-timeout /t 1 /nobreak >nul
-
-echo [3/5] Starting Weather Agent on 127.0.0.1:9010...
-start "Weather Agent :9010" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath '%CD%'; uv run python agents/weather_agent.py"
-
-timeout /t 1 /nobreak >nul
-
-echo [4/5] Starting Traffic Agent on 127.0.0.1:9020...
-start "Traffic Agent :9020" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath '%CD%'; uv run python agents/traffic_agent.py"
-
-timeout /t 1 /nobreak >nul
-
-echo [5/5] Starting Coordinator on 127.0.0.1:9000...
-start "Coordinator :9000" powershell -NoExit -ExecutionPolicy Bypass -Command "Set-Location -LiteralPath '%CD%'; uv run python coordinator.py"
+if /I "%MODE%"=="llm" (
+    set "A2A_USE_LLM=1"
+    set "A2A_LLM_ENABLED=1"
+    set "A2A_DEMO_FAST=0"
+) else (
+    set "MODE=no-llm"
+    set "A2A_USE_LLM=0"
+    set "A2A_LLM_ENABLED=0"
+    set "A2A_DEMO_FAST=1"
+)
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUNBUFFERED=1"
 
 echo.
-echo ========================================
-echo All services are starting.
+echo Starting all local A2A/MCP services in "%MODE%" mode...
+echo Project directory: %CD%
 echo.
-echo Please check the opened PowerShell windows.
-echo Expected services:
-echo   Weather MCP Server   http://127.0.0.1:8001
-echo   Traffic MCP Server   http://127.0.0.1:8002
-echo   Weather Agent        http://127.0.0.1:9010
-echo   Traffic Agent        http://127.0.0.1:9020
-echo   Coordinator          http://127.0.0.1:9000
-echo ========================================
+uv run python scripts\start_all.py --mode %MODE%
+set "EXIT_CODE=%ERRORLEVEL%"
+
 echo.
+echo start_all exited with code %EXIT_CODE%.
 pause
+exit /b %EXIT_CODE%
+
+:HELP
+echo Usage:
+echo   start_all.bat             choose mode interactively
+echo   start_all.bat llm         start with external LLM calls
+echo   start_all.bat no-llm      start without external LLM calls
+exit /b 0
+
+:BAD_USAGE
+echo Usage:
+echo   start_all.bat             choose mode interactively
+echo   start_all.bat llm         start with external LLM calls
+echo   start_all.bat no-llm      start without external LLM calls
+exit /b 1

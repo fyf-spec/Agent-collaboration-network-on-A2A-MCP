@@ -265,7 +265,7 @@ def render_sidebar() -> dict[str, Any]:
         mcp_timeout = st.number_input("MCP HTTP timeout / 秒", min_value=1.0, max_value=60.0, value=3.0, step=1.0)
 
         st.header("运行方式")
-        demo_fast = st.toggle("启用快速演示模式", value=True)
+        demo_fast = st.toggle("启用 no-LLM 模式", value=True)
         reuse_external = st.toggle("允许复用已运行服务", value=True)
 
         st.header("操作")
@@ -396,9 +396,13 @@ def build_env(scenario: Scenario, config: dict[str, Any]) -> dict[str, str]:
         }
     )
     if config["demo_fast"]:
+        env["A2A_USE_LLM"] = "0"
+        env["A2A_LLM_ENABLED"] = "0"
         env["A2A_DEMO_FAST"] = "1"
     else:
-        env.pop("A2A_DEMO_FAST", None)
+        env["A2A_USE_LLM"] = "1"
+        env["A2A_LLM_ENABLED"] = "1"
+        env["A2A_DEMO_FAST"] = "0"
     env.update(scenario.env)
     return env
 

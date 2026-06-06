@@ -8,6 +8,7 @@ service, not as local helper calls.
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 from typing import Any
 
 
@@ -976,10 +977,13 @@ def get_packing_list(city: str = DEFAULT_CITY, days: int = 3, temperature: str =
     ]
     
     clothing_items = ["内衣裤", "袜子"]
-    if "冷" in condition or "雪" in condition or (temperature and any(int(t) < 10 for t in __import__("re").findall(r"-?\d+", temperature))):
+    temperatures = _parse_temperature_values(temperature)
+    is_cold = "冷" in condition or "寒" in condition or "雪" in condition or (temperatures and min(temperatures) < 10)
+    is_hot = "热" in condition or (temperatures and max(temperatures) > 28)
+    if is_cold:
         clothing_items.extend(["羽绒服", "保暖内衣", "围巾", "手套"])
         clothing_reason = "天气寒冷，需注意保暖"
-    elif "热" in condition or (temperature and any(int(t) > 28 for t in __import__("re").findall(r"-?\d+", temperature))):
+    elif is_hot:
         clothing_items.extend(["短袖", "短裤", "防晒衣"])
         clothing_reason = "天气炎热，需透气和防晒"
     else:
@@ -1000,6 +1004,18 @@ def get_packing_list(city: str = DEFAULT_CITY, days: int = 3, temperature: str =
         "temperature_used": temperature,
         "packing_list": base_items
     }
+
+
+def _parse_temperature_values(temperature: Any) -> list[float]:
+    text = str(temperature or "").strip()
+    if not text:
+        return []
+    normalized = re.sub(
+        r"(\d+(?:\.\d+)?)\s*(?:°?\s*[Cc])?\s*[-~—–]\s*(?=\d)",
+        r"\1,",
+        text,
+    )
+    return [float(match.group(0)) for match in re.finditer(r"-?\d+(?:\.\d+)?", normalized)]
 
 
 def get_transport(city: str = DEFAULT_CITY, date: str = DEFAULT_DATE, **_: Any) -> dict[str, Any]:

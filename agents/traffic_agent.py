@@ -13,11 +13,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
 from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.runtime import no_llm_mode_enabled
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
 from llm_client import llm_small as llm
 
@@ -54,7 +55,7 @@ class TrafficAgent(BaseAgent):
             selected_route_ids: dict[str, str] = {}
             quality_source = "traffic_agent_rule_fallback"
 
-            if _demo_fast_mode_enabled():
+            if no_llm_mode_enabled():
                 selected_route_ids = _fallback_selected_route_ids(segments_for_llm, travel_task)
                 traffic_plan = _expand_traffic_plan(selected_route_ids, segments_for_llm)
                 structured_result = {
@@ -64,7 +65,7 @@ class TrafficAgent(BaseAgent):
                     "selected_route_ids": selected_route_ids,
                     "llm_selected_route_ids": llm_selected_route_ids,
                 }
-                quality_source = "traffic_agent_rule_fallback_demo_fast"
+                quality_source = "traffic_agent_rule_fallback_no_llm"
             else:
                 try:
                     llm_json = llm.chat_json(
@@ -811,7 +812,7 @@ def _short_traffic_summary(structured_result: dict[str, Any]) -> str:
         return (
             f"交通概况：{city}推荐路线为{route}，当前路况为{status}，预计耗时{duration}。\n"
             f"推荐方案：建议优先选择上述路线，并预留一定机动时间。\n"
-            f"注意事项：当前为演示快速模式，已跳过外部 LLM 调用。"
+            f"注意事项：当前为 no-LLM 模式，已跳过外部 LLM 调用。"
         )
 
 

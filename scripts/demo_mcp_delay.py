@@ -38,11 +38,8 @@ def main() -> None:
         "weather_mcp_server": ["--delay", str(demo_delay)]
     }
     
-    old_demo_fast = os.environ.get("A2A_DEMO_FAST")
-    os.environ["A2A_DEMO_FAST"] = "1"
-
     try:
-        with run_services(extra_args=extra_args):
+        with run_services(extra_args=extra_args, mode="no-llm"):
             time.sleep(2)  # 等待服务完全启动
 
             print("\n✈️  开始向 Coordinator 提交旅行任务...")
@@ -62,10 +59,6 @@ def main() -> None:
             os.environ.pop("MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS", None)
         else:
             os.environ["MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS"] = old_gateway_timeout
-        if old_demo_fast is None:
-            os.environ.pop("A2A_DEMO_FAST", None)
-        else:
-            os.environ["A2A_DEMO_FAST"] = old_demo_fast
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from agents.base_agent import BaseAgent, _demo_fast_mode_enabled
+from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_context
 
 from common.config import (
@@ -33,6 +33,7 @@ from common.config import (
 )
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.runtime import no_llm_mode_enabled
 from common.schemas import (
     PayloadValidationError,
     RESULT_SUCCESS,
@@ -40,7 +41,6 @@ from common.schemas import (
     build_result_payload,
     validate_task_payload,
 )
-from llm_client import LLMClientError
 from llm_client import llm_small as llm
 
 
@@ -183,14 +183,14 @@ def handle_task(task_payload: dict[str, Any], *, callback: bool = True) -> dict[
         llm_daily_spot_ids: dict[str, list[str]] = {}
         quality_source = "attraction_agent_rule_fallback"
 
-        if _demo_fast_mode_enabled():
+        if no_llm_mode_enabled():
             llm_daily_spot_ids = build_rule_daily_spot_ids(
                 compact_spots=compact_spots,
                 days=days,
                 must_visit=_attraction_must_visit(travel_task),
                 weather_constraints=weather_constraints,
             )
-            quality_source = "attraction_agent_rule_fallback_demo_fast"
+            quality_source = "attraction_agent_rule_fallback_no_llm"
         else:
             try:
                 llm_json = llm.chat_json(
