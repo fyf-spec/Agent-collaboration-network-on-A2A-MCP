@@ -41,6 +41,13 @@ MODELSCOPE_API_KEY=your_api_key_here
 
 不要把真实 API Key 提交到仓库。
 
+## 消融实验 UI 快速启动
+
+```bash
+uv run streamlit run scripts/ablation_ui.py --server.port 8505 --server.headless true
+```
+
+
 ## UI Demo 展示流程
 
 ### 1. 启动所有节点
