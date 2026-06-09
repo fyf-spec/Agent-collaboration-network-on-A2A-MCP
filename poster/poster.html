@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A2A-MCP Governed Communication Network Poster</title>
+<style>
+  @page { size: 1189mm 841mm; margin: 0; }
+
+  :root {
+    --u: 1.6px;
+    --paper: #f4f8ff;
+    --panel: #ffffff;
+    --ink: #172033;
+    --muted: #526170;
+    --line: #cbd8e6;
+    --purple: #1f5fae;
+    --purple-deep: #0b2e59;
+    --purple-soft: #eaf2ff;
+    --gold: #c7992a;
+    --gold-soft: #fff3cf;
+    --blue: #176bd6;
+    --teal: #078b91;
+    --red: #c94b4b;
+    --shadow: 0 calc(1.2 * var(--u)) calc(3 * var(--u)) rgba(11, 46, 89, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #172033; }
+  body {
+    color: var(--ink);
+    font-family: "Helvetica Neue", Arial, "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .poster {
+    width: calc(1189 * var(--u));
+    height: calc(841 * var(--u));
+    margin: 14px auto;
+    padding: calc(8 * var(--u)) calc(10 * var(--u)) calc(6 * var(--u));
+    position: relative;
+    overflow: hidden;
+    background:
+      linear-gradient(180deg, rgba(244, 248, 255, 0.99), rgba(251, 253, 255, 0.99)),
+      radial-gradient(circle at 92% 8%, rgba(199, 153, 42, 0.11), transparent 24%),
+      radial-gradient(circle at 4% 10%, rgba(31, 95, 174, 0.10), transparent 24%);
+  }
+  .poster::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: calc(6 * var(--u));
+    background: linear-gradient(90deg, var(--purple-deep), var(--purple), var(--gold));
+  }
+  .poster > * { position: relative; }
+
+  .header {
+    height: calc(112 * var(--u));
+    display: grid;
+    grid-template-columns: calc(245 * var(--u)) 1fr calc(245 * var(--u));
+    gap: calc(14 * var(--u));
+    align-items: center;
+    border-bottom: calc(2 * var(--u)) solid var(--purple);
+    padding-top: calc(5 * var(--u));
+  }
+  .conf-mark {
+    display: grid;
+    grid-template-columns: calc(40 * var(--u)) 1fr;
+    gap: calc(8 * var(--u));
+    align-items: center;
+    border-right: calc(0.8 * var(--u)) solid rgba(90, 60, 134, 0.18);
+    height: calc(70 * var(--u));
+  }
+  .dot-logo {
+    width: calc(35 * var(--u));
+    height: calc(35 * var(--u));
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 50% 50%, var(--purple) 0 13%, transparent 14%),
+      radial-gradient(circle at 22% 26%, var(--purple) 0 5%, transparent 6%),
+      radial-gradient(circle at 78% 25%, var(--purple) 0 5%, transparent 6%),
+      radial-gradient(circle at 25% 78%, var(--purple) 0 5%, transparent 6%),
+      radial-gradient(circle at 76% 76%, var(--purple) 0 5%, transparent 6%),
+      repeating-conic-gradient(from 0deg, rgba(90, 60, 134, 0.75) 0 9deg, transparent 9deg 18deg);
+    opacity: 0.82;
+  }
+  .conf-title {
+    font-size: calc(17 * var(--u));
+    line-height: 1.02;
+    font-weight: 900;
+    color: var(--purple);
+  }
+  .conf-title span {
+    display: block;
+    margin-top: calc(2 * var(--u));
+    font-size: calc(8 * var(--u));
+    color: var(--purple);
+  }
+  .title-block { text-align: center; padding: 0 calc(8 * var(--u)); }
+  .title-block h1 {
+    margin: 0;
+    font-size: calc(25.5 * var(--u));
+    line-height: 1.02;
+    letter-spacing: 0;
+    font-weight: 900;
+    color: var(--purple-deep);
+  }
+  .title-block h1 .lead { color: var(--gold); }
+  .subtitle {
+    margin-top: calc(6 * var(--u));
+    font-size: calc(10.6 * var(--u));
+    font-style: italic;
+    color: #6d6377;
+    line-height: 1.18;
+  }
+  .authors {
+    margin-top: calc(4 * var(--u));
+    font-size: calc(9.9 * var(--u));
+    font-weight: 850;
+    color: var(--purple-deep);
+  }
+  .authors sup { font-size: 62%; vertical-align: super; }
+  .affil {
+    margin-top: calc(1.5 * var(--u));
+    font-size: calc(7.4 * var(--u));
+    color: #7a7282;
+    line-height: 1.15;
+  }
+  .right-brand {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+  }
+  .logo-strip {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, calc(74 * var(--u)));
+    gap: calc(6 * var(--u));
+    align-items: center;
+    justify-items: center;
+    justify-content: end;
+  }
+  .logo-strip img {
+    width: calc(74 * var(--u));
+    height: calc(74 * var(--u));
+    max-width: none;
+    max-height: none;
+    object-fit: contain;
+  }
+
+  .loop {
+    height: calc(42 * var(--u));
+    margin-top: calc(6 * var(--u));
+    border-left: calc(4 * var(--u)) solid var(--purple);
+    border-radius: calc(4 * var(--u));
+    background: rgba(238, 232, 247, 0.88);
+    display: grid;
+    grid-template-columns: calc(210 * var(--u)) 1fr calc(42 * var(--u));
+    gap: calc(8 * var(--u));
+    align-items: center;
+    padding: calc(5 * var(--u)) calc(8 * var(--u));
+  }
+  .loop-label {
+    font-size: calc(9.8 * var(--u));
+    color: var(--ink);
+    line-height: 1.16;
+  }
+  .loop-label .pill {
+    display: inline-block;
+    color: #fff;
+    background: var(--purple);
+    border-radius: calc(3 * var(--u));
+    padding: calc(1.8 * var(--u)) calc(6 * var(--u));
+    font-weight: 900;
+    margin-right: calc(4 * var(--u));
+  }
+  .loop-steps {
+    display: grid;
+    grid-template-columns: 1fr calc(14 * var(--u)) 1.05fr calc(14 * var(--u)) 1.15fr calc(14 * var(--u)) 1.05fr;
+    align-items: center;
+    gap: calc(4 * var(--u));
+  }
+  .step-box {
+    height: calc(31 * var(--u));
+    border: calc(0.8 * var(--u)) solid rgba(90, 60, 134, 0.28);
+    border-top: calc(2 * var(--u)) solid var(--gold);
+    border-radius: calc(3 * var(--u));
+    background: #fff;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    padding: calc(2 * var(--u)) calc(4 * var(--u));
+    color: #4f435d;
+    font-size: calc(6.8 * var(--u));
+    line-height: 1.08;
+  }
+  .step-box strong { color: var(--purple-deep); font-size: calc(7.1 * var(--u)); }
+  .arrow { text-align: center; color: var(--purple); font-size: calc(15 * var(--u)); font-weight: 900; }
+  .repeat {
+    text-align: center;
+    color: var(--purple);
+    font-weight: 900;
+    font-size: calc(8.4 * var(--u));
+    line-height: 1.02;
+  }
+
+  .body-grid {
+    height: calc(680 * var(--u));
+    margin-top: calc(7 * var(--u));
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.08fr;
+    gap: calc(8 * var(--u));
+  }
+  .column {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: calc(6 * var(--u));
+  }
+  .card {
+    position: relative;
+    flex-shrink: 0;
+    overflow: hidden;
+    background: var(--panel);
+    border: calc(0.8 * var(--u)) solid var(--line);
+    border-radius: calc(4 * var(--u));
+    box-shadow: var(--shadow);
+    padding: calc(7 * var(--u)) calc(8 * var(--u)) calc(6 * var(--u)) calc(9 * var(--u));
+  }
+  .card::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: calc(4 * var(--u));
+    background: var(--purple);
+  }
+  .h-164 { height: calc(164 * var(--u)); }
+  .h-196 { height: calc(196 * var(--u)); }
+  .h-308 { height: calc(308 * var(--u)); }
+  .h-300 { height: calc(300 * var(--u)); }
+  .h-374 { height: calc(374 * var(--u)); }
+  .h-420 { height: calc(420 * var(--u)); }
+  .h-254 { height: calc(254 * var(--u)); }
+
+  .sec-head {
+    display: flex;
+    align-items: center;
+    gap: calc(5 * var(--u));
+    margin-bottom: calc(4 * var(--u));
+  }
+  .num {
+    width: calc(16 * var(--u));
+    height: calc(16 * var(--u));
+    border-radius: 50%;
+    background: var(--purple);
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: calc(8.8 * var(--u));
+    font-weight: 900;
+    line-height: 1;
+    flex: 0 0 auto;
+  }
+  h2 {
+    margin: 0;
+    color: var(--purple-deep);
+    font-size: calc(14.6 * var(--u));
+    line-height: 1.06;
+    font-weight: 900;
+    letter-spacing: 0;
+  }
+  .headline {
+    color: var(--gold);
+    font-weight: 900;
+    font-size: calc(8.3 * var(--u));
+    margin-left: calc(2 * var(--u));
+  }
+  p, li {
+    font-family: Georgia, "Times New Roman", "Noto Serif CJK SC", "SimSun", serif;
+    font-size: calc(10.9 * var(--u));
+    line-height: 1.08;
+    color: #1f2d40;
+  }
+  p { margin: 0 0 calc(3.2 * var(--u)); }
+  ul { margin: calc(1.8 * var(--u)) 0 0 calc(9 * var(--u)); padding: 0; }
+  li { margin-bottom: calc(1.65 * var(--u)); }
+  strong { color: var(--purple-deep); font-weight: 900; }
+  .gold-text { color: var(--gold); font-weight: 900; }
+  .question {
+    margin-top: calc(4 * var(--u));
+    padding: calc(3.8 * var(--u)) calc(5.5 * var(--u));
+    border-radius: calc(3 * var(--u));
+    background: var(--purple);
+    color: #fff;
+    font-size: calc(9.8 * var(--u));
+    line-height: 1.1;
+    font-family: Georgia, "Times New Roman", serif;
+  }
+  .question strong { color: var(--gold-soft); }
+
+  .arch-flow {
+    margin: 0 0 calc(4 * var(--u));
+    padding: calc(4.1 * var(--u)) calc(5.5 * var(--u));
+    border-left: calc(3 * var(--u)) solid var(--purple);
+    background: var(--purple-soft);
+    border-radius: calc(3 * var(--u));
+    font-size: calc(8.6 * var(--u));
+    line-height: 1.12;
+    font-weight: 900;
+    color: #2d2738;
+    text-align: center;
+  }
+  .arch-wrap {
+    width: 100%;
+    height: calc(222 * var(--u));
+    border-radius: calc(4 * var(--u));
+    background: #fff;
+    border: calc(0.8 * var(--u)) solid var(--line);
+    overflow: hidden;
+    padding: calc(3 * var(--u));
+  }
+  .arch-img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center center;
+  }
+  .figure-img,
+  .chart-img,
+  .contrib-img {
+    display: block;
+    width: 100%;
+    object-fit: contain;
+    object-position: center center;
+    border: calc(0.7 * var(--u)) solid var(--line);
+    border-radius: calc(3 * var(--u));
+    background: #fff;
+  }
+  .contrib-img { height: calc(130 * var(--u)); margin-top: calc(4 * var(--u)); }
+  .protocol-img { height: calc(76 * var(--u)); margin: calc(3 * var(--u)) 0; }
+  .fault-strip { height: calc(53 * var(--u)); margin-top: calc(2.4 * var(--u)); }
+  .chart-img { height: calc(224 * var(--u)); margin-top: calc(3 * var(--u)); }
+  .metric-list {
+    margin: calc(1.5 * var(--u)) 0 calc(2.5 * var(--u)) calc(9 * var(--u));
+    padding: 0;
+  }
+  .metric-list li {
+    font-size: calc(8.25 * var(--u));
+    line-height: 1.03;
+    margin-bottom: calc(0.65 * var(--u));
+    white-space: nowrap;
+  }
+  .caption {
+    margin-top: calc(3 * var(--u));
+    color: #62586d;
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: calc(7.8 * var(--u));
+    line-height: 1.14;
+  }
+
+  .qa-wrap {
+    width: 100%;
+    height: calc(154 * var(--u));
+    border-radius: calc(4 * var(--u));
+    background: #fffaf2;
+    border: calc(0.8 * var(--u)) solid var(--line);
+    overflow: hidden;
+    padding: calc(5 * var(--u));
+  }
+  .qa-log {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto repeat(6, 1fr);
+    gap: calc(2.3 * var(--u));
+    color: #172233;
+  }
+  .qa-title {
+    font-size: calc(8.15 * var(--u));
+    font-weight: 900;
+    color: var(--blue);
+    line-height: 1.05;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .log-line {
+    display: grid;
+    grid-template-columns: calc(72 * var(--u)) 1fr;
+    gap: calc(4 * var(--u));
+    align-items: center;
+    border-left: calc(2.2 * var(--u)) solid var(--purple);
+    background: rgba(255,255,255,0.84);
+    border-radius: calc(3 * var(--u));
+    padding: calc(2.2 * var(--u)) calc(3.6 * var(--u));
+    font-size: calc(7.35 * var(--u));
+    line-height: 1.08;
+  }
+  .actor {
+    font-weight: 900;
+    color: var(--purple);
+  }
+  .log-line strong { color: #0f2035; }
+
+  .footer {
+    height: calc(15 * var(--u));
+    margin-top: calc(7 * var(--u));
+    border-top: calc(0.8 * var(--u)) solid rgba(90, 60, 134, 0.18);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #817889;
+    font-size: calc(6.9 * var(--u));
+  }
+
+  @media print {
+    :root { --u: 1mm; }
+    html, body { background: #fff; }
+    .poster { margin: 0; }
+  }
+</style>
+</head>
+<body>
+<main class="poster" data-measure-role="poster">
+  <header class="header" data-measure-role="header">
+    <div aria-hidden="true"></div>
+    <div class="title-block">
+      <h1><span class="lead">A2A-MCP:</span> Governed Communication for Multi-Agent Travel Planning</h1>
+      <div class="subtitle">A course-project networking system that makes A2A dispatch, MCP tool calls, and failure recovery observable and controllable.</div>
+      <div class="authors">Yufan Feng<sup>1</sup> · Rixi Xu<sup>2</sup> · Ningkai Wu<sup>2</sup> · Anheng Yu<sup>1</sup></div>
+      <div class="affil"><sup>1</sup> School of Computer Science, Shanghai Jiao Tong University · <sup>2</sup> School of Automation and Intelligent Sensing, Shanghai Jiao Tong University</div>
+    </div>
+    <div class="right-brand">
+      <div class="logo-strip" aria-label="university and school logos">
+        <img src="images/logos/sjtu_mark_blue_gold.png" alt="Shanghai Jiao Tong University graphic logo">
+        <img src="images/logos/cs_mark_blue_gold.png" alt="School of Computer Science graphic logo">
+        <img src="images/logos/sais_mark_blue_gold.png" alt="School of Automation and Intelligent Sensing graphic logo">
+      </div>
+    </div>
+  </header>
+
+  <section class="body-grid" data-measure-role="body">
+    <div class="column" data-measure-role="column">
+      <article class="card h-164" data-measure-role="card">
+        <div class="sec-head"><div class="num">1</div><h2>Motivation</h2></div>
+        <p><strong>Networking project requirements</strong> ask the system to run services, communicate across processes, log protocols, tolerate failures, and visualize behavior.</p>
+        <ul>
+          <li><strong>A2A requirement:</strong> Coordinator dispatches domain agents through explicit network messages.</li>
+          <li><strong>MCP requirement:</strong> Agents invoke external tools through JSON-RPC MCP servers.</li>
+        </ul>
+        <div class="question"><strong>Goal:</strong> a discoverable, observable, fault-aware travel-planning network.</div>
+      </article>
+
+      <article class="card h-196" data-measure-role="card">
+        <div class="sec-head"><div class="num">2</div><h2>Problems &amp; Insight</h2></div>
+        <ul>
+          <li><strong>Service discovery is fragile:</strong> registry state, ports, and health can change while a task is being routed.</li>
+          <li><strong>TCP is a byte stream:</strong> A2A needs task id, length prefix, ACK, RESULT, and ERROR boundaries.</li>
+          <li><strong>Tool calls amplify traffic:</strong> repeated weather and short-window duplicate calls hit MCP servers unnecessarily.</li>
+          <li><strong>Partial failures are normal:</strong> missing agents or slow MCP servers should degrade the answer, not break the whole DAG.</li>
+        </ul>
+        <div class="question"><strong>Insight:</strong> A2A governs agent collaboration; MCP governs tool semantics; the Gateway governs MCP-side network traffic.</div>
+      </article>
+
+      <article class="card h-308" data-measure-role="card">
+        <div class="sec-head"><div class="num">3</div><h2>Contributions</h2></div>
+        <ul>
+          <li><strong>Coordinator:</strong> builds and executes a dependency-aware agent DAG.</li>
+          <li><strong>A2A/TCP:</strong> adds length-prefix frames, ids, ACK/RESULT/ERROR, and dispatch logs.</li>
+          <li><strong>MCP Gateway:</strong> centralizes cache, coalescing, rate limiting, circuit breaking, and metrics.</li>
+          <li><strong>MCP tools:</strong> connect weather, traffic, attraction, hotel, and packing via JSON-RPC.</li>
+          <li><strong>Fault tolerance:</strong> uses backup registry, capability miss, no-LLM fallback, and partial answers.</li>
+        </ul>
+        <img class="contrib-img" src="images/contributions_imagegen_v2.png" alt="Monochrome imagegen contribution table">
+      </article>
+    </div>
+
+    <div class="column" data-measure-role="column">
+      <article class="card h-300" data-measure-role="card">
+        <div class="sec-head"><div class="num">4</div><h2>System Architecture <span class="headline">main design</span></h2></div>
+        <div class="arch-flow">User &rarr; Coordinator &rarr; Registry &rarr; A2A/TCP &rarr; Agent &rarr; MCP Gateway &rarr; JSON-RPC &rarr; MCP Server</div>
+        <div class="arch-wrap">
+          <img class="arch-img" src="images/system_architecture_imagegen_v2_flat_crop.png" alt="White-background Agent-A2A system architecture generated with imagegen">
+        </div>
+      </article>
+
+      <article class="card h-374" data-measure-role="card">
+        <div class="sec-head"><div class="num">5</div><h2>Protocol Advantages &amp; Fault Tolerance</h2></div>
+        <p><strong>Protocol advantage:</strong> A2A reuses a persistent TCP channel and adds length-prefixed frames, avoiding repeated HTTP handshakes while keeping explicit task boundaries.</p>
+        <img class="figure-img protocol-img" src="images/tcp_protocol_imagegen_v3_flat_crop.png" alt="Flatter imagegen comparison of HTTP requests and A2A TCP frames">
+        <p><strong>Fault-tolerance design:</strong> each failure has a local recovery boundary: registry failover, agent degradation, Gateway fail-fast, and service power-off recovery with visible logs.</p>
+        <img class="figure-img fault-strip" src="images/fault_registry_imagegen_v5_flat_crop.png" alt="Registry failover mechanism imagegen strip">
+        <img class="figure-img fault-strip" src="images/fault_agent_imagegen_v5_flat_crop.png" alt="Agent capability miss mechanism imagegen strip">
+        <img class="figure-img fault-strip" src="images/fault_mcp_imagegen_v5_flat_crop.png" alt="MCP timeout gateway fail-fast mechanism imagegen strip">
+      </article>
+    </div>
+
+    <div class="column" data-measure-role="column">
+      <article class="card h-420" data-measure-role="card">
+        <div class="sec-head"><div class="num">6</div><h2>Governance Efficiency <span class="headline">measured locally</span></h2></div>
+        <p><strong>Gateway role:</strong> control MCP traffic before it reaches tool servers, preserve JSON-RPC semantics, expose <strong>/metrics</strong>, and turn repeated or failing tool calls into measurable governed behavior.</p>
+        <ul class="metric-list">
+          <li><strong>Upstream calls:</strong> MCP load before/after Gateway.</li>
+          <li><strong>Cache hits:</strong> repeated requests stay inside Gateway.</li>
+          <li><strong>Coalesced waiters:</strong> duplicates share one leader call.</li>
+          <li><strong>Rate-limited calls:</strong> burst backpressure protects tools.</li>
+          <li><strong>Circuit-open calls:</strong> timeout isolation and fail-fast.</li>
+          <li><strong>Latency trend:</strong> direct/cache/merge/limit/open cost.</li>
+        </ul>
+        <img class="chart-img" src="images/gateway_governance_imagegen_v3_noicons_crop.png" alt="MCP Gateway quantitative metrics generated with imagegen, no icons, with bars and latency line chart">
+        <div class="caption"><strong>Learning from requests:</strong> 10 repeated Weather calls drop to <span class="gold-text">1 upstream call</span>; duplicate bursts produce <span class="gold-text">9 coalesced waiters</span>; rate limit rejects <span class="gold-text">9 excess calls</span>; circuit-open responses are <span class="gold-text">17.3x faster</span> than the first timeout.</div>
+      </article>
+
+      <article class="card h-254" data-measure-role="card">
+        <div class="sec-head"><div class="num">7</div><h2>Travel QA Example and Failure Semantics</h2></div>
+        <div class="qa-wrap">
+          <div class="qa-log">
+            <div class="qa-title">Complete flow: “Plan a 3-day budget trip from Shanghai to Beijing; prefer subway; must visit the Forbidden City.”</div>
+            <div class="log-line"><span class="actor">User</span><span>submits the travel-planning request to the Coordinator.</span></div>
+            <div class="log-line"><span class="actor">Coordinator</span><span>decomposes the task into weather, attraction, hotel, traffic, and packing nodes.</span></div>
+            <div class="log-line"><span class="actor">Registry</span><span>primary lookup can fail; backup discovery returns the available agent endpoints.</span></div>
+            <div class="log-line"><span class="actor">Agents</span><span>execute the DAG through A2A/TCP and call MCP tools through the Gateway.</span></div>
+            <div class="log-line"><span class="actor">Gateway</span><span>caches repeats, coalesces duplicates, limits bursts, and fails fast on slow MCP servers.</span></div>
+            <div class="log-line"><span class="actor">Answer</span><span>merges available results into an itinerary and marks unavailable tools explicitly.</span></div>
+          </div>
+        </div>
+        <ul>
+          <li><strong>Failure semantics:</strong> registry failover, capability miss, and MCP timeout all stay visible in logs and final context.</li>
+          <li><strong>Partial answer:</strong> usable nodes return first; missing tool results are reported as explicit degraded fields.</li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <footer class="footer" data-measure-role="footer">
+    <div>A2A-MCP · Computer Networking Project 2026 · Agent-A2A repository</div>
+    <div>Shanghai Jiao Tong University · Distributed agent communication network</div>
+  </footer>
+</main>
+</body>
+</html>
