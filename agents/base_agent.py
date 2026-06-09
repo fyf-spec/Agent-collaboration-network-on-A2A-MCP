@@ -27,6 +27,7 @@ from common.http_client import HttpJsonClientError, post_json
 import common.logger
 import logging
 from common.logger import log_network_event
+from common.runtime import no_llm_mode_enabled
 from common.schemas import (
     PayloadValidationError,
     RESULT_SUCCESS,
@@ -441,8 +442,8 @@ class BaseAgent:
         try:
             mcp_result = self.call_mcp_server(task_payload)
             prompt = self.build_prompt(task_payload, mcp_result)
-            if _demo_fast_mode_enabled():
-                llm_error = "demo_fast_mode"
+            if no_llm_mode_enabled():
+                llm_error = "no_llm_mode"
                 agent_answer = self.build_demo_answer(task_payload, mcp_result)
             else:
                 try:
@@ -704,10 +705,10 @@ class BaseAgent:
         )
 
     def build_demo_answer(self, task_payload: dict[str, Any], mcp_result: dict[str, Any]) -> str:
-        # 构建演示快速模式下的回答（跳过 LLM）
+        # 构建 no-LLM 模式下的回答。
         return (
             f"{self.agent_name} 已获得 MCP 数据。"
-            f"当前为演示快速模式，跳过外部 LLM 调用。"
+            f"当前为 no-LLM 模式，跳过外部 LLM 调用。"
             f"原始 MCP 数据为：{json.dumps(mcp_result, ensure_ascii=False)}。"
         )
 
@@ -746,6 +747,7 @@ def extract_city(instruction: str, context: dict[str, Any] | None = None) -> str
     parsed_city = city_from_request(instruction, context or {})
     if parsed_city and parsed_city != "未指定":
         return parsed_city
+
     context_text = json.dumps(context or {}, ensure_ascii=False)
     full_text = instruction + "\n" + context_text
     destination = _extract_destination_from_text(full_text)
@@ -767,7 +769,3 @@ def _infer_error_type(exc: Exception) -> str:
         return type(reason).__name__
     return type(cause).__name__
 
-
-def _demo_fast_mode_enabled() -> bool:
-    # 检查是否启用了演示快速模式
-    return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}

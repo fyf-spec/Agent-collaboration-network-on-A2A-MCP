@@ -47,6 +47,7 @@ CAPTURE_DIR = PROJECT_ROOT / "logs" / "captures"
 TOPOLOGY_REFRESH_SECONDS = 0.35
 TRANSFER_HISTORY_SECONDS = 30.0
 TRANSFER_PULSE_SECONDS = 1.6
+
 import atexit
 
 
@@ -3961,6 +3962,7 @@ with col_main:
     task_output_slot = st.empty()
 
     if submit_clicked:
+
         is_coordinator_running = is_service_running("coordinator")
         
         if not is_coordinator_running:

@@ -23,7 +23,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
-import os
 import re
 from socketserver import BaseRequestHandler, ThreadingTCPServer
 import threading
@@ -59,6 +58,7 @@ from common.internal_values import (
     normalize_transport_preference,
 )
 from common.logger import log_network_event
+from common.runtime import no_llm_mode_enabled
 from common.tcp_a2a import (
     TYPE_ERROR,
     TYPE_RESULT_ACK,
@@ -576,7 +576,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                 HTTPStatus.OK,
                 success_response(
                     {
-                        "flow": "Dynamic LLM-based DAG scheduler" ,
+                        "flow": _routing_policy_label(),
                         "interfaces": build_collaboration_contracts(self.server.state),
                     }
                 ),
@@ -922,13 +922,14 @@ def build_dependency_plan(question: str, targets: list[str], travel_task: dict[s
         "workflow": "travel_dependency",
         "selected_targets": targets,
         "dependency_chain": workflow_dag,
+        "travel_task": travel_task,
         "task_request": {
             "raw_instruction": question,
             "split_policy": "coordinator_only_splits_request",
             "agent_parse_policy": "each_agent_extracts_mcp_params_from_instruction",
         },
         "available_agents": _enabled_agents_view(),
-        "routing_policy": "dynamic LLM-based DAG scheduler",
+        "routing_policy": _routing_policy_label(),
         "llm": llm.info(),
     }
 
@@ -970,11 +971,13 @@ def build_node_context(
     # 构建agent节点的上下文信息
     agent_config = _fetch_discovered_agents().get(target, {})
     node_goal = _agent_node_goal(target)
+    travel_task = record.plan.get("travel_task", {}) if isinstance(record.plan, dict) else {}
     return {
         "workflow": "travel_dependency",
         "node_id": node_id,
         "stage": stage,
         "dependencies": dependencies,
+        "travel_task": travel_task,
         "request": {
             "original_instruction": record.question,
             "node_goal": node_goal,
@@ -1005,13 +1008,10 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
     MCP JSON-RPC params.
     """
     default_dag = _default_travel_dag(question, available_agents)
-    if _demo_fast_mode_enabled():
-        fallback = {
-            "_parser": "demo_fast_request_split",
-            "_raw_question": question,
-            "split_only": True,
-        }
-        return fallback, default_dag
+    if no_llm_mode_enabled():
+        rule_task = _extract_travel_task_by_rules(question)
+        rule_task["_parser"] = "no_llm_rule_travel_task"
+        return rule_task, default_dag
     try:
         logger.info("正在请求大模型生成总体规划和动态 DAG 工作流，请耐心等待...")
         llm_json = llm.chat_json(
@@ -1701,6 +1701,7 @@ def _extract_origin_city(text: str) -> str | None:
     match = re.search(r"从([\u4e00-\u9fa5]{2,12}?)(?:去|到|出发|$|[，,。；;\s])", text)
     if match:
         return match.group(1).strip()
+
     return None
 
 
@@ -1723,6 +1724,8 @@ def _clean_place_name(value: str) -> str:
     return text.strip()
 
 
+
+
 def _extract_days(text: str) -> int:
     # 从文本中提取旅行天数
     cn_digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
@@ -1737,8 +1740,30 @@ def _extract_days(text: str) -> int:
 
 def _extract_must_visit(text: str) -> list[str]:
     # 从文本中提取必去景点
-    known_spots = ["天安门广场", "天安门", "故宫", "国家博物馆", "天坛", "颐和园", "圆明园", "什刹海", "南锣鼓巷"]
-    return [spot for spot in known_spots if spot in text]
+    result: list[str] = []
+    match = re.search(r"(?:必须|一定|务必)(?:要)?去([\u4e00-\u9fa5A-Za-z0-9、/和与 ]{2,40}?)(?:看看|看|玩|$|[，,。；;])", text)
+    if match:
+        phrase = match.group(1).strip()
+        if not any(word in phrase for word in ("著名景点", "经典景点", "热门景点")):
+            result.extend(item.strip() for item in re.split(r"[、/和与\s]+", phrase) if item.strip())
+
+    known_spots = [
+        "天安门广场",
+        "天安门",
+        "故宫",
+        "国家博物馆",
+        "天坛",
+        "颐和园",
+        "圆明园",
+        "什刹海",
+        "南锣鼓巷",
+        "总统府",
+        "夫子庙",
+        "秦淮河",
+        "南京博物院",
+    ]
+    result.extend(spot for spot in known_spots if spot in text)
+    return list(dict.fromkeys(result))
 
 
 
@@ -1853,7 +1878,7 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         return grounded_answer
     if status != TASK_COMPLETED:
         return _fallback_final_answer(question, snapshot, "")
-    if _demo_fast_mode_enabled():
+    if no_llm_mode_enabled():
         return grounded_answer
 
     results = snapshot.get("results", {}) or {}
@@ -2446,9 +2471,10 @@ def _looks_like_result_payload(value: Any) -> bool:
     return isinstance(value, dict) and {"source", "target", "task_id", "status"}.issubset(value)
 
 
-def _demo_fast_mode_enabled() -> bool:
-    # 判断是否为快速演示模式
-    return os.getenv("A2A_DEMO_FAST", "").strip().lower() in {"1", "true", "yes", "on"}
+def _routing_policy_label() -> str:
+    if no_llm_mode_enabled():
+        return "rule-based DAG scheduler without LLM"
+    return "dynamic LLM-based DAG scheduler"
 
 
 def _coordinator_plan_prompt(question: str, targets: list[str]) -> str:

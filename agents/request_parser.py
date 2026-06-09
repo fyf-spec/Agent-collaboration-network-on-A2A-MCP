@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 import re
 from typing import Any
 
@@ -190,6 +190,10 @@ def _extract_days(text: str) -> int:
 
 def _extract_start_date(text: str) -> tuple[str | None, str | None]:
     today = date.today()
+    for phrase, offset in (("后天", 2), ("明天", 1), ("今天", 0)):
+        if phrase in text:
+            return (today + timedelta(days=offset)).isoformat(), phrase
+
     match = re.search(r"(\d{1,2})月(初|中旬|中|底|末)?", text)
     if not match:
         return None, None
