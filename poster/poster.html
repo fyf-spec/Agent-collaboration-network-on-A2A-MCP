@@ -247,16 +247,23 @@
   }
   .h-146 { height: calc(152 * var(--u)); }
   .h-196 { height: calc(196 * var(--u)); }
+  .h-214 { height: calc(214 * var(--u)); }
   .h-308 { height: calc(308 * var(--u)); }
+  .h-240 { height: calc(240 * var(--u)); }
+  .h-250 { height: calc(250 * var(--u)); }
   .h-276 { height: calc(276 * var(--u)); }
   .h-300 { height: calc(300 * var(--u)); }
   .h-374 { height: calc(374 * var(--u)); }
   .h-398 { height: calc(398 * var(--u)); }
+  .h-424 { height: calc(424 * var(--u)); }
+  .h-434 { height: calc(434 * var(--u)); }
   .h-420 { height: calc(420 * var(--u)); }
   .h-254 { height: calc(254 * var(--u)); }
+  .h-258 { height: calc(258 * var(--u)); }
   .h-352 { height: calc(352 * var(--u)); }
   .h-222 { height: calc(222 * var(--u)); }
   .h-94 { height: calc(94 * var(--u)); }
+  .h-110 { height: calc(110 * var(--u)); }
   .h-146 { height: calc(146 * var(--u)); }
   .h-114 { height: calc(114 * var(--u)); }
 
@@ -338,7 +345,7 @@
   }
   .arch-wrap {
     width: 100%;
-    height: calc(205 * var(--u));
+    height: calc(170 * var(--u));
     border-radius: calc(4 * var(--u));
     background: #fff;
     border: calc(0.8 * var(--u)) solid var(--line);
@@ -365,8 +372,12 @@
   }
   .contrib-img { height: calc(116 * var(--u)); margin-top: calc(2.5 * var(--u)); }
   .protocol-img { height: calc(104 * var(--u)); margin: calc(3 * var(--u)) 0; }
-  .fault-strip { height: calc(53 * var(--u)); margin-top: calc(2.4 * var(--u)); }
-  .problem-map-img { height: calc(70 * var(--u)); margin-top: calc(2.0 * var(--u)); }
+  .fault-strip {
+    height: auto;
+    margin-top: calc(2.4 * var(--u));
+    object-fit: contain;
+  }
+  .problem-map-img { height: calc(82 * var(--u)); margin-top: calc(2.0 * var(--u)); }
   .problem-list {
     margin-top: calc(0.8 * var(--u));
   }
@@ -566,7 +577,7 @@
         <div class="question"><strong>Goal:</strong> a discoverable, observable, fault-aware travel-planning network.</div>
       </article>
 
-      <article class="card h-196" data-measure-role="card">
+      <article class="card h-214" data-measure-role="card">
         <div class="sec-head"><div class="num">2</div><h2>Problems</h2></div>
         <ul class="problem-list">
           <li><strong>Service discovery is fragile:</strong> registry state, ports, and health can change while a task is being routed.</li>
@@ -593,7 +604,7 @@
     </div>
 
     <div class="column" data-measure-role="column">
-      <article class="card h-276" data-measure-role="card">
+      <article class="card h-240" data-measure-role="card">
         <div class="sec-head"><div class="num">4</div><h2>System Architecture <span class="headline">main design</span></h2></div>
         <div class="arch-flow">User &rarr; Coordinator &rarr; Registry &rarr; A2A/TCP &rarr; Agent &rarr; MCP Gateway &rarr; JSON-RPC &rarr; MCP Server</div>
         <div class="arch-wrap">
@@ -601,7 +612,7 @@
         </div>
       </article>
 
-      <article class="card h-398" data-measure-role="card">
+      <article class="card h-434" data-measure-role="card">
         <div class="sec-head"><div class="num">5</div><h2>Protocol Advantages &amp; Fault Tolerance</h2></div>
         <p><strong>Protocol advantage:</strong> A2A replaces HTTP POST on the agent data plane with a lightweight TCP frame: a 4-byte length header plus JSON payload. This removes HTTP header/parsing overhead, keeps a reusable channel for frequent task dispatch, and makes message boundaries explicit in the TCP byte stream.</p>
         <img class="figure-img protocol-img" src="images/tcp_protocol_imagegen_v3_flat_crop.png" alt="Flatter imagegen comparison of HTTP requests and A2A TCP frames">
@@ -626,7 +637,7 @@
         <div class="caption"><strong>Measured effect:</strong> cache and coalescing reduce upstream calls to <span class="gold-text">1</span>; backpressure caps accepted upstream work at <span class="gold-text">2</span>; circuit-open calls average <span class="gold-text">16.4x faster</span> than direct slow timeouts. <strong>Benchmark setting:</strong> local Weather MCP, 3 repeats; repeated requests 10-100, duplicate/unique bursts 1-40/2-40 concurrent requests, and 8 sequential timeout calls.</div>
       </article>
 
-      <article class="card h-254 qa-card" data-measure-role="card">
+      <article class="card h-258 qa-card" data-measure-role="card">
         <div class="sec-head"><div class="num">7</div><h2>Travel QA Example and Failure Semantics</h2></div>
         <div class="qa-wrap">
           <div class="qa-log">
@@ -646,7 +657,7 @@
         </ul>
       </article>
 
-      <article class="card h-114" data-measure-role="card">
+      <article class="card h-110" data-measure-role="card">
         <div class="sec-head"><div class="num">8</div><h2>Reference&amp;Code</h2></div>
         <div class="reference-code-grid">
           <ol class="references-list">
@@ -665,7 +676,7 @@
 
   <footer class="footer" data-measure-role="footer">
     <div>A2A-MCP · Computer Networking Project 2026 · Agent-A2A repository</div>
-    <div>Shanghai Jiao Tong University · Distributed agent communication network</div>
+    <div>Shanghai Jiao Tong University · Governed Communication for Multi-Agent Travel Planning</div>
   </footer>
 </main>
 </body>
