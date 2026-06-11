@@ -7,3 +7,8 @@ logs/*.log
 logs/*.txt
 logs
 api_test.py
+
+poster/.posterly-venv/
+poster/scripts/
+.pytest_cache/
+.codex/
