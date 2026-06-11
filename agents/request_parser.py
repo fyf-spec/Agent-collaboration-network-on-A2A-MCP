@@ -19,6 +19,24 @@ CN_DIGITS = {
     "十": 10,
 }
 
+KNOWN_CITIES = [
+    "北京",
+    "上海",
+    "广州",
+    "深圳",
+    "杭州",
+    "南京",
+    "成都",
+    "重庆",
+    "武汉",
+    "西安",
+    "苏州",
+    "天津",
+    "黄山",
+    "泰州",
+    "柳州",
+]
+
 
 def extract_travel_task_from_payload(task_payload: dict[str, Any], *, capability: str = "") -> dict[str, Any]:
     context = task_payload.get("context") if isinstance(task_payload, dict) else {}
@@ -154,16 +172,18 @@ def _extract_origin_city(text: str) -> str | None:
 
 
 def _extract_destination_city(text: str, *, origin_city: Any = None) -> str:
-    match = re.search(r"(?:去|到)([\u4e00-\u9fa5]{2,18}?)(?:玩|旅游|旅行|看看|看|住|待|逛|$|[，,。；;\s])", text)
-    if match:
-        destination = _clean_place(match.group(1))
-        if destination and destination != origin_city:
-            return destination
-    generic = re.search(r"([\u4e00-\u9fa5]{2,12})(?:玩|旅游|旅行)(?:\d+|[一二两三四五六七八九十])?天", text)
-    if generic:
-        destination = _clean_place(generic.group(1))
-        if destination and destination != origin_city:
-            return destination
+    for candidate in _destination_candidates(text):
+        destination = _clean_place(candidate)
+        if not destination or destination == origin_city:
+            continue
+        destination_city = _city_from_place(destination)
+        if destination_city and destination_city != origin_city:
+            return destination_city
+        return destination
+
+    fallback_city = _city_from_place(text)
+    if fallback_city and fallback_city != origin_city:
+        return fallback_city
     return "未指定"
 
 
@@ -176,6 +196,44 @@ def _clean_place(value: str) -> str:
     text = re.sub(r"\u7684$", "", text)
     text = re.sub(r"(?:附近|周边)$", "", text)
     return text.strip()
+
+
+def _city_from_place(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    for city in KNOWN_CITIES:
+        if city in text:
+            return city
+
+    match = re.search(r"([\u4e00-\u9fa5]{2,12}?)(?:市|城区|区)", text)
+    if match:
+        city = match.group(1).strip()
+        if city.endswith("州") or city.endswith("京") or city.endswith("海") or city.endswith("圳") or city.endswith("庆"):
+            return city
+
+    return ""
+
+
+def _destination_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+
+    for match in re.finditer(r"(?:去|到|前往)(.{0,40})", text):
+        window = str(match.group(1) or "").strip()
+        if window:
+            candidates.append(window)
+
+    precise = re.search(r"(?:去|到)([\u4e00-\u9fa5]{2,18}?)(?:玩|旅游|旅行|看看|看|住|待|逛|$|[，,。；;\s])", text)
+    if precise:
+        candidates.append(str(precise.group(1) or "").strip())
+
+    generic = re.search(r"([\u4e00-\u9fa5]{2,12})(?:玩|旅游|旅行)(?:\d+|[一二两三四五六七八九十])?天", text)
+    if generic:
+        candidates.append(str(generic.group(1) or "").strip())
+
+    # 去重，保持原有优先级
+    return list(dict.fromkeys(item for item in candidates if item))
 
 
 def _extract_days(text: str) -> int:

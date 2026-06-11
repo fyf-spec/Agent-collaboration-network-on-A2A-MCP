@@ -24,6 +24,7 @@ from agents.request_parser import extract_travel_task_from_context
 
 from common.config import (
     AGENTS,
+    ATTRACTION_LLM_MAX_SPOTS,
     COORDINATOR_NAME,
     MCP_HTTP_TIMEOUT_SECONDS,
     MCP_SERVERS,
@@ -469,6 +470,8 @@ def build_compact_spots(spots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for index, spot in enumerate(quality_spots, start=1):
         if not isinstance(spot, dict):
             continue
+        if index >= ATTRACTION_LLM_MAX_SPOTS:
+            break
         area = spot.get("area") or spot.get("area_cluster") or "未知区域"
         compact.append(
             {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 import time
@@ -15,13 +16,22 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
-from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
+from common.config import (
+    AGENTS,
+    COORDINATOR_NAME,
+    MCP_GATEWAY,
+    MCP_HTTP_TIMEOUT_SECONDS,
+    MCP_SERVERS,
+    TRAFFIC_LLM_MAX_OPTIONS_PER_SEGMENT,
+)
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.mcp_routing import mcp_endpoint_for_server
 from common.runtime import no_llm_mode_enabled
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
 from llm_client import llm_small as llm
+
+WALKABLE_DISTANCE_METERS = 600
 
 
 class TrafficAgent(BaseAgent):
@@ -243,7 +253,15 @@ class TrafficAgent(BaseAgent):
         route_results: list[dict[str, Any]] = []
         for index, segment in enumerate(segments):
             route = routes[index] if index < len(routes) and isinstance(routes[index], dict) else {}
-            route_results.append({"day": segment.get("day"), "index": segment.get("index"), **route})
+            route_results.append(
+                {
+                    **route,
+                    "day": segment.get("day"),
+                    "index": segment.get("index"),
+                    "segment_id": segment.get("segment_id"),
+                    "same_area": bool(segment.get("same_area")),
+                }
+            )
         return route_results
 
     def call_intercity_transport_mcp(self, task_id: str, *, travel_task: dict[str, Any]) -> dict[str, Any]:
@@ -352,51 +370,34 @@ def _build_route_segments(daily_plan: dict[str, Any], hotel_plan: dict[str, Any]
         next_index = 1
         if hotel_name and clean_spots:
             destination_point = spot_details.get(clean_spots[0], {"name": clean_spots[0]})
-            segments.append(
-                {
-                    "day": str(day_key),
-                    "index": next_index,
-                    "origin": hotel_name,
-                    "destination": clean_spots[0],
-                    **_endpoint_fields("origin", hotel_point),
-                    **_endpoint_fields("destination", destination_point),
-                }
-            )
+            segments.append(_route_segment(str(day_key), next_index, hotel_name, clean_spots[0], hotel_point, destination_point))
             next_index += 1
         for index in range(len(clean_spots) - 1):
             origin_point = spot_details.get(clean_spots[index], {"name": clean_spots[index]})
             destination_point = spot_details.get(clean_spots[index + 1], {"name": clean_spots[index + 1]})
             segments.append(
-                {
-                    "day": str(day_key),
-                    "index": next_index,
-                    "origin": clean_spots[index],
-                    "destination": clean_spots[index + 1],
-                    **_endpoint_fields("origin", origin_point),
-                    **_endpoint_fields("destination", destination_point),
-                }
+                _route_segment(
+                    str(day_key),
+                    next_index,
+                    clean_spots[index],
+                    clean_spots[index + 1],
+                    origin_point,
+                    destination_point,
+                )
             )
             next_index += 1
         if hotel_name and clean_spots:
             origin_point = spot_details.get(clean_spots[-1], {"name": clean_spots[-1]})
-            segments.append(
-                {
-                    "day": str(day_key),
-                    "index": next_index,
-                    "origin": clean_spots[-1],
-                    "destination": hotel_name,
-                    **_endpoint_fields("origin", origin_point),
-                    **_endpoint_fields("destination", hotel_point),
-                }
-            )
+            segments.append(_route_segment(str(day_key), next_index, clean_spots[-1], hotel_name, origin_point, hotel_point))
     if not segments:
         # Keep demo usable even if attraction plan is empty.
-        segments.append({"day": "day1", "index": 1, "origin": "住宿地", "destination": "核心景区"})
-    return segments[:18]
+        segments.append({"day": "day1", "index": 1, "segment_id": "day1_seg1", "origin": "住宿地", "destination": "核心景区"})
+    return segments
 
 
 def _route_segment_payload(segment: dict[str, Any], default_mode: str = "transit") -> dict[str, Any]:
     return {
+        "segment_id": segment.get("segment_id"),
         "origin": segment.get("origin"),
         "destination": segment.get("destination"),
         "origin_name": segment.get("origin_name") or segment.get("origin"),
@@ -407,6 +408,7 @@ def _route_segment_payload(segment: dict[str, Any], default_mode: str = "transit
         "destination_id": segment.get("destination_id"),
         "origin_address": segment.get("origin_address"),
         "destination_address": segment.get("destination_address"),
+        "same_area": bool(segment.get("same_area")),
         "mode": segment.get("mode") or default_mode,
     }
 
@@ -449,11 +451,12 @@ def _hotel_origin_point(hotel_plan: dict[str, Any] | None) -> dict[str, Any]:
             return {
                 "id": selected.get("hotel_id"),
                 "name": name,
+                "area": selected.get("area"),
                 "location": selected.get("location"),
                 "address": selected.get("address"),
             }
     area = str(hotel_plan.get("recommended_area") or "").strip()
-    return {"name": f"住宿地（{area}）" if area else ""}
+    return {"name": f"住宿地（{area}）" if area else "", "area": area}
 
 
 def _endpoint_fields(prefix: str, point: dict[str, Any]) -> dict[str, Any]:
@@ -463,6 +466,69 @@ def _endpoint_fields(prefix: str, point: dict[str, Any]) -> dict[str, Any]:
         f"{prefix}_id": point.get("spot_id") or point.get("hotel_id") or point.get("id"),
         f"{prefix}_address": point.get("address"),
     }
+
+
+def _route_segment(
+    day: str,
+    index: int,
+    origin: str,
+    destination: str,
+    origin_point: dict[str, Any],
+    destination_point: dict[str, Any],
+) -> dict[str, Any]:
+    distance_m = _distance_meters(origin_point.get("location"), destination_point.get("location"))
+    same_area = _same_area(origin_point, destination_point) or (
+        distance_m is not None and distance_m <= WALKABLE_DISTANCE_METERS
+    )
+    mode = "walk" if same_area and distance_m is not None and distance_m <= WALKABLE_DISTANCE_METERS else None
+    return {
+        "day": day,
+        "index": index,
+        "segment_id": f"{day}_seg{index}",
+        "origin": origin,
+        "destination": destination,
+        "same_area": same_area,
+        "mode": mode,
+        **_endpoint_fields("origin", origin_point),
+        **_endpoint_fields("destination", destination_point),
+    }
+
+
+def _same_area(origin_point: dict[str, Any], destination_point: dict[str, Any]) -> bool:
+    origin_area = _normalize_area(origin_point.get("area"))
+    destination_area = _normalize_area(destination_point.get("area"))
+    return bool(origin_area and destination_area and origin_area == destination_area)
+
+
+def _normalize_area(value: Any) -> str:
+    return str(value or "").replace(" ", "").strip()
+
+
+def _distance_meters(origin_location: Any, destination_location: Any) -> float | None:
+    origin = _parse_location(origin_location)
+    destination = _parse_location(destination_location)
+    if not origin or not destination:
+        return None
+    lng1, lat1 = origin
+    lng2, lat2 = destination
+    radius = 6371000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lng2 - lng1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _parse_location(value: Any) -> tuple[float, float] | None:
+    text = str(value or "").strip()
+    if "," not in text:
+        return None
+    left, right = text.split(",", 1)
+    try:
+        return float(left), float(right)
+    except ValueError:
+        return None
 
 
 def _hotel_origin_name(hotel_plan: dict[str, Any] | None) -> str:
@@ -512,7 +578,7 @@ def _build_segments_for_llm(route_results: list[dict[str, Any]]) -> list[dict[st
                 "from": route.get("origin"),
                 "to": route.get("destination"),
                 "same_area": same_area,
-                "options": options,
+                "options": options[: max(1, TRAFFIC_LLM_MAX_OPTIONS_PER_SEGMENT)],
             }
         )
     return segments
@@ -532,7 +598,7 @@ def _traffic_route_selector_prompt(
         "days": days,
         "general_constraints": general_constraints,
         "traffic_constraints": traffic_constraints,
-        "upstream_results": upstream_results,
+        # "upstream_results": upstream_results,
         "segments": segments,
         "output_schema": {
             "selected_route_ids": {
@@ -547,7 +613,7 @@ def _traffic_route_selector_prompt(
     return "\n".join(
         [
             "你是路线选择器。每个 segment 必须从 options 中选择一个已有 route_id。",
-            "请仔细参考 upstream_results 内的前置依赖 agents 给出的结果，并据此作出合理调整。",
+            #"请仔细参考 upstream_results 内的前置依赖 agents 给出的结果，并据此作出合理调整。",
             pref_guidance,
             "只能选择已有 route_id；不要编造路线；不要改写路线内容；不要输出完整 traffic_plan。",
             "不要输出 route、duration、cost 等字段；不要 Markdown；不要解释；不要推理过程；只输出合法 JSON。",
