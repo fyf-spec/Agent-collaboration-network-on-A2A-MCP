@@ -59,9 +59,9 @@ MCP_GATEWAY = {
     "host": "127.0.0.1",
     "port": 8100,
     "path": "/",
-    "enabled": True,
-    "cache_ttl_seconds": 300.0,  # 默认TTL，被 per_method_ttl 覆盖
-    "cache_max_entries": 512,
+    "enabled": _env_bool("MCP_GATEWAY_ENABLED", True),
+    "cache_ttl_seconds": float(os.environ.get("MCP_GATEWAY_CACHE_TTL_SECONDS", 300.0)),  # 默认TTL，被 per_method_ttl 覆盖
+    "cache_max_entries": int(os.environ.get("MCP_GATEWAY_CACHE_MAX_ENTRIES", 512)),
     "per_method_ttl_seconds": {
         # 天气数据每天变化，短TTL；其他数据稳定，长TTL
         "get_weather": 86400.0,       # 1天
@@ -71,12 +71,12 @@ MCP_GATEWAY = {
         "search_attractions": 2592000.0,  # 30天
         "get_intercity_transport": 2592000.0,  # 30天
     },
-    "max_concurrent_per_method": 10,
-    "rate_limit_wait_seconds": 0.5,
-    "coalesce_wait_seconds": 3.0,
+    "max_concurrent_per_method": int(os.environ.get("MCP_GATEWAY_MAX_CONCURRENT_PER_METHOD", 10)),
+    "rate_limit_wait_seconds": float(os.environ.get("MCP_GATEWAY_RATE_LIMIT_WAIT_SECONDS", 0.5)),
+    "coalesce_wait_seconds": float(os.environ.get("MCP_GATEWAY_COALESCE_WAIT_SECONDS", 3.0)),
     "upstream_timeout_seconds": MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS,
-    "circuit_failure_threshold": 3,
-    "circuit_cooldown_seconds": 10.0,
+    "circuit_failure_threshold": int(os.environ.get("MCP_GATEWAY_CIRCUIT_FAILURE_THRESHOLD", 3)),
+    "circuit_cooldown_seconds": float(os.environ.get("MCP_GATEWAY_CIRCUIT_COOLDOWN_SECONDS", 10.0)),
 }
 
 MCP_SERVERS = {

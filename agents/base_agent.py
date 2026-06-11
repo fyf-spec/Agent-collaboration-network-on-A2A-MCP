@@ -19,7 +19,6 @@ from common.config import (
     BACKUP_REGISTRY_HOST,
     BACKUP_REGISTRY_PORT,
     COORDINATOR_NAME,
-    MCP_GATEWAY,
     MCP_HTTP_TIMEOUT_SECONDS,
     MCP_SERVERS,
 )
@@ -27,6 +26,7 @@ from common.http_client import HttpJsonClientError, post_json
 import common.logger
 import logging
 from common.logger import log_network_event
+from common.mcp_routing import mcp_endpoint_for_server, mcp_gateway_enabled
 from common.runtime import no_llm_mode_enabled
 from common.schemas import (
     PayloadValidationError,
@@ -465,7 +465,7 @@ class BaseAgent:
                     "capability": self.capability,
                     "mcp_server": MCP_SERVERS[self.mcp_server_key]["name"],
                     "mcp_method": MCP_SERVERS[self.mcp_server_key]["method"],
-                    "mcp_gateway": MCP_GATEWAY["name"],
+                    "mcp_gateway": "mcp_gateway" if mcp_gateway_enabled() else None,
                     "mcp_result": mcp_result,
                     "llm_error": llm_error,
                     "elapsed_ms": round(elapsed_ms, 2),
@@ -493,8 +493,7 @@ class BaseAgent:
         # 调用 MCP 服务器获取数据
         task_id = str(task_payload["task_id"])
         server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
-        network_target = str(MCP_GATEWAY["name"])
+        url, network_target, _gateway_used = mcp_endpoint_for_server(self.mcp_server_key)
         method = str(server["method"])
         rpc_payload = {
             "jsonrpc": "2.0",
