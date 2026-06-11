@@ -3797,6 +3797,7 @@ def initialize_runtime_control_defaults() -> None:
         "task_timeout_seconds": float(DEFAULT_TASK_TIMEOUT_SECONDS_CONFIG),
         "a2a_realtime_mcp_enabled": bool(DEFAULT_REALTIME_MCP_ENABLED),
         "mcp_realtime_fallback_to_mock": bool(DEFAULT_MCP_REALTIME_FALLBACK_TO_MOCK),
+        "llm_enable_thinking": str(os.getenv("A2A_LLM_ENABLE_THINKING", "0")).strip().lower() in {"1", "true", "yes", "on"},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -3896,6 +3897,7 @@ with col_sidebar:
         "MCP_REALTIME_TIMEOUT_SECONDS": str(mcp_realtime_timeout),
         "A2A_REALTIME_MCP_ENABLED": "1" if bool(st.session_state.get("a2a_realtime_mcp_enabled")) else "0",
         "MCP_REALTIME_FALLBACK_TO_MOCK": "1" if bool(st.session_state.get("mcp_realtime_fallback_to_mock")) else "0",
+        "A2A_LLM_ENABLE_THINKING": "1" if bool(st.session_state.get("llm_enable_thinking")) else "0",
         "DEFAULT_TASK_TIMEOUT_SECONDS": str(task_timeout),
         "MAX_TASK_TIMEOUT_SECONDS": str(task_timeout),
         "PYTHONIOENCODING": "utf-8"
@@ -3954,6 +3956,11 @@ with col_main:
         "请描述您的旅行需求：", 
         value="明天打算从上海去广州玩3天，要求穷游并且尽量乘坐地铁，必须去越秀公园看看。"
     )
+    st.toggle(
+        "深度思考",
+        key="llm_enable_thinking",
+        help="开启后本轮任务会允许模型进行更深的思考，但可能会更慢。",
+    )
 
     with st.expander("MCP Gateway Demo 测试", expanded=False):
         render_gateway_demo_panel(env_config)
@@ -3994,10 +4001,16 @@ with col_main:
                                 st.write(f"真实抓包已启动：{capture.get('interface_label', capture.get('interface', ''))}")
                             else:
                                 st.warning(f"真实抓包未启动：{capture.get('error', 'unknown error')}")
+                        st.write(f"深度思考模式：{'开启' if bool(st.session_state.get('llm_enable_thinking')) else '关闭'}")
                         st.write("正在生成总体规划与工作流 DAG，请稍等...")
                         response = requests.post(
                             COORDINATOR_URL,
-                            json={"question": query, "timeout": task_timeout, "async": True},
+                            json={
+                                "question": query,
+                                "timeout": task_timeout,
+                                "async": True,
+                                "enable_thinking": bool(st.session_state.get("llm_enable_thinking")),
+                            },
                             timeout=task_timeout + 1
                         )
                         response.raise_for_status()

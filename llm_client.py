@@ -9,6 +9,8 @@ selection and traffic option selection, rather than long free-form answers.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
 import os
@@ -25,6 +27,7 @@ load_dotenv()
 
 DEFAULT_BASE_URL = "https://api-inference.modelscope.cn/v1"
 DEFAULT_MODEL = "Qwen/Qwen3.5-35B-A3B"
+_REQUEST_ENABLE_THINKING: ContextVar[bool | None] = ContextVar("llm_request_enable_thinking", default=None)
 
 
 class LLMClientError(RuntimeError):
@@ -124,6 +127,7 @@ class LLMClient:
             "messages": messages,
             "stream": False,
             "timeout": timeout_seconds or self.timeout_seconds,
+            "extra_body": {"enable_thinking": _effective_enable_thinking()},
         }
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
@@ -167,6 +171,7 @@ class LLMClient:
             "messages": messages,
             "stream": True,
             "timeout": timeout_seconds or self.timeout_seconds,
+            "extra_body": {"enable_thinking": _effective_enable_thinking()},
         }
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
@@ -203,6 +208,29 @@ def _llm_api_key() -> str | None:
         if value and value.strip():
             return value.strip()
     return None
+
+
+@contextmanager
+def llm_request_options(*, enable_thinking: bool | None = None) -> Iterator[None]:
+    token = _REQUEST_ENABLE_THINKING.set(enable_thinking)
+    try:
+        yield
+    finally:
+        _REQUEST_ENABLE_THINKING.reset(token)
+
+
+def _effective_enable_thinking() -> bool:
+    override = _REQUEST_ENABLE_THINKING.get()
+    if override is not None:
+        return bool(override)
+    return _env_flag("A2A_LLM_ENABLE_THINKING", False)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _infer_provider(base_url: str) -> str:

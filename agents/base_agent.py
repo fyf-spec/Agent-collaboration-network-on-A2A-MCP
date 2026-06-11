@@ -54,7 +54,7 @@ from common.tcp_a2a import (
     validate_envelope,
 )
 from agents.request_parser import city_from_request
-from llm_client import LLMClientError, llm
+from llm_client import LLMClientError, llm, llm_request_options
 
 
 logger = logging.getLogger("base_agent")
@@ -151,7 +151,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         )
 
         worker = threading.Thread(
-            target=self.server.agent.process_task,
+            target=self.server.agent.process_task_with_request_options,
             args=(payload,),
             name=f"{self.server.agent.agent_name}-{task_id[:8]}",
             daemon=True,
@@ -489,6 +489,10 @@ class BaseAgent:
 
         self.send_result_to_coordinator(task_payload, result_payload)
 
+    def process_task_with_request_options(self, task_payload: dict[str, Any]) -> None:
+        with llm_request_options(enable_thinking=_task_enable_thinking(task_payload)):
+            self.process_task(task_payload)
+
     def call_mcp_server(self, task_payload: dict[str, Any]) -> dict[str, Any]:
         # 调用 MCP 服务器获取数据
         task_id = str(task_payload["task_id"])
@@ -767,4 +771,25 @@ def _infer_error_type(exc: Exception) -> str:
     if reason is not None:
         return type(reason).__name__
     return type(cause).__name__
+
+
+def _task_enable_thinking(task_payload: dict[str, Any]) -> bool | None:
+    context = task_payload.get("context") if isinstance(task_payload, dict) else {}
+    if not isinstance(context, dict):
+        return None
+    request_options = context.get("request_options")
+    if isinstance(request_options, dict) and "enable_thinking" in request_options:
+        return _normalize_optional_bool(request_options.get("enable_thinking"))
+    coordinator_plan = context.get("coordinator_plan")
+    if isinstance(coordinator_plan, dict):
+        plan_request_options = coordinator_plan.get("request_options")
+        if isinstance(plan_request_options, dict) and "enable_thinking" in plan_request_options:
+            return _normalize_optional_bool(plan_request_options.get("enable_thinking"))
+    return None
+
+
+def _normalize_optional_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
