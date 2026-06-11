@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import common.logger
-from common.runtime import configure_runtime_env, runtime_mode_name
+from common.runtime import configure_runtime_env, env_bool, runtime_mode_name
 
 
 logger = logging.getLogger("start_all")
@@ -59,6 +59,8 @@ def run_services(
     *,
     mode: str | None = None,
     startup_delay_seconds: float = 0.3,
+    stdout=None,
+    stderr=None,
 ) -> Iterator[list[tuple[str, subprocess.Popen[str]]]]:
     mode_name = _normalize_mode(mode) if mode else runtime_mode_name()
     env = _build_child_env(mode_name)
@@ -66,6 +68,8 @@ def run_services(
 
     exclude_set = set(exclude or [])
     extra_args_dict = {name: list(args) for name, args in (extra_args or {}).items()}
+    if not env_bool("MCP_GATEWAY_ENABLED", True):
+        exclude_set.add("mcp_gateway")
 
     logger.info("Runtime mode: %s", mode_name)
     if mode_name == "no-llm":
@@ -85,6 +89,8 @@ def run_services(
                 cmd,
                 cwd=PROJECT_ROOT,
                 env=env,
+                stdout=stdout,
+                stderr=stderr,
             )
             processes.append((service.name, process))
             logger.info("started %s pid=%s", service.name, process.pid)

@@ -25,7 +25,6 @@ from agents.request_parser import extract_travel_task_from_context
 from common.config import (
     AGENTS,
     COORDINATOR_NAME,
-    MCP_GATEWAY,
     MCP_HTTP_TIMEOUT_SECONDS,
     MCP_SERVERS,
     REGISTRY_HOST,
@@ -33,6 +32,7 @@ from common.config import (
 )
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.mcp_routing import mcp_endpoint_for_server
 from common.runtime import no_llm_mode_enabled
 from common.schemas import (
     PayloadValidationError,
@@ -360,8 +360,7 @@ def _callback_result(task_id: str, reply_to: str, result_payload: dict[str, Any]
 
 def call_attraction_mcp(task_id: str, travel_task: dict[str, Any]) -> dict[str, Any]:
     config = MCP_SERVERS[MCP_SERVER_KEY]
-    url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
-    network_target = str(MCP_GATEWAY["name"])
+    url, network_target, _gateway_used = mcp_endpoint_for_server(MCP_SERVER_KEY)
     params = {
         "city": travel_task.get("destination_city") or travel_task.get("city") or "未指定",
         "days": travel_task.get("days", 3),
