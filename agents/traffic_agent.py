@@ -15,9 +15,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
-from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
+from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.mcp_routing import mcp_endpoint_for_server
 from common.runtime import no_llm_mode_enabled
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
 from llm_client import llm_small as llm
@@ -174,8 +175,7 @@ class TrafficAgent(BaseAgent):
 
 
     def call_routes_mcp(self, task_id: str, *, city: str, segments: list[dict[str, Any]], preference: str) -> list[dict[str, Any]]:
-        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
-        network_target = str(MCP_GATEWAY["name"])
+        url, network_target, _gateway_used = mcp_endpoint_for_server(self.mcp_server_key)
         # 把 preference 映射为 AMap 请求的 mode，否则默认 transit 没有 taxi 选项
         request_mode = _preference_to_amap_mode(preference)
         rpc_payload = {
@@ -247,8 +247,7 @@ class TrafficAgent(BaseAgent):
         return route_results
 
     def call_intercity_transport_mcp(self, task_id: str, *, travel_task: dict[str, Any]) -> dict[str, Any]:
-        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
-        network_target = str(MCP_GATEWAY["name"])
+        url, network_target, _gateway_used = mcp_endpoint_for_server(self.mcp_server_key)
         origin_city = str(travel_task.get("origin_city") or "未指定")
         destination_city = str(travel_task.get("destination_city") or travel_task.get("city") or "未指定")
         traffic_constraints = _constraint_section(travel_task, "traffic")

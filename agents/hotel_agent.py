@@ -14,9 +14,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
-from common.config import AGENTS, COORDINATOR_NAME, MCP_GATEWAY, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
+from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
+from common.mcp_routing import mcp_endpoint_for_server
 from common.runtime import no_llm_mode_enabled
 from common.schemas import RESULT_SUCCESS, build_error_result_payload, build_result_payload
 from llm_client import llm_small as llm
@@ -179,8 +180,7 @@ class HotelAgent(BaseAgent):
         area_selection: dict[str, Any],
     ) -> dict[str, Any]:
         server = MCP_SERVERS[self.mcp_server_key]
-        url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
-        network_target = str(MCP_GATEWAY["name"])
+        url, network_target, _gateway_used = mcp_endpoint_for_server(self.mcp_server_key)
         rpc_payload = {
             "jsonrpc": "2.0",
             "id": task_id,
