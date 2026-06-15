@@ -245,14 +245,14 @@ def normalize_attractions(
         # must_visit 加分（不会被过滤误杀）
         spot_name = str(spot.get("name") or "").lower()
         if any(mn in spot_name for mn in must_names_lower):
-            score = max(score, 6)
+            score = max(score, 20)
         scored.append((score, spot, fields))
 
     # 按分数降序排序
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # ── 先做名称前缀聚类（合并同景区子区域），再做坐标去重 ──
-    all_spots = [spot for _, spot, _ in scored if _score_spot(spot) >= 4]
+    all_spots = [spot for score, spot, _ in scored if score >= 4]
     clustered = _cluster_by_name_prefix(all_spots)
 
     spots: list[dict[str, Any]] = []
@@ -600,8 +600,9 @@ def _transit_candidate(item: dict[str, Any]) -> dict[str, Any]:
                 pass
     if pending_walk_meters >= 150:
         names.append(f"步行约{pending_walk_meters}m")
+    mode = "subway" if any(_is_subway_line_name(name) for name in names) else "bus"
     return {
-        "mode": "subway",
+        "mode": mode,
         "route": " -> ".join(names) or "AMap transit route",
         "duration_minutes": _seconds_to_minutes(item.get("duration")),
         "cost_yuan": _number_or_none(item.get("cost")),
@@ -620,6 +621,12 @@ def _short_route_line_name(name: str) -> str:
     return text.strip(" )）")
 
 
+def _is_subway_line_name(name: str) -> bool:
+    text = name.strip()
+    subway_keywords = ("地铁", "号线", "APM", "有轨电车", "城际", "快轨")
+    return any(keyword in text for keyword in subway_keywords)
+
+
 def _path_candidate(item: dict[str, Any], *, mode: str) -> dict[str, Any]:
     # 标准化驾车/步行方案
     is_drive = mode not in {"walk", "walking"}
@@ -633,7 +640,7 @@ def _path_candidate(item: dict[str, Any], *, mode: str) -> dict[str, Any]:
             cost = round(12 + km * 2.3, 1)
     return {
         "mode": "taxi" if is_drive else "walk",
-        "route": item.get("strategy") or "AMap route",
+        "route": item.get("strategy") or ("步行直达" if not is_drive else "打车直达"),
         "duration_minutes": _seconds_to_minutes(item.get("duration")),
         "cost_yuan": cost,
         "walk_minutes": _seconds_to_minutes(item.get("duration")) if mode in {"walk", "walking"} else 0,

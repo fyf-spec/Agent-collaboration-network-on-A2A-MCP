@@ -245,7 +245,6 @@
     width: calc(4 * var(--u));
     background: var(--purple);
   }
-  .h-146 { height: calc(152 * var(--u)); }
   .h-196 { height: calc(196 * var(--u)); }
   .h-214 { height: calc(214 * var(--u)); }
   .h-308 { height: calc(308 * var(--u)); }
@@ -253,17 +252,19 @@
   .h-250 { height: calc(250 * var(--u)); }
   .h-276 { height: calc(276 * var(--u)); }
   .h-300 { height: calc(300 * var(--u)); }
+  .h-326 { height: calc(326 * var(--u)); }
   .h-374 { height: calc(374 * var(--u)); }
   .h-398 { height: calc(398 * var(--u)); }
   .h-424 { height: calc(424 * var(--u)); }
-  .h-434 { height: calc(434 * var(--u)); }
+  .h-438 { height: calc(438 * var(--u)); }
   .h-420 { height: calc(420 * var(--u)); }
   .h-254 { height: calc(254 * var(--u)); }
-  .h-258 { height: calc(258 * var(--u)); }
+  .h-236 { height: calc(236 * var(--u)); }
+  .h-238 { height: calc(238 * var(--u)); }
   .h-352 { height: calc(352 * var(--u)); }
   .h-222 { height: calc(222 * var(--u)); }
   .h-94 { height: calc(94 * var(--u)); }
-  .h-110 { height: calc(110 * var(--u)); }
+  .h-106 { height: calc(106 * var(--u)); }
   .h-146 { height: calc(146 * var(--u)); }
   .h-114 { height: calc(114 * var(--u)); }
 
@@ -303,20 +304,30 @@
   p, li {
     font-family: Georgia, "Times New Roman", "Noto Serif CJK SC", "SimSun", serif;
     font-size: calc(10.9 * var(--u));
-    line-height: 1.08;
+    line-height: 1.14;
     color: #1f2d40;
   }
-  p { margin: 0 0 calc(3.2 * var(--u)); }
-  ul { margin: calc(1.8 * var(--u)) 0 0 calc(9 * var(--u)); padding: 0; }
-  li { margin-bottom: calc(1.65 * var(--u)); }
+  p { margin: 0 0 calc(3.5 * var(--u)); }
+  ul { margin: calc(1.8 * var(--u)) 0 0 calc(9 * var(--u)); padding-left: calc(2.0 * var(--u)); }
+  li { margin-bottom: calc(1.75 * var(--u)); }
   strong { color: var(--purple-deep); font-weight: 900; }
+  .protocol-copy {
+    /* font-size: calc(10.2 * var(--u)); */
+    line-height: 1.18;
+    /* margin-bottom: calc(1.75 * var(--u)); */
+  }
+  .protocol-bullet {
+    display: block;
+    margin-left: calc(15 * var(--u));
+    text-indent: calc(-5 * var(--u));
+  }
   .contrib-list {
     margin-top: calc(1.2 * var(--u));
   }
   .contrib-list li {
-    font-size: calc(9.8 * var(--u));
-    line-height: 1.02;
-    margin-bottom: calc(0.95 * var(--u));
+    font-size: calc(9.5 * var(--u));
+    line-height: 1.25;
+    margin-bottom: calc(2.5 * var(--u));
   }
   .gold-text { color: var(--gold); font-weight: 900; }
   .question {
@@ -340,7 +351,7 @@
     font-size: calc(8.6 * var(--u));
     line-height: 1.12;
     font-weight: 900;
-    color: #2d2738;
+    color: var(--purple-deep);
     text-align: center;
   }
   .arch-wrap {
@@ -370,45 +381,72 @@
     border-radius: calc(3 * var(--u));
     background: #fff;
   }
-  .contrib-img { height: calc(116 * var(--u)); margin-top: calc(2.5 * var(--u)); }
+  .contrib-img { height: calc(103 * var(--u)); margin-top: calc(2.5 * var(--u)); }
   .protocol-img { height: calc(104 * var(--u)); margin: calc(3 * var(--u)) 0; }
   .fault-strip {
     height: auto;
     margin-top: calc(2.4 * var(--u));
     object-fit: contain;
   }
-  .problem-map-img { height: calc(82 * var(--u)); margin-top: calc(2.0 * var(--u)); }
+  .problem-map-img { height: calc(80* var(--u)); margin-top: calc(2.0 * var(--u)); }
   .problem-list {
     margin-top: calc(0.8 * var(--u));
   }
   .problem-list li {
-    font-size: calc(9.9 * var(--u));
-    line-height: 1.0;
-    margin-bottom: calc(0.7 * var(--u));
+    font-size: calc(9.5 * var(--u));
+    line-height: 1.22;
+    margin-bottom: calc(2.0 * var(--u));
   }
   .chart-img { height: calc(224 * var(--u)); margin-top: calc(3 * var(--u)); }
-  .benchmark-summary-img { height: calc(135 * var(--u)); margin-top: calc(1.8 * var(--u)); }
+  .benchmark-summary-img { height: calc(124 * var(--u)); margin-top: calc(1.2 * var(--u)); }
+  .effect-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: calc(4 * var(--u));
+    margin: calc(1.4 * var(--u)) 0 calc(1.2 * var(--u));
+  }
+  .effect-card {
+    border-radius: calc(3 * var(--u));
+    padding: calc(3.2 * var(--u)) calc(3.8 * var(--u));
+    background: linear-gradient(180deg, rgba(234, 242, 255, 0.96), rgba(245, 249, 255, 0.96));
+    border: calc(0.8 * var(--u)) solid rgba(23, 107, 214, 0.15);
+    text-align: center;
+  }
+  .effect-value {
+    color: var(--blue);
+    font-size: calc(12.4 * var(--u));
+    line-height: 1;
+    font-weight: 900;
+  }
+  .effect-label {
+    margin-top: calc(1.2 * var(--u));
+    color: var(--purple-deep);
+    font-size: calc(6.7 * var(--u));
+    line-height: 1.08;
+    font-weight: 900;
+  }
   .metric-list {
-    margin: calc(1.2 * var(--u)) 0 calc(1.6 * var(--u)) calc(9 * var(--u));
+    margin: calc(1.2 * var(--u)) 0 0 calc(9 * var(--u));
     padding: 0;
   }
   .metric-list li {
-    font-size: calc(7.8 * var(--u));
-    line-height: 1.02;
-    margin-bottom: calc(0.45 * var(--u));
+    font-size: calc(7.2 * var(--u));
+    line-height: 1.12;
+    margin-bottom: calc(2.0 * var(--u));
+    margin-top: calc(3.0 * var(--u));
     white-space: normal;
   }
   .caption {
-    margin-top: calc(1.8 * var(--u));
+    margin-top: calc(3.0 * var(--u));
     color: #62586d;
     font-family: Georgia, "Times New Roman", serif;
-    font-size: calc(6.9 * var(--u));
+    font-size: calc(6.6 * var(--u));
     line-height: 1.08;
   }
 
   .qa-wrap {
     width: 100%;
-    height: calc(152 * var(--u));
+    height: calc(146 * var(--u));
     border-radius: calc(4 * var(--u));
     background: #fffaf2;
     border: calc(0.8 * var(--u)) solid var(--line);
@@ -425,11 +463,11 @@
   .qa-title {
     font-size: calc(8.15 * var(--u));
     font-weight: 900;
-    color: var(--blue);
-    line-height: 1.05;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    color: var(--purple);
+    line-height: 1.5;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
   }
   .log-line {
     display: grid;
@@ -481,14 +519,15 @@
   }
   .qa-compact li {
     font-size: calc(8.8 * var(--u));
-    line-height: 1.02;
+    line-height: 1.08;
     margin-bottom: calc(1.0 * var(--u));
   }
   .qa-card ul {
-    margin-top: calc(1.4 * var(--u));
+    margin: calc(0.8 * var(--u)) 0 0 calc(12 * var(--u));
   }
   .qa-card li {
-    margin-bottom: calc(0.85 * var(--u));
+    margin-bottom: calc(3.0 * var(--u));
+    margin-top: calc(3.0 * var(--u));
   }
 
   .references-list {
@@ -498,8 +537,8 @@
   .references-list li {
     font-family: Georgia, "Times New Roman", "Noto Serif CJK SC", "SimSun", serif;
     font-size: calc(8.1 * var(--u));
-    line-height: 1.06;
-    margin-bottom: calc(1.05 * var(--u));
+    line-height: 1.12;
+    margin-bottom: calc(1.12 * var(--u));
   }
   .reference-code-grid {
     display: grid;
@@ -508,8 +547,8 @@
     align-items: start;
   }
   .code-qr {
-    width: calc(70 * var(--u));
-    height: calc(70 * var(--u));
+    width: calc(66 * var(--u));
+    height: calc(66 * var(--u));
     object-fit: contain;
     border: calc(0.7 * var(--u)) solid var(--line);
     border-radius: calc(3 * var(--u));
@@ -581,7 +620,7 @@
         <div class="sec-head"><div class="num">2</div><h2>Problems</h2></div>
         <ul class="problem-list">
           <li><strong>Service discovery is fragile:</strong> registry state, ports, and health can change while a task is being routed.</li>
-          <li><strong>TCP is a byte stream:</strong> A2A needs task id, length prefix, ACK, RESULT, and ERROR boundaries.</li>
+          <li><strong>TCP is a byte stream:</strong> raw TCP provides no inherent boundaries, necessitating custom framing to parse structured A2A tasks and status codes.</li>
           <li><strong>Tool calls amplify traffic:</strong> repeated weather and short-window duplicate calls hit MCP servers unnecessarily.</li>
           <li><strong>Partial failures are normal:</strong> missing agents or slow MCP servers should degrade the answer, not break the whole DAG.</li>
         </ul>
@@ -591,20 +630,20 @@
       <article class="card h-308" data-measure-role="card">
         <div class="sec-head"><div class="num">3</div><h2>Contributions</h2></div>
         <ul class="contrib-list">
-          <li><strong>Coordinator:</strong> decomposes travel requests, builds a dependency-aware DAG, routes tasks, waits for callbacks, and merges partial results.</li>
-          <li><strong>Registry Center:</strong> supports primary/backup discovery; agents register capability, host, port, health, and route metadata instead of hard-coded endpoints.</li>
-          <li><strong>Agents:</strong> five independent workers cover weather, traffic, attraction, hotel, and packing; each wraps MCP data into task-specific advice.</li>
-          <li><strong>A2A/TCP:</strong> uses length-prefix frames, task ids, ACK/RESULT/ERROR states, heartbeat, and dispatch logs over persistent TCP channels.</li>
-          <li><strong>MCP Gateway:</strong> centralizes MCP-side cache reuse, duplicate coalescing, backpressure, circuit breaking, and /metrics observability.</li>
-          <li><strong>MCP tools:</strong> expose weather, traffic, attraction, hotel, and packing services as HTTP/JSON-RPC endpoints behind the Gateway.</li>
-          <li><strong>Fault tolerance:</strong> handles registry failover, capability misses, MCP timeout, retry/no-LLM fallback, and explicit degraded answers.</li>
+          <li><strong>Intelligent Coordinator</strong> that decomposes travel requests, dispatches sub-tasks to domain agents via a dependency-aware DAG, and merge their results.</li>
+          <li><strong>Primary/Backup Registry Centers</strong> that enable dynamic agent discovery through heartbeat monitoring instead of hard-coded endpoints.</li>
+          <li><strong>Five specialized agents</strong> (weather, traffic, attraction, hotel, and packing) that wrap external MCP tools into task-specific planning advice.</li>
+          <li><strong>A2A/TCP protocol</strong> with explicit message framing (length-prefix), state tracking (ACK/RESULT/ERROR), and persistent channel management.</li>
+          <li><strong>MCP Gateway</strong> that centralizes MCP-side cache reuse, duplicate coalescing, backpressure, circuit breaking, and /metrics observability.</li>
+          <li><strong>MCP tools</strong> that expose services as HTTP/JSON-RPC endpoints behind Gateway.</li>
+          <li><strong>Fault-tolerance designs</strong> handle registry failover, capability misses, MCP timeout, retry/no-LLM fallback, and explicit degraded answers.</li>
         </ul>
         <img class="contrib-img" src="images/contributions_fault_band.png" alt="Two-by-three contribution modules with a full-width fault-tolerance band">
       </article>
     </div>
 
     <div class="column" data-measure-role="column">
-      <article class="card h-240" data-measure-role="card">
+      <article class="card h-236" data-measure-role="card">
         <div class="sec-head"><div class="num">4</div><h2>System Architecture <span class="headline">main design</span></h2></div>
         <div class="arch-flow">User &rarr; Coordinator &rarr; Registry &rarr; A2A/TCP &rarr; Agent &rarr; MCP Gateway &rarr; JSON-RPC &rarr; MCP Server</div>
         <div class="arch-wrap">
@@ -612,9 +651,9 @@
         </div>
       </article>
 
-      <article class="card h-434" data-measure-role="card">
+      <article class="card h-438" data-measure-role="card">
         <div class="sec-head"><div class="num">5</div><h2>Protocol Advantages &amp; Fault Tolerance</h2></div>
-        <p><strong>Protocol advantage:</strong> A2A replaces HTTP POST on the agent data plane with a lightweight TCP frame: a 4-byte length header plus JSON payload. This removes HTTP header/parsing overhead, keeps a reusable channel for frequent task dispatch, and makes message boundaries explicit in the TCP byte stream.</p>
+        <p class="protocol-copy"><strong>Protocol advantage:</strong> A2A replaces HTTP POST on the agent data plane with a lightweight TCP frame: a 4-byte length header plus JSON payload.<br><span class="protocol-bullet">• cuts HTTP header and parsing overhead</span><span class="protocol-bullet">• keeps a reusable channel for frequent task dispatch</span><span class="protocol-bullet">• makes message boundaries explicit in the TCP byte stream</span></p>
         <img class="figure-img protocol-img" src="images/tcp_protocol_imagegen_v3_flat_crop.png" alt="Flatter imagegen comparison of HTTP requests and A2A TCP frames">
         <p><strong>Fault-tolerance design:</strong> each failure has a local recovery boundary: registry failover, agent degradation, Gateway fail-fast, and service power-off recovery with visible logs.</p>
         <img class="figure-img fault-strip" src="images/fault_registry_imagegen_v5_flat_crop.png" alt="Registry failover mechanism imagegen strip">
@@ -624,26 +663,40 @@
     </div>
 
     <div class="column" data-measure-role="column">
-      <article class="card h-300" data-measure-role="card">
-        <div class="sec-head"><div class="num">6</div><h2>Governance Efficiency <span class="headline">measured locally</span></h2></div>
+      <article class="card h-326" data-measure-role="card">
+        <div class="sec-head"><div class="num">6</div><h2>Governance Efficiency</h2></div>
         <p><strong>Gateway role:</strong> control MCP traffic before it reaches tool servers, preserve JSON-RPC semantics, expose <strong>/metrics</strong>, and turn repeated or failing tool calls into measurable governed behavior.</p>
+        <div class="effect-grid">
+          <div class="effect-card">
+            <div class="effect-value">N &rarr; 1</div>
+            <div class="effect-label">Upstream call reduction via caching and coalescing</div>
+          </div>
+          <div class="effect-card">
+            <div class="effect-value">&le; 2</div>
+            <div class="effect-label">Upstream concurrent load under Gateway backpressure</div>
+          </div>
+          <div class="effect-card">
+            <div class="effect-value">16.4x</div>
+            <div class="effect-label">Faster circuit-open responses than direct slow timeout</div>
+          </div>
+        </div>
+        <img class="chart-img benchmark-summary-img" src="images/gateway_benchmark_summary_poster.png" alt="Measured MCP Gateway benchmark summary with cache reuse, coalescing, backpressure, and circuit breaker panels">
         <ul class="metric-list">
           <li><strong>Cache reuse:</strong> metric is upstream MCP calls under repeated identical requests; Gateway turns repeats into cache hits and keeps the load near 1 call.</li>
           <li><strong>Duplicate coalescing:</strong> metric is upstream calls under concurrent duplicate requests; Gateway keeps one leader call while waiters share the result.</li>
           <li><strong>Backpressure:</strong> metric is accepted vs. rate-limited requests; Gateway bounds in-flight tool work instead of letting bursts hit MCP directly.</li>
           <li><strong>Circuit breaker:</strong> metric is latency after timeout failures; Gateway opens the circuit and converts later slow calls into fast error responses.</li>
         </ul>
-        <img class="chart-img benchmark-summary-img" src="images/gateway_benchmark_summary_poster.png" alt="Measured MCP Gateway benchmark summary with cache reuse, coalescing, backpressure, and circuit breaker panels">
-        <div class="caption"><strong>Measured effect:</strong> cache and coalescing reduce upstream calls to <span class="gold-text">1</span>; backpressure caps accepted upstream work at <span class="gold-text">2</span>; circuit-open calls average <span class="gold-text">16.4x faster</span> than direct slow timeouts. <strong>Benchmark setting:</strong> local Weather MCP, 3 repeats; repeated requests 10-100, duplicate/unique bursts 1-40/2-40 concurrent requests, and 8 sequential timeout calls.</div>
+        <div class="caption"><strong>Benchmark setting:</strong> local Weather MCP, 3 repeats; repeated requests 10-100, duplicate/unique bursts 1-40/2-40 concurrent requests, and 8 sequential timeout calls. All metrics are measured locally.</div>
       </article>
 
-      <article class="card h-258 qa-card" data-measure-role="card">
+      <article class="card h-236 qa-card" data-measure-role="card">
         <div class="sec-head"><div class="num">7</div><h2>Travel QA Example and Failure Semantics</h2></div>
         <div class="qa-wrap">
           <div class="qa-log">
-            <div class="qa-title">Complete flow: “Plan a 3-day budget trip from Shanghai to Beijing; prefer subway; must visit the Forbidden City.”</div>
+            <div class="qa-title">Complete flow: "Plan a 3-day budget trip from Shanghai to Beijing; prefer subway; must visit the Forbidden City."</div>
             <div class="log-line"><span class="actor">User</span><span>submits the travel-planning request to the Coordinator.</span></div>
-            <div class="log-line"><span class="actor">Coordinator</span><span>decomposes the task into weather, attraction, hotel, traffic, and packing nodes.</span></div>
+            <div class="log-line"><span class="actor">Coordinator</span><span>queries Registry for agent endpoints; Registry sends back agent health to Coordinator.</span></div>
             <div class="log-line"><span class="actor">Registry</span><span>primary lookup can fail; backup discovery returns the available agent endpoints.</span></div>
             <div class="log-line"><span class="actor">Agents</span><span>execute the DAG through A2A/TCP and call MCP tools through the Gateway.</span></div>
             <div class="log-line"><span class="actor">Gateway</span><span>caches repeats, coalesces duplicates, limits bursts, and fails fast on slow MCP servers.</span></div>
@@ -651,19 +704,18 @@
           </div>
         </div>
         <ul>
-          <li><strong>Coordinator:</strong> queries <strong>Registry</strong> for agent endpoints; Registry sends back agent health to Coordinator.</li>
           <li><strong>Failure semantics:</strong> registry failover, capability miss, and MCP timeout all stay visible in logs and final context.</li>
           <li><strong>Partial answer:</strong> usable nodes return first; missing tool results are reported as explicit degraded fields.</li>
         </ul>
       </article>
 
-      <article class="card h-110" data-measure-role="card">
+      <article class="card h-106" data-measure-role="card">
         <div class="sec-head"><div class="num">8</div><h2>Reference&amp;Code</h2></div>
         <div class="reference-code-grid">
           <ol class="references-list">
             <li>Google Cloud. <em>Announcing the Agent2Agent Protocol (A2A)</em>. Technical announcement, 2025.</li>
             <li>Anthropic. <em>Introducing the Model Context Protocol</em>. Technical announcement, 2024.</li>
-            <li>X. Hou, Y. Zhao, S. Wang, and H. Wang. <em>Model Context Protocol (MCP): Landscape, Security Threats, and Future Research Directions</em>. arXiv:2503.23278, 2025.</li>
+            <li>X. Hou, Y. Zhao, S. Wang, and H. Wang. <em>Model Context Protocol (MCP): Landscape, Security Threats, and Future Research Directions</em>. arxiv preprint arXiv:2503.23278, 2025.</li>
           </ol>
           <div>
             <img class="code-qr" src="images/code_qr.png" alt="QR code for the Agent-A2A-MCP GitHub repository">

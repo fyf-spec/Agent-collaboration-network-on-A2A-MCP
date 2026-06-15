@@ -1738,7 +1738,7 @@ def _render_pcap_group(group: dict[str, Any]) -> None:
         st.caption(str(caption))
     rows = group.get("rows", [])
     if rows:
-        st.dataframe(_brief_pcap_rows(rows), hide_index=True, use_container_width=True)
+        st.dataframe(_brief_pcap_rows(rows), hide_index=True, width="stretch")
     else:
         st.warning(str(group.get("empty", "本次 pcap 没有该分组报文。")))
 
@@ -1816,7 +1816,7 @@ def render_task_packet_capture_panel() -> None:
             data=filtered_path.read_bytes(),
             file_name=filtered_path.name,
             mime="application/vnd.tcpdump.pcap",
-            use_container_width=True,
+            width="stretch",
         )
     else:
         st.warning(f"筛选 pcapng 失败：{filtered_download.get('error', 'unknown error')}")
@@ -1827,7 +1827,7 @@ def render_task_packet_capture_panel() -> None:
                 data=pcap_path.read_bytes(),
                 file_name=pcap_path.name,
                 mime="application/vnd.tcpdump.pcap",
-                use_container_width=True,
+                width="stretch",
             )
 
     if capture.get("parse_error"):
@@ -2640,7 +2640,7 @@ def render_gateway_cache_panel() -> None:
     st.markdown("#### Gateway Cache 管理")
     policy_tab, live_tab = st.tabs(["TTL 策略", "实时缓存"])
     with policy_tab:
-        st.dataframe(_gateway_cache_policy_rows(), hide_index=True, use_container_width=True)
+        st.dataframe(_gateway_cache_policy_rows(), hide_index=True, width="stretch")
         st.caption(
             f"容量上限：{int(DEFAULT_MCP_GATEWAY_CONFIG.get('cache_max_entries', 512))} entries；"
             "缓存 key 只使用业务语义参数，不使用 id、task_id、instruction 等一次性字段。"
@@ -2664,17 +2664,17 @@ def render_gateway_cache_panel() -> None:
 
         method_rows = _gateway_cache_method_rows(cache)
         if method_rows:
-            st.dataframe(method_rows, hide_index=True, use_container_width=True)
+            st.dataframe(method_rows, hide_index=True, width="stretch")
 
         entry_rows = _gateway_cache_entry_rows(cache)
         clear_cols = st.columns([1, 1, 2])
-        if clear_cols[0].button("清空全部缓存", use_container_width=True, key="gateway_cache_clear_all"):
+        if clear_cols[0].button("清空全部缓存", width="stretch", key="gateway_cache_clear_all"):
             _gateway_cache_clear()
             st.rerun()
 
         method_options = [""] + sorted({str(row.get("method")) for row in entry_rows if row.get("method")})
         selected_method = clear_cols[1].selectbox("按 method 清理", method_options, key="gateway_cache_clear_method")
-        if clear_cols[2].button("清理选中 method", use_container_width=True, key="gateway_cache_clear_method_btn"):
+        if clear_cols[2].button("清理选中 method", width="stretch", key="gateway_cache_clear_method_btn"):
             if selected_method:
                 _gateway_cache_clear(method=selected_method)
                 st.rerun()
@@ -2687,7 +2687,7 @@ def render_gateway_cache_panel() -> None:
             {key: value for key, value in row.items() if key != "key"}
             for row in entry_rows
         ]
-        st.dataframe(display_rows, hide_index=True, use_container_width=True)
+        st.dataframe(display_rows, hide_index=True, width="stretch")
 
         key_options = {
             f"{row.get('method')} / {row.get('key_hash')}": row.get("key")
@@ -2696,7 +2696,7 @@ def render_gateway_cache_panel() -> None:
         }
         if key_options:
             selected_key_label = st.selectbox("按 key 清理", list(key_options), key="gateway_cache_clear_key")
-            if st.button("清理选中 key", use_container_width=True, key="gateway_cache_clear_key_btn"):
+            if st.button("清理选中 key", width="stretch", key="gateway_cache_clear_key_btn"):
                 _gateway_cache_clear(key=key_options[selected_key_label])
                 st.rerun()
 
@@ -2707,7 +2707,7 @@ def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
     case = cases[case_label]
     st.code(_format_json_block({"method": case["method"], "params": case["params"]}), language="json")
 
-    if st.button("运行 Gateway Demo", use_container_width=True, key="run_gateway_demo"):
+    if st.button("运行 Gateway Demo", width="stretch", key="run_gateway_demo"):
         if not is_service_running("mcp_gateway"):
             st.session_state.gateway_demo_result = {
                 "ok": False,
@@ -2736,7 +2736,7 @@ def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
         data_source_rows = _gateway_data_source_rows(result.get("response"))
         if data_source_rows:
             st.markdown("##### MCP 数据源")
-            st.dataframe(data_source_rows, hide_index=True, use_container_width=True)
+            st.dataframe(data_source_rows, hide_index=True, width="stretch")
 
         tab_request, tab_response, tab_metrics = st.tabs(["Request", "Response", "Metrics"])
         with tab_request:
@@ -2785,7 +2785,7 @@ def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
         key="gateway_ablation_include_rate_limit",
     )
 
-    if st.button("运行高并发 Gateway Ablation", use_container_width=True, key="run_gateway_ablation"):
+    if st.button("运行高并发 Gateway Ablation", width="stretch", key="run_gateway_ablation"):
         with st.spinner("正在运行 Gateway 高并发 ablation..."):
             st.session_state.gateway_ablation_result = run_gateway_ablation_experiment(
                 request_count=request_count,
@@ -2808,15 +2808,15 @@ def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
     with tab_overview:
         _render_gateway_ablation_visuals(summary_rows)
     with tab_table:
-        st.dataframe(summary_rows, hide_index=True, use_container_width=True)
+        st.dataframe(summary_rows, hide_index=True, width="stretch")
     with tab_cache:
         cache_after = ablation.get("cache_after", {})
         if isinstance(cache_after, dict) and cache_after:
-            st.dataframe(_gateway_cache_method_rows(cache_after), hide_index=True, use_container_width=True)
+            st.dataframe(_gateway_cache_method_rows(cache_after), hide_index=True, width="stretch")
             st.dataframe(
                 [{key: value for key, value in row.items() if key != "key"} for row in _gateway_cache_entry_rows(cache_after)],
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.info("本次没有读取到 Gateway cache 快照。")
@@ -2824,7 +2824,7 @@ def render_gateway_demo_panel(env_config: dict[str, str]) -> None:
     with tab_delta:
         for scenario in ablation.get("results", []):
             st.markdown(f"##### {scenario.get('label')}")
-            st.dataframe(scenario.get("metric_delta", []), hide_index=True, use_container_width=True)
+            st.dataframe(scenario.get("metric_delta", []), hide_index=True, width="stretch")
             if scenario.get("sample_errors"):
                 st.json(scenario["sample_errors"], expanded=False)
 
@@ -3784,7 +3784,7 @@ def render_demo_parameter_presets() -> None:
         )
         st.caption(str(preset["purpose"]))
         st.caption(str(preset["steps"]))
-        if st.button("应用该参数组合", use_container_width=True, key="apply_demo_parameter_preset"):
+        if st.button("应用该参数组合", width="stretch", key="apply_demo_parameter_preset"):
             _apply_demo_parameter_preset(preset_name)
             st.rerun()
 
@@ -3797,6 +3797,7 @@ def initialize_runtime_control_defaults() -> None:
         "task_timeout_seconds": float(DEFAULT_TASK_TIMEOUT_SECONDS_CONFIG),
         "a2a_realtime_mcp_enabled": bool(DEFAULT_REALTIME_MCP_ENABLED),
         "mcp_realtime_fallback_to_mock": bool(DEFAULT_MCP_REALTIME_FALLBACK_TO_MOCK),
+        "llm_enable_thinking": str(os.getenv("A2A_LLM_ENABLE_THINKING", "0")).strip().lower() in {"1", "true", "yes", "on"},
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -3853,13 +3854,13 @@ def render_realtime_mcp_panel() -> None:
                 "来源": "UI MCP HTTP Timeout -> MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS",
             },
         ]
-        st.dataframe(status_rows, hide_index=True, use_container_width=True)
+        st.dataframe(status_rows, hide_index=True, width="stretch")
 
         source_tab, cache_tab = st.tabs(["数据源", "Gateway 缓存"])
         with source_tab:
-            st.dataframe(REALTIME_MCP_SOURCE_ROWS, hide_index=True, use_container_width=True)
+            st.dataframe(REALTIME_MCP_SOURCE_ROWS, hide_index=True, width="stretch")
         with cache_tab:
-            st.dataframe(MCP_GATEWAY_CACHE_ROWS, hide_index=True, use_container_width=True)
+            st.dataframe(MCP_GATEWAY_CACHE_ROWS, hide_index=True, width="stretch")
 
         if realtime_enabled and not DEFAULT_AMAP_WEB_KEY:
             st.warning("实时 MCP 已开启，但 AMAP_WEB_KEY 未配置；高德相关 MCP 会走 Mock 回退。")
@@ -3896,6 +3897,7 @@ with col_sidebar:
         "MCP_REALTIME_TIMEOUT_SECONDS": str(mcp_realtime_timeout),
         "A2A_REALTIME_MCP_ENABLED": "1" if bool(st.session_state.get("a2a_realtime_mcp_enabled")) else "0",
         "MCP_REALTIME_FALLBACK_TO_MOCK": "1" if bool(st.session_state.get("mcp_realtime_fallback_to_mock")) else "0",
+        "A2A_LLM_ENABLE_THINKING": "1" if bool(st.session_state.get("llm_enable_thinking")) else "0",
         "DEFAULT_TASK_TIMEOUT_SECONDS": str(task_timeout),
         "MAX_TASK_TIMEOUT_SECONDS": str(task_timeout),
         "PYTHONIOENCODING": "utf-8"
@@ -3905,14 +3907,14 @@ with col_sidebar:
         if k not in env_config:
             env_config[k] = v
 
-    if col_btn1.button("▶️ 启动所有节点", use_container_width=True):
+    if col_btn1.button("▶️ 启动所有节点", width="stretch"):
         with st.spinner("正在启动所有服务..."):
             for srv in SERVICES.keys():
                 start_service(srv, env_config, delay=_service_delay(srv))
             time.sleep(3)
         st.rerun()
         
-    if col_btn2.button("⏹️ 停止所有节点", use_container_width=True):
+    if col_btn2.button("⏹️ 停止所有节点", width="stretch"):
         stop_all_services()
         st.session_state.task_transfer_active = False
         st.rerun()
@@ -3952,7 +3954,12 @@ with col_main:
 
     query = st.text_area(
         "请描述您的旅行需求：", 
-        value="中秋节假期从上海去北京玩3天，要求穷游并且尽量乘坐地铁，必须去故宫看看。"
+        value="明天打算从上海去广州玩3天，要求穷游并且尽量乘坐地铁，必须去越秀公园看看。"
+    )
+    st.toggle(
+        "深度思考",
+        key="llm_enable_thinking",
+        help="开启后本轮任务会允许模型进行更深的思考，但可能会更慢。",
     )
 
     with st.expander("MCP Gateway Demo 测试", expanded=False):
@@ -3994,10 +4001,16 @@ with col_main:
                                 st.write(f"真实抓包已启动：{capture.get('interface_label', capture.get('interface', ''))}")
                             else:
                                 st.warning(f"真实抓包未启动：{capture.get('error', 'unknown error')}")
+                        st.write(f"深度思考模式：{'开启' if bool(st.session_state.get('llm_enable_thinking')) else '关闭'}")
                         st.write("正在生成总体规划与工作流 DAG，请稍等...")
                         response = requests.post(
                             COORDINATOR_URL,
-                            json={"question": query, "timeout": task_timeout, "async": True},
+                            json={
+                                "question": query,
+                                "timeout": task_timeout,
+                                "async": True,
+                                "enable_thinking": bool(st.session_state.get("llm_enable_thinking")),
+                            },
                             timeout=task_timeout + 1
                         )
                         response.raise_for_status()

@@ -14,7 +14,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.base_agent import BaseAgent
 from agents.request_parser import extract_travel_task_from_payload
-from common.config import AGENTS, COORDINATOR_NAME, MCP_HTTP_TIMEOUT_SECONDS, MCP_SERVERS
+from common.config import (
+    AGENTS,
+    COORDINATOR_NAME,
+    HOTEL_LLM_MAX_AREA_OPTIONS,
+    HOTEL_LLM_MAX_OPTIONS,
+    MCP_GATEWAY,
+    MCP_HTTP_TIMEOUT_SECONDS,
+    MCP_SERVERS,
+)
 from common.http_client import HttpJsonClientError, post_json
 from common.logger import log_network_event
 from common.mcp_routing import mcp_endpoint_for_server
@@ -364,7 +372,7 @@ def _build_area_options(daily_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 "nearby_spots": [],
             }
         )
-    return options[:8]
+    return options[: max(1, HOTEL_LLM_MAX_AREA_OPTIONS)]
 
 
 def _area_options_to_legacy_candidates(area_options: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -402,7 +410,7 @@ def _build_hotel_options_for_llm(hotel_candidates: dict[str, Any]) -> list[dict[
                 "address": hotel.get("address"),
             }
         )
-    return options
+    return options[: max(1, HOTEL_LLM_MAX_OPTIONS)]
 
 
 def _rank_hotel_candidates(hotels: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -478,7 +486,7 @@ def _hotel_selector_prompt(
         "attraction_constraints": _constraint_section(travel_task, "attractions"),
         "area_options": area_options,
         "hotel_options": hotel_options,
-        "upstream_results": upstream_results,
+        # "upstream_results": upstream_results,
         "output_schema": {
             "recommended_area_id": "a1",
             "selected_hotel_id": "h1",
@@ -500,7 +508,7 @@ def _hotel_selector_prompt(
             "你是住宿区域与酒店选择器。",
             "必须从 area_options 中选择一个 area_id；必须从 hotel_options 中选择一个 hotel_id。",
             "hotel_id 必须来自已有候选；推荐区域最好与酒店 area 一致；不要编造酒店；不要改写酒店信息。",
-            "仔细参考 upstream_results 内的前置依赖节点 (比如 weather、attraction) 等智能体给出的结果。",
+            "仔细参考前置依赖节点 (比如 weather、attraction) 等智能体给出的结果。",
             "",
             f"【用户意图】{raw_constraints}" if raw_constraints else "",
             f"【选择策略】{budget_style}",

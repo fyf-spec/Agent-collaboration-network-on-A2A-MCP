@@ -89,7 +89,7 @@ from common.schemas import (
     utc_now_iso,
     validate_task_result,
 )
-from llm_client import LLMClientError, llm
+from llm_client import LLMClientError, llm, llm_request_options
 
 
 logger = logging.getLogger("coordinator")
@@ -615,6 +615,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_request", "question is required"))
                 return
             timeout_seconds = _normalize_timeout(payload.get("timeout"))
+            enable_thinking = _normalize_bool(payload.get("enable_thinking"), default=False)
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, error_response("invalid_json", str(exc)))
             return
@@ -627,10 +628,17 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
 
         def full_workflow(tid: str) -> None:
             try:
-                available_agents = _fetch_discovered_agents()
-                travel_task, workflow_dag = extract_travel_task(question, available_agents)
-                targets = [node["agent"] for node in workflow_dag]
-                plan = build_dependency_plan(question, targets, travel_task, workflow_dag)
+                with llm_request_options(enable_thinking=enable_thinking):
+                    available_agents = _fetch_discovered_agents()
+                    travel_task, workflow_dag = extract_travel_task(question, available_agents)
+                    targets = [node["agent"] for node in workflow_dag]
+                    plan = build_dependency_plan(
+                        question,
+                        targets,
+                        travel_task,
+                        workflow_dag,
+                        request_options={"enable_thinking": enable_thinking},
+                    )
                 # 更新任务记录（替换空的 targets 和 plan）
                 with self.server.state._condition:
                     record = self.server.state._tasks[tid]
@@ -695,7 +703,7 @@ class CoordinatorRequestHandler(BaseHTTPRequestHandler):
 
         log_network_event(event="submit_task_queued", direction="inbound", source="user",
             target=COORDINATOR_NAME, method="POST", url="/submit_task",
-            payload={"question": question, "timeout": timeout_seconds})
+            payload={"question": question, "timeout": timeout_seconds, "enable_thinking": enable_thinking})
         threading.Thread(target=full_workflow, args=(temp_tid,), daemon=True).start()
         self._send_json(HTTPStatus.ACCEPTED, success_response({"task": {
             "task_id": temp_tid, "status": "pending", "question": question,
@@ -913,7 +921,14 @@ def _infer_error_type(exc: Exception) -> str:
     return type(cause).__name__
 
 
-def build_dependency_plan(question: str, targets: list[str], travel_task: dict[str, Any], workflow_dag: list[dict[str, Any]]) -> dict[str, Any]:
+def build_dependency_plan(
+    question: str,
+    targets: list[str],
+    travel_task: dict[str, Any],
+    workflow_dag: list[dict[str, Any]],
+    *,
+    request_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     '''
     整合成一个规范化的plan，包括task，要用到的agent和工作流
     '''
@@ -923,6 +938,7 @@ def build_dependency_plan(question: str, targets: list[str], travel_task: dict[s
         "selected_targets": targets,
         "dependency_chain": workflow_dag,
         "travel_task": travel_task,
+        "request_options": request_options or {},
         "task_request": {
             "raw_instruction": question,
             "split_policy": "coordinator_only_splits_request",
@@ -978,6 +994,7 @@ def build_node_context(
         "stage": stage,
         "dependencies": dependencies,
         "travel_task": travel_task,
+        "request_options": record.plan.get("request_options", {}) if isinstance(record.plan, dict) else {},
         "request": {
             "original_instruction": record.question,
             "node_goal": node_goal,
@@ -1897,7 +1914,8 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
 
     prompt = _coordinator_summary_prompt(question, snapshot)
     try:
-        llm_response = llm.chat(prompt, max_tokens=1200, temperature=0.0, timeout_seconds=20.0)
+        with llm_request_options(enable_thinking=_snapshot_enable_thinking(snapshot)):
+            llm_response = llm.chat(prompt, max_tokens=1200, temperature=0.0, timeout_seconds=20.0)
     except LLMClientError as exc:
         llm_response = f"LLM_ERROR: {exc}"
 
@@ -1909,6 +1927,19 @@ def build_final_answer(question: str, snapshot: dict[str, Any]) -> str:
         logger.warning("LLM final answer conflicts with real task snapshot; using grounded fallback answer")
         return grounded_answer
     return llm_response
+
+
+def _snapshot_enable_thinking(snapshot: dict[str, Any]) -> bool | None:
+    plan = snapshot.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    request_options = plan.get("request_options")
+    if not isinstance(request_options, dict) or "enable_thinking" not in request_options:
+        return None
+    value = request_options.get("enable_thinking")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _final_answer_conflicts_with_snapshot(answer: str, snapshot: dict[str, Any]) -> bool:
@@ -2447,6 +2478,14 @@ def _normalize_timeout(value: Any) -> float:
     if timeout <= 0:
         raise ValueError("timeout must be greater than 0")
     return min(timeout, MAX_TASK_TIMEOUT_SECONDS)
+
+
+def _normalize_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _remaining_seconds(deadline: float) -> float:

@@ -269,9 +269,9 @@ def render_sidebar() -> dict[str, Any]:
         reuse_external = st.toggle("允许复用已运行服务", value=True)
 
         st.header("操作")
-        run = st.button("运行所选实验", type="primary", use_container_width=True, disabled=not selected)
-        stop = st.button("停止本 UI 启动的服务", use_container_width=True)
-        clear = st.button("清空对比结果", use_container_width=True)
+        run = st.button("运行所选实验", type="primary", width="stretch", disabled=not selected)
+        stop = st.button("停止本 UI 启动的服务", width="stretch")
+        clear = st.button("清空对比结果", width="stretch")
 
     return {
         "selected": selected,
@@ -812,7 +812,7 @@ def render_comparison_table() -> None:
         "结论",
     ]
     st.subheader("消融实验对比")
-    st.dataframe([{key: run.get(key, "") for key in columns} for run in runs], hide_index=True, use_container_width=True)
+    st.dataframe([{key: run.get(key, "") for key in columns} for run in runs], hide_index=True, width="stretch")
 
 
 def render_details() -> None:
@@ -838,7 +838,7 @@ def render_details() -> None:
             agent_rows = agent_result_rows(run.get("_task") or {})
             if agent_rows:
                 st.markdown("**Agent 结果**")
-                st.dataframe(agent_rows, hide_index=True, use_container_width=True)
+                st.dataframe(agent_rows, hide_index=True, width="stretch")
 
             if run.get("_scenario_key") == "gateway_cache":
                 st.markdown("**缓存请求结果**")
@@ -847,17 +847,17 @@ def render_details() -> None:
             gateway_metrics = gateway_metric_rows(run.get("_metrics") or {})
             if gateway_metrics:
                 st.markdown("**MCP Gateway 指标**")
-                st.dataframe(gateway_metrics, hide_index=True, use_container_width=True)
+                st.dataframe(gateway_metrics, hide_index=True, width="stretch")
 
             gateway_events = gateway_event_rows(run.get("_events") or [])
             if gateway_events:
                 st.markdown("**MCP Gateway 关键事件**")
-                st.dataframe(gateway_events, hide_index=True, use_container_width=True)
+                st.dataframe(gateway_events, hide_index=True, width="stretch")
 
             error_rows = error_event_rows(run.get("_events") or [])
             if error_rows:
                 st.markdown("**关键错误事件**")
-                st.dataframe(error_rows, hide_index=True, use_container_width=True)
+                st.dataframe(error_rows, hide_index=True, width="stretch")
 
 
 def agent_result_rows(task: dict[str, Any]) -> list[dict[str, Any]]:
