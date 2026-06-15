@@ -176,7 +176,7 @@ DEMO_PARAMETER_PRESETS = {
         "task_timeout": 60.0,
         "delays": {"weather_mcp_server": 2.0},
         "purpose": "Weather MCP 人为慢于 MCP HTTP Timeout，展示 HTTP 请求超时、错误传播和 partial 回答。",
-        "steps": "应用后停止 Weather MCP，再启动 Weather MCP 让 delay 生效，然后提交任务。",
+        "steps": "应用后启动或重启节点，让 1s timeout 和 Weather MCP delay 生效，然后提交任务。",
     },
     "A2A 派发容错": {
         "a2a_timeout": 1.0,
@@ -3717,6 +3717,10 @@ def _gateway_upstream_timeout_seconds() -> float:
     return float(st.session_state.get("mcp_http_timeout_seconds", DEFAULT_MCP_HTTP_TIMEOUT_SECONDS))
 
 
+def _running_demo_services() -> list[str]:
+    return [name for name in SERVICES if is_service_running(name)]
+
+
 def _apply_demo_parameter_preset(name: str) -> None:
     preset = DEMO_PARAMETER_PRESETS[name]
     st.session_state["a2a_tcp_timeout_seconds"] = float(preset["a2a_timeout"])
@@ -3727,6 +3731,8 @@ def _apply_demo_parameter_preset(name: str) -> None:
     for srv_name in MCP_SERVICE_LABELS:
         st.session_state[f"delay_{srv_name}"] = float(preset_delays.get(srv_name, 0.0))
     st.session_state["applied_demo_parameter_preset"] = name
+    if _running_demo_services():
+        st.session_state["restart_services_after_preset_apply"] = name
 
 
 def render_demo_parameter_presets() -> None:
@@ -3907,6 +3913,15 @@ with col_sidebar:
         if k not in env_config:
             env_config[k] = v
 
+    pending_preset_restart = st.session_state.pop("restart_services_after_preset_apply", None)
+    if pending_preset_restart:
+        with st.spinner(f"正在按「{pending_preset_restart}」重启所有服务..."):
+            stop_all_services()
+            for srv in SERVICES.keys():
+                start_service(srv, env_config, delay=_service_delay(srv))
+            time.sleep(3)
+        st.success(f"已按「{pending_preset_restart}」重启所有服务，运行进程已读取最新参数。")
+
     if col_btn1.button("▶️ 启动所有节点", width="stretch"):
         with st.spinner("正在启动所有服务..."):
             for srv in SERVICES.keys():
@@ -3924,17 +3939,6 @@ with col_sidebar:
     _, _, _, recent_events = read_recent_network_activity(show_activity=show_topology_activity)
     render_topology_control(env_config, show_activity=show_topology_activity)
     st.caption("点击拓扑中的服务节点即可启停。Agent 池作为动态部署层展示，最近 8 秒有协议传输的链路会显示渐变流动。")
-
-    with st.expander("MCP 延迟注入", expanded=False):
-        st.caption("仅在对应 MCP 节点从停止状态启动时生效。")
-        for srv_name, label in MCP_SERVICE_LABELS.items():
-            st.number_input(
-                f"{label} delay",
-                min_value=0.0,
-                value=float(st.session_state.get(f"delay_{srv_name}", 0.0) or 0.0),
-                step=1.0,
-                key=f"delay_{srv_name}",
-            )
 
     if recent_events:
         st.session_state.last_recent_network_events = recent_events
