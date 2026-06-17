@@ -632,10 +632,10 @@
         <ul class="contrib-list">
           <li><strong>Intelligent Coordinator</strong> that decomposes travel requests, dispatches sub-tasks to domain agents via a dependency-aware DAG, and merge their results.</li>
           <li><strong>Primary/Backup Registry Centers</strong> that enable dynamic agent discovery through heartbeat monitoring instead of hard-coded endpoints.</li>
-          <li><strong>Five specialized agents</strong> (weather, traffic, attraction, hotel, and packing) that wrap external MCP tools into task-specific planning advice.</li>
+          <li><strong>Five specialized agents</strong> (weather, traffic, attraction, hotel, and packing) with <strong>prompt optimization</strong>: budget-aware hotel tiers, quality-scored attraction filtering, fuzzy must-visit matching, and preference-to-mode traffic routing — all reducing LLM round-trips and improving response time.</li>
           <li><strong>A2A/TCP protocol</strong> with explicit message framing (length-prefix), state tracking (ACK/RESULT/ERROR), and persistent channel management.</li>
           <li><strong>MCP Gateway</strong> that centralizes MCP-side cache reuse, duplicate coalescing, backpressure, circuit breaking, and /metrics observability.</li>
-          <li><strong>MCP tools</strong> that expose services as HTTP/JSON-RPC endpoints behind Gateway.</li>
+          <li><strong>MCP tools</strong> that expose services as HTTP/JSON-RPC endpoints behind Gateway, now supporting <strong>realtime AMap (POI search, geocoding, route planning) and Open-Meteo (5-day weather forecast)</strong> with automatic mock fallback on API failures.</li>
           <li><strong>Fault-tolerance designs</strong> handle registry failover, capability misses, MCP timeout, retry/no-LLM fallback, and explicit degraded answers.</li>
         </ul>
         <img class="contrib-img" src="images/contributions_fault_band.png" alt="Two-by-three contribution modules with a full-width fault-tolerance band">
