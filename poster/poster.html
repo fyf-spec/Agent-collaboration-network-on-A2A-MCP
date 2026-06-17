@@ -325,9 +325,9 @@
     margin-top: calc(1.2 * var(--u));
   }
   .contrib-list li {
-    font-size: calc(9.5 * var(--u));
-    line-height: 1.25;
-    margin-bottom: calc(2.5 * var(--u));
+    font-size: calc(8.2 * var(--u));
+    line-height: 1.2;
+    margin-bottom: calc(1.8 * var(--u));
   }
   .gold-text { color: var(--gold); font-weight: 900; }
   .question {
@@ -381,7 +381,7 @@
     border-radius: calc(3 * var(--u));
     background: #fff;
   }
-  .contrib-img { height: calc(103 * var(--u)); margin-top: calc(2.5 * var(--u)); }
+  .contrib-img { height: calc(113 * var(--u)); margin-top: calc(1.5 * var(--u)); }
   .protocol-img { height: calc(104 * var(--u)); margin: calc(3 * var(--u)) 0; }
   .fault-strip {
     height: auto;
@@ -632,10 +632,10 @@
         <ul class="contrib-list">
           <li><strong>Intelligent Coordinator</strong> that decomposes travel requests, dispatches sub-tasks to domain agents via a dependency-aware DAG, and merge their results.</li>
           <li><strong>Primary/Backup Registry Centers</strong> that enable dynamic agent discovery through heartbeat monitoring instead of hard-coded endpoints.</li>
-          <li><strong>Five specialized agents</strong> (weather, traffic, attraction, hotel, and packing) with <strong>prompt optimization</strong>: budget-aware hotel tiers, quality-scored attraction filtering, fuzzy must-visit matching, and preference-to-mode traffic routing — all reducing LLM round-trips and improving response time.</li>
+          <li><strong>Five specialized agents</strong> (weather, traffic, attraction, hotel, packing) with <strong>prompts optimized to minimize LLM output</strong> — the LLM only selects from pre-computed candidates via short JSON, substantially reducing response time.</li>
           <li><strong>A2A/TCP protocol</strong> with explicit message framing (length-prefix), state tracking (ACK/RESULT/ERROR), and persistent channel management.</li>
           <li><strong>MCP Gateway</strong> that centralizes MCP-side cache reuse, duplicate coalescing, backpressure, circuit breaking, and /metrics observability.</li>
-          <li><strong>MCP tools</strong> that expose services as HTTP/JSON-RPC endpoints behind Gateway, now supporting <strong>realtime AMap (POI search, geocoding, route planning) and Open-Meteo (5-day weather forecast)</strong> with automatic mock fallback on API failures.</li>
+          <li><strong>MCP tools</strong> exposing HTTP/JSON-RPC endpoints behind the Gateway, fetching <strong>realtime attractions, traffic, and weather</strong> via AMap and Open-Meteo APIs; after repeated failures they automatically fall back to local mock data.</li>
           <li><strong>Fault-tolerance designs</strong> handle registry failover, capability misses, MCP timeout, retry/no-LLM fallback, and explicit degraded answers.</li>
         </ul>
         <img class="contrib-img" src="images/contributions_fault_band.png" alt="Two-by-three contribution modules with a full-width fault-tolerance band">
@@ -694,13 +694,13 @@
         <div class="sec-head"><div class="num">7</div><h2>Travel QA Example and Failure Semantics</h2></div>
         <div class="qa-wrap">
           <div class="qa-log">
-            <div class="qa-title">Complete flow: "Plan a 3-day budget trip from Shanghai to Beijing; prefer subway; must visit the Forbidden City."</div>
-            <div class="log-line"><span class="actor">User</span><span>submits the travel-planning request to the Coordinator.</span></div>
-            <div class="log-line"><span class="actor">Coordinator</span><span>queries Registry for agent endpoints; Registry sends back agent health to Coordinator.</span></div>
-            <div class="log-line"><span class="actor">Registry</span><span>primary lookup can fail; backup discovery returns the available agent endpoints.</span></div>
-            <div class="log-line"><span class="actor">Agents</span><span>execute the DAG through A2A/TCP and call MCP tools through the Gateway.</span></div>
+            <div class="qa-title">Example: "Plan a 3-day budget trip from Shanghai to Beijing; prefer subway; must visit the Forbidden City."</div>
+            <div class="log-line"><span class="actor">User</span><span>submits the travel request to Coordinator via HTTP POST.</span></div>
+            <div class="log-line"><span class="actor">Coordinator</span><span>first queries Registry for live agent endpoints, then uses LLM to build a dependency-aware DAG from available agents, and dispatches tasks to each agent via A2A/TCP.</span></div>
+            <div class="log-line"><span class="actor">Registry</span><span>primary lookup may fail; backup discovery returns available agent endpoints.</span></div>
+            <div class="log-line"><span class="actor">Agents</span><span>receive tasks via TCP, call MCP tools through Gateway (JSON-RPC), and return structured results back to Coordinator.</span></div>
             <div class="log-line"><span class="actor">Gateway</span><span>caches repeats, coalesces duplicates, limits bursts, and fails fast on slow MCP servers.</span></div>
-            <div class="log-line"><span class="actor">Answer</span><span>merges available results into an itinerary and marks unavailable tools explicitly.</span></div>
+            <div class="log-line"><span class="actor">Answer</span><span>merges available results into an itinerary; missing tools are explicitly marked as degraded.</span></div>
           </div>
         </div>
         <ul>
