@@ -1,0 +1,247 @@
+% !TEX program = xelatex
+% 基于 MCP 与 A2A 协议的分布式多智能体协同网络 - 学术海报
+% 直接上传到 Overleaf.com 编译（选 XeLaTeX 编译器）
+\documentclass[final]{beamer}
+\usepackage[orientation=portrait,size=a0,scale=1.4]{beamerposter}
+\usepackage[UTF8]{ctex}
+\usepackage{tikz}
+\usepackage{multicol}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{fontawesome5}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKmonofont{Noto Sans CJK SC}
+\usetikzlibrary{shapes,arrows,positioning,fit,backgrounds,calc}
+
+% ── 颜色 ──
+\definecolor{mainblue}{HTML}{1A5276}
+\definecolor{lightblue}{HTML}{D4E6F1}
+\definecolor{accent}{HTML}{E74C3C}
+\definecolor{darkbg}{HTML}{2C3E50}
+
+% ── 简化设置 ──
+\setbeamercolor{background canvas}{bg=white}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{headline}{}
+\setbeamertemplate{footline}{}
+
+\setlength{\columnsep}{2cm}
+\setlength{\columnseprule}{0pt}
+
+\begin{document}
+
+% ===================================================================
+% 标题区
+% ===================================================================
+\begin{frame}[t]
+\begin{center}
+\vspace{1cm}
+{\fontsize{52}{62}\selectfont \textbf{\color{mainblue} 基于 MCP 与 A2A 协议的}}\\[0.3cm]
+{\fontsize{52}{62}\selectfont \textbf{\color{mainblue} 分布式多智能体协同网络}}\\[0.8cm]
+{\Large 计算机网络课程项目}\\[0.6cm]
+{\large XXX，XXX，XXX，XXX \quad | \quad 指导教师：XXX \quad | \quad 北京XXX大学 计算机学院}\\[0.3cm]
+{\small \faGithub \quad github.com/fyf-spec/Agent-collaboration-network-on-A2A-MCP}
+\end{center}
+
+\vspace{0.3cm}
+\hrule
+\vspace{0.8cm}
+
+% ===================================================================
+% 三栏布局
+% ===================================================================
+\begin{multicols}{3}
+
+% ==========================================
+% 左栏
+% ==========================================
+
+\section*{\color{mainblue}1. 研究背景与动机}
+
+\textbf{核心挑战：} 传统多Agent系统依赖代码级函数调用，Agent 间高度耦合，无法展示计算机网络协议栈的真实应用。
+
+\textbf{本项目的目标：} 构建一个完全\"分布式\"的多智能体旅行规划系统：
+\begin{itemize}[leftmargin=*]
+    \item 所有组件运行在 \textbf{14个独立进程}中
+    \item 通过 \textbf{TCP/HTTP/JSON-RPC} 等标准网络协议通信
+    \item 覆盖服务发现、任务调度、容错降级全链路
+\end{itemize}
+
+\textbf{应用场景：} 用户输入自然语言旅行需求 $\to$ 系统自动完成天气查询、景点推荐、酒店预订、交通路线、行李清单。
+
+\vspace{0.5cm}
+\section*{\color{mainblue}2. 系统架构}
+
+\begin{center}
+\begin{tikzpicture}[scale=0.9,
+    node distance=1.8cm,
+    box/.style={rectangle,draw,rounded corners,minimum width=2cm,minimum height=0.7cm,align=center,font=\footnotesize},
+    srv/.style={box,fill=blue!8},
+    agt/.style={box,fill=green!8},
+    gtw/.style={box,fill=orange!12},
+    crd/.style={box,fill=red!8},
+    reg/.style={box,fill=gray!8},
+    usr/.style={box,fill=yellow!8},
+    arr/.style={->,>=stealth,semithick},
+]
+
+\node[usr] (u) {User};
+\node[crd,below=1cm of u] (c) {Coordinator\\:9000/:9001};
+
+\node[reg,right=1.5cm of c] (r1) {Primary\\:7000};
+\node[reg,below=0.2cm of r1] (r2) {Backup\\:7001};
+
+\node[agt,below=1cm of c] (a1) {Weather\\:9010};
+\node[agt,right=0.2cm of a1] (a2) {Attract\\:9030};
+\node[agt,below=0.2cm of a1] (a3) {Hotel\\:9040};
+\node[agt,right=0.2cm of a3] (a4) {Traffic\\:9020};
+\node[agt,right=0.2cm of a4] (a5) {Packing\\:9060};
+
+\node[gtw,below=1cm of a5] (gw) {MCP Gateway\\:8100};
+
+\node[srv,below=0.8cm of gw] (s1) {Weather\\:8001};
+\node[srv,right=0.1cm of s1] (s2) {Traffic\\:8002};
+\node[srv,right=0.1cm of s2] (s3) {Attract\\:8003};
+\node[srv,right=0.1cm of s3] (s4) {Hotel\\:8004};
+\node[srv,right=0.1cm of s4] (s5) {Packing\\:8005};
+
+% Arrows
+\draw[arr] (u)--(c) node[midway,right,font=\tiny]{HTTP};
+\draw[arr,blue] (c)--(r1) node[midway,above,font=\tiny,blue]{discover};
+\draw[arr,blue,dashed] (c)--(r2);
+\draw[arr,red] (c)--(a1) node[midway,left,font=\tiny,red]{TCP};
+\draw[arr,red] (c)--(a2); \draw[arr,red] (c)--(a3);
+\draw[arr,red] (c)--(a4); \draw[arr,red] (c)--(a5);
+\draw[arr] (a1)|-(gw); \draw[arr] (a2)|-(gw); \draw[arr] (a3)|-(gw);
+\draw[arr] (a4)|-(gw); \draw[arr] (a5)|-(gw);
+\draw[arr] (gw)--(s1); \draw[arr] (gw)--(s2); \draw[arr] (gw)--(s3);
+\draw[arr] (gw)--(s4); \draw[arr] (gw)--(s5);
+
+\end{tikzpicture}
+\end{center}
+{\footnotesize\centering 14个独立进程，端口 7000-9060，TCP/HTTP/JSON-RPC 互联}
+
+\vspace{0.3cm}
+\section*{\color{mainblue}3. 通信协议栈}
+\centering
+\begin{tabular}{c|c|c}
+\toprule
+\textbf{层级} & \textbf{协议} & \textbf{实现}\\
+\midrule
+A2A 通信 & TCP (4B长度前缀+JSON) & \texttt{common/tcp\_a2a.py}\\
+MCP 通信 & HTTP/JSON-RPC 2.0 & \texttt{http.server}\\
+服务发现 & HTTP/REST & Registry Center\\
+网关 & 缓存+熔断+限流 & \texttt{mcp\_gateway.py}\\
+\bottomrule
+\end{tabular}
+
+% ==========================================
+% 中栏
+% ==========================================
+
+\section*{\color{mainblue}4. 核心创新}
+
+\textbf{4.1 自定义A2A TCP协议}\\
+设计4字节大端长度前缀 + UTF-8 JSON帧，解决TCP字节流粘包。5种帧类型：TASK\_REQUEST、TASK\_ACK、TASK\_RESULT、RESULT\_ACK、ERROR。
+
+\textbf{4.2 双注册中心高可用}\\
+主备注册中心(7000/7001)，Agent同时注册心跳(TTL=6s)，Coordinator主节点失败自动切换。
+
+\textbf{4.3 MCP Gateway}\\
+统一网关提供缓存(TTL按方法分级)、限流(10并发/方法)、熔断(3次失败→10s冷却)、请求合并。
+
+\textbf{4.4 实时API集成}\\
+高德地图(POI搜索/路线/地理编码) + Open-Meteo天气预报，失败自动降级到12城市Mock数据。
+
+\textbf{4.5 智能Agent}\\
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Coordinator:} LLM解析任务→DAG调度→汇总结果
+    \item \textbf{酒店Agent:} 三档预算搜索 + 景点重心选址
+    \item \textbf{景点Agent:} 评分过滤 + 展品识别 + 子景区聚类 + must\_visit模糊匹配
+    \item \textbf{交通Agent:} 偏好→出行方式映射(taxi→driving)
+\end{itemize}
+
+\vspace{0.3cm}
+\section*{\color{mainblue}5. DAG工作流}
+
+\begin{center}
+\begin{tikzpicture}[scale=1.2,
+    node/.style={draw,rounded corners,minimum width=1.8cm,minimum height=0.6cm,align=center,font=\footnotesize},
+    arr/.style={->,>=stealth,thick},
+]
+\node[node,fill=green!10] (w) {Weather};
+\node[node,fill=blue!10,below left=0.8cm of w] (a) {Attraction};
+\node[node,fill=orange!10,below=0.5cm of w] (h) {Hotel};
+\node[node,fill=red!10,below left=0.8cm of h] (t) {Traffic};
+\node[node,fill=purple!10,below=0.5cm of a] (p) {Packing};
+
+\draw[arr] (w) -- (a); \draw[arr] (w) -- (h); \draw[arr] (w) -- (p);
+\draw[arr] (a) -- (t); \draw[arr] (h) -- (t);
+\end{tikzpicture}
+\end{center}
+{\footnotesize\centering Weather→Attraction/Hotel→Traffic，Packing独立并行}
+
+% ==========================================
+% 右栏
+% ==========================================
+
+\section*{\color{mainblue}6. 实验验证}
+
+\textbf{测试方案:} 20个并发任务，覆盖不同城市/预算/天数/偏好/must\_visit。
+
+\begin{center}
+\begin{tabular}{c|c}
+\toprule
+\textbf{指标} & \textbf{结果}\\
+\midrule
+任务成功率 & \textbf{100\%} (20/20)\\
+城市正确率 & \textbf{100\%}\\
+交通偏好准确率 & \textbf{100\%}\\
+must\_visit命中率 & \textbf{100\%}\\
+MCP实时API成功率 & \textbf{95\%+}\\
+20任务并发耗时 & 216s\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{典型用例:}
+\begin{itemize}[leftmargin=*]
+    \item 广州$\to$成都 五星/打车/大熊猫 $\checkmark$
+    \item 杭州$\to$南京 穷游/地铁/中山陵 $\checkmark$
+    \item 厦门 鼓浪屿+厦大(高校) $\checkmark$
+\end{itemize}
+
+\vspace{0.3cm}
+\section*{\color{mainblue}7. 容错机制}
+
+\begin{itemize}[leftmargin=*]
+    \item \textbf{超时保护:} MCP 10s / TCP 5s / API 5s
+    \item \textbf{重试+降级:} 3次重试→Mock兜底
+    \item \textbf{错误隔离:} 单Agent失败不影响全局，返回partial
+    \item \textbf{注册中心HA:} 主宕机自动切备用
+    \item \textbf{AMap限流:} 指数退避重试
+\end{itemize}
+
+\vspace{0.3cm}
+\section*{\color{mainblue}8. 总结}
+\textbf{成功构建了完整的分布式多智能体系统：}
+\begin{itemize}[leftmargin=*]
+    \item 14进程 $\cdot$ TCP自定义协议 $\cdot$ JSON-RPC $\cdot$ 注册中心 $\cdot$ 网关
+    \item 12城市Mock数据 $\cdot$ 77景点 $\cdot$ 61酒店
+    \item 20并发100\%成功 $\cdot$ 城市/偏好/must\_visit全正确
+\end{itemize}
+\textbf{未来:} 跨设备部署、多城市串联路线。
+
+\end{multicols}
+
+\vspace{0.5cm}
+\hrule
+\vspace{0.3cm}
+\begin{center}
+{\small 开源地址: github.com/fyf-spec/Agent-collaboration-network-on-A2A-MCP \hspace{2cm} 项目: 计算机网络课程设计 2026}
+\end{center}
+
+\end{frame}
+\end{document}

@@ -2157,8 +2157,11 @@ def _grounded_final_answer(question: str, snapshot: dict[str, Any]) -> str:
 
     total = _sum_money_ranges(ticket_total, hotel_total, intercity_total, traffic_total)
     lines.append("\n六、费用总计")
-    lines.append(f"- 景点门票：{_format_money_range(ticket_total)}")
-    lines.append(f"- 住宿费用：{_format_money_range(hotel_total)}")
+    ticket_str = _format_money_range(ticket_total)
+    lines.append(f"- 景点门票：{ticket_str if ticket_str else '0元'}")
+    hotel_str = _format_money_range(hotel_total)
+    if hotel_str:
+        lines.append(f"- 住宿费用：{hotel_str}")
     lines.append(f"- 城市间交通：{_format_money_range(intercity_total)}")
     lines.append(f"- 市内交通：{_format_money_range(traffic_total)}")
     lines.append(f"- 合计：{_format_money_range(total)}")

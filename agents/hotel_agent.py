@@ -736,9 +736,14 @@ def _estimate_total_cost(selected_hotel: dict[str, Any], travel_task: dict[str, 
     nights = max(1, days - 1)
     price = selected_hotel.get("price_per_night")
     try:
+        parts = str(price).split('-')
+        if len(parts) == 2:
+            low = int(parts[0]) * nights
+            high = int(parts[1]) * nights
+            return f"约{low}-{high}元" if low != high else f"约{low}元"
         return f"约{int(price) * nights}元"
     except (TypeError, ValueError):
-        return "待确认"
+        return ""
 
 
 def _as_str_list(value: Any, default: list[str]) -> list[str]:
