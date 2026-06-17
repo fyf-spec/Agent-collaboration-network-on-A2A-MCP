@@ -29,6 +29,7 @@ from mcp_servers.realtime.normalizers import (
     attach_mock_source,
     build_far_future_weather_result,
     normalize_open_meteo_weather,
+    normalize_weather,
 )
 from mcp_servers.realtime.open_meteo_client import OpenMeteoClient
 
@@ -70,8 +71,13 @@ def get_weather(city: str = "北京", date: str = "", days: int = 1, **kwargs: o
             min(float(MCP_REALTIME_TIMEOUT_SECONDS), realtime_budget / 3.0),
         )
 
+        # 先用 AMap 天气 API（中国气象局数据，更准），≤3天预报用这个
+        # 超过3天再用 Open-Meteo
         def _realtime_weather_call():
             location = AMapClient(timeout=provider_timeout).geocode_city_or_address(city, timeout=provider_timeout)
+            if day_count <= 4:
+                amap_data = AMapClient(timeout=provider_timeout).get_weather(city, forecast=True)
+                return normalize_weather(amap_data, requested_city=city, date=requested_date, days=day_count)
             longitude, latitude = _parse_amap_location(location)
             request_days = min(OPEN_METEO_MAX_FORECAST_DAYS, start_offset + day_count)
             data = OpenMeteoClient(timeout=provider_timeout).get_forecast(
@@ -82,7 +88,7 @@ def get_weather(city: str = "北京", date: str = "", days: int = 1, **kwargs: o
             return normalize_open_meteo_weather(
                 data, requested_city=city, date=requested_date, days=day_count, start_offset=start_offset,
             )
-        return retry_call(_realtime_weather_call, retries=0, sleep_seconds=0.0)
+        return retry_call(_realtime_weather_call, retries=2, sleep_seconds=1.0)
     except Exception as exc:
         if not MCP_REALTIME_FALLBACK_TO_MOCK:
             raise

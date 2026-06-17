@@ -37,7 +37,8 @@
       {"name": "西溪湿地", "ticket": "70-80元", "duration": "3-5小时", "open_time": "08:00-17:30", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "西溪湿地南站", "tags": ["湿地", "自然", "户外"]},
       {"name": "河坊街", "ticket": 0, "duration": "1.5-2小时", "open_time": "全天开放，商户时间不一", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "定安路站/吴山广场站", "tags": ["老街", "美食", "免费"]},
       {"name": "京杭大运河", "ticket": 0, "duration": "2-3小时", "open_time": "全天开放", "reservation_required": false, "indoor_or_outdoor": "outdoor", "nearest_subway": "拱宸桥东站", "tags": ["运河", "历史", "步行"]},
-      {"name": "良渚古城遗址公园", "ticket": "60元左右", "duration": "3-5小时", "open_time": "09:00-17:00", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "良渚站后换乘公交", "tags": ["世界遗产", "考古", "户外"]}
+      {"name": "良渚古城遗址公园", "ticket": "60元左右", "duration": "3-5小时", "open_time": "09:00-17:00", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "良渚站后换乘公交", "tags": ["世界遗产", "考古", "户外"]},
+      {"name": "雷峰塔", "ticket": "40元", "duration": "1-2小时", "open_time": "08:00-20:00", "reservation_required": false, "indoor_or_outdoor": "mixed", "nearest_subway": "龙翔桥换乘公交", "tags": ["经典景点", "历史", "西湖周边", "热门"]}
     ],
     "南京": [
       {"name": "中山陵", "ticket": 0, "duration": "2-3小时", "open_time": "08:30-17:00，周一部分区域闭馆", "reservation_required": true, "indoor_or_outdoor": "outdoor", "nearest_subway": "苜蓿园站后换乘", "tags": ["历史", "钟山风景区", "免费"]},
