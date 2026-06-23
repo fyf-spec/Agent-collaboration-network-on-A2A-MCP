@@ -128,29 +128,53 @@ def _existing_task(context: dict[str, Any]) -> dict[str, Any]:
 
 def _ensure_defaults(task: dict[str, Any], instruction: str, *, capability: str) -> dict[str, Any]:
     text = _request_text(instruction, {})
-    if not task.get("origin_city"):
+    if _is_unknown(task.get("origin_city")):
         task["origin_city"] = _extract_origin_city(text)
-    if not task.get("destination_city"):
+    if _is_unknown(task.get("destination_city")):
         task["destination_city"] = _extract_destination_city(text, origin_city=task.get("origin_city"))
-    task.setdefault("city", task.get("destination_city"))
-    task.setdefault("days", _extract_days(text))
+    if _is_unknown(task.get("city")):
+        task["city"] = task.get("destination_city")
+    if _is_unknown(task.get("days")):
+        task["days"] = _extract_days(text)
     start_date, date_text = _extract_start_date(text)
-    task.setdefault("start_date", start_date or "未指定")
-    task.setdefault("date_text", date_text)
-    task.setdefault("budget_level", _extract_budget_level(text))
-    task.setdefault("transport_preference", _extract_transport_preference(text))
-    task.setdefault("must_visit", _extract_must_visit(text))
-    task.setdefault(
-        "preferences",
-        _extract_preferences(
+    if _is_unknown(task.get("start_date")):
+        task["start_date"] = start_date or "未指定"
+    if _is_unknown(task.get("date_text")):
+        task["date_text"] = date_text
+    if _is_unknown(task.get("budget_level")):
+        task["budget_level"] = _extract_budget_level(text)
+    if _is_unknown(task.get("transport_preference")):
+        task["transport_preference"] = _extract_transport_preference(text)
+    if _is_unknown(task.get("must_visit")):
+        task["must_visit"] = _extract_must_visit(text)
+    if _is_unknown(task.get("preferences")):
+        task["preferences"] = _extract_preferences(
             text,
             budget_level=str(task.get("budget_level") or "normal"),
             transport_preference=str(task.get("transport_preference") or "normal"),
-        ),
-    )
-    task.setdefault("raw_constraints", text)
+        )
+    if _is_unknown(task.get("raw_constraints")):
+        task["raw_constraints"] = text
     task.setdefault("_parsed_by_capability", capability)
     return task
+
+
+def _is_unknown(value: Any) -> bool:
+    if value in (None, "", [], {}):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {
+            "",
+            "未指定",
+            "待确认",
+            "目的地",
+            "出发地",
+            "unknown",
+            "unspecified",
+            "none",
+            "null",
+        }
+    return False
 
 
 def _request_text(instruction: str, context: dict[str, Any]) -> str:
@@ -190,6 +214,7 @@ def _extract_destination_city(text: str, *, origin_city: Any = None) -> str:
 def _clean_place(value: str) -> str:
     text = value.strip()
     text = re.sub(r"^(?:一下|一趟|一次)", "", text)
+    text = re.sub(r"(?:玩|游玩|逛|看看|看|住|待)(?:\d+|[一二两三四五六七八九十])?天?.*$", "", text)
     text = re.sub(r"(?:的)?(?:\d+|[一二两三四五六七八九十])天.*$", "", text)
     text = re.sub(r"(?:的)?(?:低预算|高预算|穷游|省钱|经济|舒适|豪华).*$", "", text)
     text = re.sub(r"(?:的)?(?:旅行|旅游|行程|计划).*$", "", text)
@@ -287,13 +312,37 @@ def _extract_transport_preference(text: str) -> str:
 
 
 def _extract_must_visit(text: str) -> list[str]:
-    match = re.search(r"(?:必须|一定|务必)(?:要)?去([\u4e00-\u9fa5A-Za-z0-9、/和与 ]{2,40}?)(?:看看|看|玩|$|[，,。；;])", text)
-    if not match:
-        return []
-    phrase = match.group(1).strip()
-    if any(word in phrase for word in ("著名景点", "经典景点", "热门景点")):
-        return []
-    return [item.strip() for item in re.split(r"[、/和与\s]+", phrase) if item.strip()]
+    result: list[str] = []
+    match = re.search(
+        r"(?:必须|一定|务必|想|希望)(?:要)?去([\u4e00-\u9fa5A-Za-z0-9、/和与 ]{2,40}?)(?:看看|看|玩|参观|$|[，,。；;])",
+        text,
+    )
+    if match:
+        phrase = match.group(1).strip()
+        if not any(word in phrase for word in ("著名景点", "经典景点", "热门景点")):
+            result.extend(item.strip() for item in re.split(r"[、/和与\s]+", phrase) if item.strip())
+    known_spots = [
+        "天安门广场",
+        "天安门",
+        "故宫",
+        "国家博物馆",
+        "天坛",
+        "颐和园",
+        "圆明园",
+        "什刹海",
+        "南锣鼓巷",
+        "总统府",
+        "夫子庙",
+        "秦淮河",
+        "南京博物院",
+        "西湖",
+        "灵隐寺",
+        "雷峰塔",
+        "断桥",
+        "西溪湿地",
+    ]
+    result.extend(spot for spot in known_spots if spot in text)
+    return list(dict.fromkeys(result))
 
 
 def _extract_preferences(text: str, *, budget_level: str, transport_preference: str) -> list[str]:

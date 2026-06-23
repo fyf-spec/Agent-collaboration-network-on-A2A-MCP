@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import threading
 from typing import Any
@@ -17,8 +18,13 @@ import logging
 # 全局logging格式
 def setup_system_logger():
     # 配置全局 logging 基本格式与级别
+    level_name = os.getenv("A2A_LOG_LEVEL", "INFO").strip().upper()
+    if level_name in {"OFF", "NONE", "DISABLED"}:
+        level = logging.CRITICAL + 1
+    else:
+        level = getattr(logging, level_name, logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="\033[0m[%(asctime)s]\033[0m \033[36m[%(levelname)s]\033[0m [%(name)s] %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S%z"
     )
@@ -85,7 +91,8 @@ def log_network_event(
 
     line = json.dumps(record, ensure_ascii=False, default=str)
     with _LOG_LOCK:
-        print(_format_console_line(record), flush=True)
+        if os.getenv("A2A_CONSOLE_NETWORK_LOG", "1").strip().lower() not in {"0", "false", "no", "off"}:
+            print(_format_console_line(record), flush=True)
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
             with log_file.open("a", encoding="utf-8") as handle:

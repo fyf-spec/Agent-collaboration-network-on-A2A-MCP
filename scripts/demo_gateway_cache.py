@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -22,10 +23,17 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 from common.config import MCP_GATEWAY, MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS, MCP_HTTP_TIMEOUT_SECONDS
 from common.http_client import HttpJsonClientError, post_json
+from scripts.demo_runtime import add_runtime_args, apply_runtime_args, runtime_summary
 from scripts.start_all import run_services
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the MCP Gateway cache demo.")
+    add_runtime_args(parser)
+    parser.add_argument("--startup-delay", type=float, default=0.3)
+    args = parser.parse_args()
+    apply_runtime_args(args)
+
     gateway_url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}{MCP_GATEWAY.get('path', '/')}"
     metrics_url = f"http://{MCP_GATEWAY['host']}:{MCP_GATEWAY['port']}/metrics"
     request_timeout = max(5.0, float(MCP_HTTP_TIMEOUT_SECONDS), float(MCP_GATEWAY_UPSTREAM_TIMEOUT_SECONDS)) + 2.0
@@ -47,7 +55,8 @@ def main() -> None:
         "coordinator",
     ]
 
-    with run_services(exclude=exclude):
+    print(f"Runtime: {runtime_summary(args)}")
+    with run_services(exclude=exclude, mode=args.mode, startup_delay_seconds=args.startup_delay):
         time.sleep(1.0)
 
         first_payload = {
@@ -72,10 +81,10 @@ def main() -> None:
             second = post_json(gateway_url, second_payload, timeout=request_timeout)
             metrics = _get_json(metrics_url, timeout=request_timeout)
 
-            print("First response:")
-            print(json.dumps(first.data, ensure_ascii=False, indent=2))
-            print("\nSecond response:")
-            print(json.dumps(second.data, ensure_ascii=False, indent=2))
+            print("First response summary:")
+            print(json.dumps(_weather_summary(first.data), ensure_ascii=False, indent=2))
+            print("\nSecond response summary:")
+            print(json.dumps(_weather_summary(second.data), ensure_ascii=False, indent=2))
 
             metric_body = metrics.get("metrics", {})
             print("\nGateway metrics:")
@@ -109,6 +118,19 @@ def _get_json(url: str, *, timeout: float) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("GET response body must be a JSON object")
     return data
+
+
+def _weather_summary(payload: Any) -> dict[str, Any]:
+    result = payload.get("result", {}) if isinstance(payload, dict) else {}
+    source = result.get("data_source", {}) if isinstance(result, dict) else {}
+    return {
+        "city": result.get("city"),
+        "condition": result.get("condition"),
+        "temperature": result.get("temp"),
+        "provider": source.get("provider"),
+        "realtime": source.get("realtime"),
+        "id": payload.get("id") if isinstance(payload, dict) else None,
+    }
 
 
 if __name__ == "__main__":

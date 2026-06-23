@@ -26,6 +26,8 @@ def main() -> None:
     has_key = bool(os.getenv("AMAP_WEB_KEY", "").strip())
     print("Realtime MCP smoke test")
     print(f"AMAP_WEB_KEY configured: {has_key}")
+    if not has_key:
+        raise RuntimeError("AMAP_WEB_KEY is required for realtime MCP smoke test")
 
     traffic_segments = [
         {
@@ -54,33 +56,27 @@ def main() -> None:
 
     for name, result in checks.items():
         source = _source(result)
-        print(f"- {name}: provider={source.get('provider')} realtime={source.get('realtime')} fallback={source.get('fallback_used')}")
-        if source.get("fallback_reason"):
-            print(f"  fallback_reason={source.get('fallback_reason')}")
+        print(f"- {name}: provider={source.get('provider')} realtime={source.get('realtime')}")
         if name == "weather":
             forecast_days = result.get("forecast_days") if isinstance(result.get("forecast_days"), list) else []
             print(f"  forecast_days={len(forecast_days)}")
-        if name in {"attraction", "hotel"}:
-            print(f"  field_sources={source.get('field_sources', {})}")
+        if name == "attraction":
+            spots = result.get("spots", []) if isinstance(result.get("spots"), list) else []
+            print(f"  spots={len(spots)}")
+        if name == "hotel":
+            hotels = result.get("hotels", []) if isinstance(result.get("hotels"), list) else []
+            print(f"  hotels={len(hotels)}")
         if name == "traffic":
             routes = result.get("routes", []) if isinstance(result.get("routes"), list) else []
             for index, route in enumerate(routes, start=1):
                 route_source = _source(route)
                 print(
                     f"  segment {index}: provider={route_source.get('provider')} "
-                    f"realtime={route_source.get('realtime')} fallback={route_source.get('fallback_used')}"
+                    f"realtime={route_source.get('realtime')}"
                 )
 
-    if not has_key:
-        for name, result in checks.items():
-            source = _source(result)
-            assert source.get("provider") == "mock", f"{name} should fall back to mock without AMAP_WEB_KEY"
-            assert source.get("realtime") is False, f"{name} should not be realtime without AMAP_WEB_KEY"
-        print("OK: missing AMAP_WEB_KEY falls back to mock.")
-        return
-
     weather_source = _source(checks["weather"])
-    assert weather_source.get("provider") == "open-meteo", f"weather did not use Open-Meteo: {json.dumps(weather_source, ensure_ascii=False)}"
+    assert weather_source.get("provider") in {"amap", "open-meteo"}, f"weather did not use a realtime weather provider: {json.dumps(weather_source, ensure_ascii=False)}"
     assert weather_source.get("realtime") is True, "weather did not report realtime=true"
     assert checks["weather"].get("forecast_days"), "weather did not return forecast_days"
 
@@ -92,7 +88,7 @@ def main() -> None:
     traffic_source = _source(checks["traffic"])
     assert traffic_source.get("provider") in {"amap", "amap+mock"}, f"traffic did not use realtime route layer: {json.dumps(traffic_source, ensure_ascii=False)}"
     assert traffic_source.get("realtime") is True, "traffic did not report realtime=true"
-    print("OK: Open-Meteo weather forecast, attraction, hotel and traffic route layer returned realtime-capable data.")
+    print("OK: weather, attraction, hotel and traffic route layer returned realtime-capable data.")
     print("Note: cache is intentionally not tested here; caching will be handled by MCP Gateway later.")
 
 

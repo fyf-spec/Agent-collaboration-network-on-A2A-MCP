@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import signal
 import sys
@@ -11,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.demo_utils import run_task_demo
+from scripts.demo_runtime import add_runtime_args, apply_runtime_args, runtime_summary
 from scripts.start_all import run_services
 
 
@@ -22,13 +24,25 @@ os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the backup registry failover demo.")
+    add_runtime_args(parser)
+    parser.add_argument(
+        "--question",
+        default="请帮我规划从上海去杭州的三天旅行计划，预算适中，想去西湖和灵隐寺，尽量使用地铁和步行。",
+    )
+    parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument("--startup-delay", type=float, default=0.3)
+    args = parser.parse_args()
+    apply_runtime_args(args)
+
     print("================================================================")
     print("🚀 启动 [双注册中心高可用 Demo]")
     print("目标: 验证主注册中心宕机时，系统是否能自动切换到备用注册中心并完成任务。")
     print("================================================================\n")
     
     # 拉起所有服务（包括 primary 和 backup 两个注册中心）
-    with run_services(mode="no-llm") as processes:
+    print(f"Runtime: {runtime_summary(args)}")
+    with run_services(mode=args.mode, startup_delay_seconds=args.startup_delay) as processes:
         print("⏳ 等待 3 秒，让所有 Agent 向两个注册中心完成初始注册和心跳...")
         time.sleep(3)
         
@@ -52,11 +66,11 @@ def main() -> None:
             return
 
         print("\n✈️  开始向 Coordinator 提交旅行任务...")
-        print("预期表现：Coordinator 请求主节点会超时/拒绝连接，然后自动 fallback 到备用节点，任务正常执行。")
+        print("预期表现：Coordinator 在主节点不可用时切换到备用节点，任务正常执行。")
         
         run_task_demo(
-            "请帮我规划从上海去北京的五天低预算旅行计划，尽量公共交通，故宫和天安门一定要去。",
-            timeout=600.0,
+            args.question,
+            timeout=args.timeout,
         )
 
 

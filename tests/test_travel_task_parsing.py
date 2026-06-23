@@ -42,6 +42,43 @@ class TravelTaskParsingTests(unittest.TestCase):
         self.assertEqual("黄山", extract_city("春节假期从上海去黄山玩，要求参观重要景区。", {}))
         self.assertEqual("厦门", extract_city("从南京到厦门玩两天，低预算。", {}))
 
+    def test_agent_parser_replaces_unknown_context_city_from_instruction(self) -> None:
+        task = extract_travel_task_from_context(
+            "请帮我规划从上海去杭州的三天旅行计划，预算适中，想去西湖和灵隐寺，尽量使用地铁和步行。",
+            {
+                "travel_task": {
+                    "origin_city": "未指定",
+                    "destination_city": "未指定",
+                    "city": "目的地",
+                    "days": "未指定",
+                    "transport_preference": "未指定",
+                }
+            },
+        )
+
+        self.assertEqual("上海", task["origin_city"])
+        self.assertEqual("杭州", task["destination_city"])
+        self.assertEqual("杭州", task["city"])
+        self.assertEqual(3, task["days"])
+        self.assertEqual("public_transport", task["transport_preference"])
+        self.assertIn("西湖", task["must_visit"])
+        self.assertIn("灵隐寺", task["must_visit"])
+
+    def test_llm_split_context_keeps_rule_parsed_travel_fields(self) -> None:
+        question = "请帮我规划从上海去杭州的三天旅行计划，预算适中，想去西湖和灵隐寺，尽量使用地铁和步行。"
+        merged = coordinator._merge_rule_task_fields(
+            {"split_only": True, "summary": "杭州三天旅行规划"},
+            coordinator._extract_travel_task_by_rules(question),
+        )
+
+        self.assertEqual("上海", merged["origin_city"])
+        self.assertEqual("杭州", merged["destination_city"])
+        self.assertEqual("杭州", merged["city"])
+        self.assertEqual(3, merged["days"])
+        self.assertEqual("public_transport", merged["transport_preference"])
+        self.assertIn("西湖", merged["must_visit"])
+        self.assertIn("灵隐寺", merged["must_visit"])
+
     def test_mock_attractions_do_not_relabel_unknown_city_as_beijing(self) -> None:
         result = search_attractions(city="云南", days=3)
 

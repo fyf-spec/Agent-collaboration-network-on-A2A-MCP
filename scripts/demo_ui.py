@@ -117,8 +117,8 @@ MCP_SERVICE_LABELS = {
 REALTIME_MCP_SOURCE_ROWS = [
     {
         "MCP": "Weather",
-        "实时来源": "Open-Meteo 5 天预报 + 高德地理编码",
-        "UI 可观察字段": "provider, forecast_days, fallback_used",
+        "实时来源": "高德天气 / Open-Meteo 预报",
+        "UI 可观察字段": "provider, forecast_days",
     },
     {
         "MCP": "Attraction",
@@ -128,17 +128,17 @@ REALTIME_MCP_SOURCE_ROWS = [
     {
         "MCP": "Hotel",
         "实时来源": "高德 POI，按预算档搜索并围绕景点重心",
-        "UI 可观察字段": "provider, field_sources, fallback_used",
+        "UI 可观察字段": "provider, field_sources",
     },
     {
         "MCP": "Traffic",
         "实时来源": "高德路线；城际交通按驾车距离推算高铁/飞机",
-        "UI 可观察字段": "provider, preference, fallback_used",
+        "UI 可观察字段": "provider, preference",
     },
     {
         "MCP": "Packing",
         "实时来源": "规则引擎，依赖天气结果",
-        "UI 可观察字段": "provider, fallback_used",
+        "UI 可观察字段": "provider",
     },
 ]
 
@@ -1173,21 +1173,27 @@ def _parse_pcap_capture(capture: dict[str, Any]) -> dict[str, Any]:
 
 
 @st.cache_data(ttl=15)
-def _latest_finished_capture_from_disk() -> dict[str, Any] | None:
+def _latest_capture_path_from_disk() -> str:
     if not CAPTURE_DIR.exists():
-        return None
+        return ""
     pcaps = sorted(
         [item for item in CAPTURE_DIR.glob("*.pcapng") if "_filtered_protocols" not in item.stem],
         key=lambda item: item.stat().st_mtime,
         reverse=True,
     )
-    if not pcaps:
+    return str(pcaps[0]) if pcaps else ""
+
+
+@st.cache_data(ttl=15)
+def _latest_finished_capture_from_disk() -> dict[str, Any] | None:
+    pcap_path = _latest_capture_path_from_disk()
+    if not pcap_path:
         return None
     capture = {
         "ok": True,
         "status": "complete",
         "reason": "latest_pcap",
-        "pcap_path": str(pcaps[0]),
+        "pcap_path": pcap_path,
         "tshark": _find_wireshark_tool("tshark.exe"),
         "capinfos": _find_wireshark_tool("capinfos.exe"),
     }
@@ -1595,6 +1601,96 @@ def _brief_pcap_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return brief_rows
 
 
+PCAP_TABLE_COLUMNS = [
+    ("frame", "frame"),
+    ("stream", "stream"),
+    ("time_s", "time_s"),
+    ("direction", "direction"),
+    ("src", "src"),
+    ("dst", "dst"),
+    ("flags", "flags"),
+    ("seq", "seq"),
+    ("ack", "ack"),
+    ("tcp_len", "tcp_len"),
+    ("http", "http"),
+    ("analysis", "analysis"),
+    ("message", "message"),
+    ("payload_text", "payload_text"),
+    ("payload_head", "payload_head"),
+]
+
+
+def _render_pcap_rows_table(rows: list[dict[str, Any]]) -> None:
+    brief_rows = _brief_pcap_rows(rows)
+    headers = "".join(f"<th>{escape(label)}</th>" for _, label in PCAP_TABLE_COLUMNS)
+    body_rows = []
+    for row in brief_rows:
+        cells = []
+        for key, _ in PCAP_TABLE_COLUMNS:
+            value = "" if row.get(key) is None else str(row.get(key))
+            css_class = "pcap-wide-cell" if key in {"src", "dst", "analysis", "payload_text", "payload_head"} else ""
+            cells.append(f'<td class="{css_class}" title="{escape(value, quote=True)}">{escape(value)}</td>')
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f"""
+        <style>
+        .pcap-table-wrap {{
+            width: 100%;
+            margin: 8px 0 18px;
+            overflow-x: auto;
+            overflow-y: visible;
+            border: 1px solid rgba(148, 163, 184, .28);
+            border-radius: 8px;
+        }}
+        .pcap-table {{
+            width: max-content;
+            min-width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            line-height: 1.35;
+        }}
+        .pcap-table th,
+        .pcap-table td {{
+            max-width: 180px;
+            padding: 7px 9px;
+            border-bottom: 1px solid rgba(148, 163, 184, .18);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            vertical-align: top;
+        }}
+        .pcap-table th {{
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            background: #161b24;
+            color: #e5edf8;
+            font-weight: 700;
+            text-align: left;
+        }}
+        .pcap-table td {{
+            color: rgba(226, 232, 240, .94);
+            background: rgba(15, 23, 42, .18);
+        }}
+        .pcap-table tr:last-child td {{
+            border-bottom: 0;
+        }}
+        .pcap-table .pcap-wide-cell {{
+            max-width: 280px;
+        }}
+        </style>
+        <div class="pcap-table-wrap">
+          <table class="pcap-table">
+            <thead><tr>{headers}</tr></thead>
+            <tbody>{''.join(body_rows)}</tbody>
+          </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _example_caption(example: dict[str, Any]) -> str:
     rows = example.get("rows", [])
     frame_ids = ", ".join(str(row.get("frame")) for row in rows)
@@ -1738,7 +1834,7 @@ def _render_pcap_group(group: dict[str, Any]) -> None:
         st.caption(str(caption))
     rows = group.get("rows", [])
     if rows:
-        st.dataframe(_brief_pcap_rows(rows), hide_index=True, width="stretch")
+        _render_pcap_rows_table(rows)
     else:
         st.warning(str(group.get("empty", "本次 pcap 没有该分组报文。")))
 
@@ -1774,6 +1870,8 @@ def render_task_packet_capture_panel() -> None:
     refresh_task_packet_capture()
     active = st.session_state.get("active_pcap_capture")
     capture = active if isinstance(active, dict) else st.session_state.get("last_pcap_capture")
+    if not isinstance(capture, dict):
+        capture = _latest_finished_capture_from_disk()
 
     if not isinstance(capture, dict):
         st.info("提交任务后会显示本次任务同步抓到的 pcap frame。")
@@ -1838,7 +1936,7 @@ def has_task_packet_capture() -> bool:
     refresh_task_packet_capture()
     return isinstance(st.session_state.get("active_pcap_capture"), dict) or isinstance(
         st.session_state.get("last_pcap_capture"), dict
-    )
+    ) or bool(_latest_capture_path_from_disk())
 
 
 def clear_task_display_state() -> None:
@@ -1924,21 +2022,21 @@ def _data_source_row(path: str, source: dict[str, Any]) -> dict[str, str]:
         "位置": path,
         "Provider": _provider_label(source.get("provider")),
         "实时": "是" if source.get("realtime") else "否",
-        "Fallback": "是" if source.get("fallback_used") else "否",
-        "原因": _display_value(source.get("fallback_reason") or source.get("forecast_unavailable_reason")),
+        "数据状态": "实时数据" if source.get("realtime") else "本地数据",
+        "说明": _display_value(source.get("fallback_reason") or source.get("forecast_unavailable_reason")),
         "缺失/补齐字段": _display_value(source.get("missing_fields") or source.get("field_sources")),
     }
 
 
-def _legacy_fallback_row(path: str, payload: dict[str, Any]) -> dict[str, str]:
-    fallback_used = bool(payload.get("fallback_used"))
-    provider = "高德距离推算" if fallback_used else "本地距离表"
+def _legacy_source_row(path: str, payload: dict[str, Any]) -> dict[str, str]:
+    realtime_used = bool(payload.get("fallback_used"))
+    provider = "高德距离推算" if realtime_used else "本地距离表"
     return {
         "位置": path,
         "Provider": provider,
-        "实时": "是" if fallback_used else "否",
-        "Fallback": "是" if fallback_used else "否",
-        "原因": _display_value(payload.get("fallback_reason") or payload.get("cost_note")),
+        "实时": "是" if realtime_used else "否",
+        "数据状态": "实时数据" if realtime_used else "本地数据",
+        "说明": _display_value(payload.get("fallback_reason") or payload.get("cost_note")),
         "缺失/补齐字段": "-",
     }
 
@@ -1954,7 +2052,7 @@ def _collect_data_source_rows(payload: Any, path: str = "result", rows: list[dic
         if isinstance(source, dict):
             rows.append(_data_source_row(path, source))
         elif "fallback_used" in payload and any(key in payload for key in ("recommended_option", "alternatives", "cost_note")):
-            rows.append(_legacy_fallback_row(path, payload))
+            rows.append(_legacy_source_row(path, payload))
 
         for key, value in payload.items():
             if key == "data_source" or not isinstance(value, (dict, list)):
@@ -3815,7 +3913,7 @@ def render_realtime_mcp_panel() -> None:
         with control_cols[0]:
             st.toggle("实时 MCP", key="a2a_realtime_mcp_enabled")
         with control_cols[1]:
-            st.toggle("Mock 回退", key="mcp_realtime_fallback_to_mock")
+            st.toggle("本地数据备选", key="mcp_realtime_fallback_to_mock")
         with control_cols[2]:
             st.number_input(
                 "Realtime API Timeout (秒)",
@@ -3845,7 +3943,7 @@ def render_realtime_mcp_panel() -> None:
                 "来源": "AMAP_API_BASE_URL",
             },
             {
-                "配置": "Mock 回退",
+                "配置": "本地数据备选",
                 "当前值": "开启" if fallback_enabled else "关闭",
                 "来源": "UI -> MCP_REALTIME_FALLBACK_TO_MOCK",
             },
@@ -3869,7 +3967,7 @@ def render_realtime_mcp_panel() -> None:
             st.dataframe(MCP_GATEWAY_CACHE_ROWS, hide_index=True, width="stretch")
 
         if realtime_enabled and not DEFAULT_AMAP_WEB_KEY:
-            st.warning("实时 MCP 已开启，但 AMAP_WEB_KEY 未配置；高德相关 MCP 会走 Mock 回退。")
+            st.warning("实时 MCP 已开启，但 AMAP_WEB_KEY 未配置；请配置后再运行实时数据演示。")
         st.caption("这些参数会进入后续启动的节点进程；已经运行的节点需要重启后才会读取新值。")
 
 

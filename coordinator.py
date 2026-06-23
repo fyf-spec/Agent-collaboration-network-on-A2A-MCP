@@ -1025,8 +1025,8 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
     MCP JSON-RPC params.
     """
     default_dag = _default_travel_dag(question, available_agents)
+    rule_task = _extract_travel_task_by_rules(question)
     if no_llm_mode_enabled():
-        rule_task = _extract_travel_task_by_rules(question)
         rule_task["_parser"] = "no_llm_rule_travel_task"
         return rule_task, default_dag
     try:
@@ -1045,6 +1045,7 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
         if not isinstance(workflow_dag, list):
             workflow_dag = default_dag
         workflow_dag = _ensure_travel_workflow_dag(workflow_dag, default_dag, available_agents)
+        request_split = _merge_rule_task_fields(request_split, rule_task)
         request_split.setdefault("_parser", "coordinator_llm_request_splitter")
         request_split.setdefault("_raw_question", question)
         request_split.setdefault("split_only", True)
@@ -1059,7 +1060,46 @@ def extract_travel_task(question: str, available_agents: dict[str, Any]) -> tupl
             "_raw_question": question,
             "split_only": True,
         }
+        fallback = _merge_rule_task_fields(fallback, rule_task)
         return fallback, default_dag
+
+
+def _merge_rule_task_fields(task: dict[str, Any], rule_task: dict[str, Any]) -> dict[str, Any]:
+    result = dict(task)
+    for key in [
+        "origin_city",
+        "destination_city",
+        "days",
+        "start_date",
+        "end_date",
+        "date_text",
+        "date_source",
+        "date_confidence",
+        "budget_level",
+        "transport_preference",
+        "must_visit",
+        "preferences",
+        "avoid",
+        "constraints",
+    ]:
+        value = rule_task.get(key)
+        if _is_missing_travel_value(value):
+            continue
+        if key in {"origin_city", "destination_city", "days", "must_visit", "transport_preference"}:
+            result[key] = value
+        elif _is_missing_travel_value(result.get(key)):
+            result[key] = value
+    if not _is_missing_travel_value(result.get("destination_city")):
+        result["city"] = result["destination_city"]
+    if _is_missing_travel_value(result.get("raw_constraints")):
+        result["raw_constraints"] = rule_task.get("_raw_question") or result.get("summary") or ""
+    return result
+
+
+def _is_missing_travel_value(value: Any) -> bool:
+    if value in (None, "", [], {}):
+        return True
+    return isinstance(value, str) and is_unknown(value)
 
 
 def _task_analysis_prompt(question: str, available_agents: dict[str, Any]) -> str:
@@ -1758,7 +1798,10 @@ def _extract_days(text: str) -> int:
 def _extract_must_visit(text: str) -> list[str]:
     # 从文本中提取必去景点
     result: list[str] = []
-    match = re.search(r"(?:必须|一定|务必)(?:要)?去([\u4e00-\u9fa5A-Za-z0-9、/和与 ]{2,40}?)(?:看看|看|玩|$|[，,。；;])", text)
+    match = re.search(
+        r"(?:必须|一定|务必|想|希望)(?:要)?去([\u4e00-\u9fa5A-Za-z0-9、/和与 ]{2,40}?)(?:看看|看|玩|参观|$|[，,。；;])",
+        text,
+    )
     if match:
         phrase = match.group(1).strip()
         if not any(word in phrase for word in ("著名景点", "经典景点", "热门景点")):
@@ -1778,6 +1821,11 @@ def _extract_must_visit(text: str) -> list[str]:
         "夫子庙",
         "秦淮河",
         "南京博物院",
+        "西湖",
+        "灵隐寺",
+        "雷峰塔",
+        "断桥",
+        "西溪湿地",
     ]
     result.extend(spot for spot in known_spots if spot in text)
     return list(dict.fromkeys(result))
@@ -2543,7 +2591,8 @@ def _build_clean_final_plan_payload(question: str, snapshot: dict[str, Any]) -> 
     """
     results = snapshot.get("results", {}) or {}
     plan = snapshot.get("plan", {}) or {}
-    travel_task = plan.get("travel_task", {}) or _travel_task_from_agent_results(results)
+    plan_travel_task = plan.get("travel_task", {}) if isinstance(plan.get("travel_task"), dict) else {}
+    travel_task = _final_travel_task(question, plan_travel_task, results)
 
     weather = results.get("weather_agent", {}) if isinstance(results.get("weather_agent"), dict) else {}
     attraction = results.get("attraction_agent", {}) if isinstance(results.get("attraction_agent"), dict) else {}
@@ -2652,6 +2701,25 @@ def _travel_task_from_agent_results(results: dict[str, Any]) -> dict[str, Any]:
             if value in (None, "", [], {}, "未指定"):
                 continue
             merged.setdefault(key, value)
+    return merged
+
+
+def _final_travel_task(question: str, plan_travel_task: dict[str, Any], results: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in (
+        plan_travel_task if isinstance(plan_travel_task, dict) else {},
+        _travel_task_from_agent_results(results),
+        _extract_travel_task_by_rules(question),
+    ):
+        for key, value in source.items():
+            if _is_missing_travel_value(value):
+                continue
+            if key in {"origin_city", "destination_city", "days", "must_visit", "transport_preference"}:
+                merged[key] = value
+            else:
+                merged.setdefault(key, value)
+    if not _is_missing_travel_value(merged.get("destination_city")):
+        merged["city"] = merged["destination_city"]
     return merged
 
 

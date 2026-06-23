@@ -73,7 +73,7 @@ def run_services(
 
     logger.info("Runtime mode: %s", mode_name)
     if mode_name == "no-llm":
-        logger.info("LLM calls are disabled; services will use deterministic rule fallbacks.")
+        logger.info("LLM calls are disabled; services will use deterministic rules.")
     else:
         logger.info("LLM calls are enabled; configure A2A_LLM_* and MODELSCOPE_API_KEY in .env.")
 
@@ -161,7 +161,24 @@ def _parse_args() -> argparse.Namespace:
         default=0.3,
         help="Seconds to wait after starting each service.",
     )
-    return parser.parse_args()
+    realtime_group = parser.add_mutually_exclusive_group()
+    realtime_group.add_argument(
+        "--realtime",
+        dest="realtime",
+        action="store_true",
+        help="Enable realtime MCP data sources for child services.",
+    )
+    realtime_group.add_argument(
+        "--mock-data",
+        dest="realtime",
+        action="store_false",
+        help="Use local deterministic MCP data sources for child services.",
+    )
+    parser.set_defaults(realtime=None)
+    args = parser.parse_args()
+    if args.realtime is not None:
+        os.environ["A2A_REALTIME_MCP_ENABLED"] = "1" if args.realtime else "0"
+    return args
 
 
 def _build_child_env(mode: str) -> dict[str, str]:
